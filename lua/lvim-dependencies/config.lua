@@ -1,6 +1,8 @@
 local M = {
     jsts = {
---
+        az = {
+            ti = "biser"
+        }
     },
     rust = {
 --
