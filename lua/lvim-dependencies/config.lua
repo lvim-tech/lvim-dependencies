@@ -1,7 +1,10 @@
 local M = {
     jsts = {
         az = {
-            ti = "biser"
+            ti = "biser",
+            nie = {
+                "asen", "petur"
+            }
         }
     },
     rust = {

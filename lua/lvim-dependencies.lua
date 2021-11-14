@@ -5,10 +5,10 @@ local M = {}
 
 M.setup = function(user_config)
     if user_config ~= nil then
-        local config_merge = utils.merge(config, user_config)
-        config = config_merge
+        utils.merge(config, user_config)
     end
-    print(vim.inspect(config.jsts.az))
+    -- print(vim.inspect(config.jsts.az))
+    -- print(config.jsts.az.nie)
 end
 
 return M
