@@ -73,7 +73,11 @@ end
 
 -- stacked popup ---------------------------------------------------
 
-local function open(header, content, footer, cfg, title, subtitle, subject, cb)
+-- NOTE: added `opts` parameter to support default_index (1-based)
+local function open(header, content, footer, cfg, title, subtitle, subject, cb, opts)
+	opts = opts or {}
+	local default_index = opts.default_index -- 1-based index to preselect
+
 	local all = {}
 	vim.list_extend(all, header)
 	vim.list_extend(all, content)
@@ -220,7 +224,7 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 	-- CONTENT ------------------------------------------------------
 
 	local cbuf = api.nvim_create_buf(false, true)
-    vim.bo[cbuf].filetype = "LvimDeps"
+	vim.bo[cbuf].filetype = "LvimDeps"
 
 	local h_outer_h = api.nvim_win_get_height(hwin)
 
@@ -265,8 +269,18 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 		})
 	end
 
+	-- If default_index provided, clamp and use it as initial selection (convert to 0-based)
+	if default_index and type(default_index) == "number" then
+		local idx = math.max(1, math.floor(default_index))
+		if idx > #content then
+			idx = #content
+		end
+		cur = math.max(0, idx - 1)
+	end
+
 	set_active(cur)
-	api.nvim_win_set_cursor(cwin, { 1, 0 })
+	-- set cursor to the chosen line (1-based)
+	api.nvim_win_set_cursor(cwin, { cur + 1, 0 })
 
 	-- Autocommand for mouse/scroll handling
 	api.nvim_create_autocmd("CursorMoved", {
@@ -315,10 +329,11 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 
 	-- KEYS ---------------------------------------------------------
 
-	local function close(res)
+	-- close now supports passing selected index/value as second parameter to callback
+	local function close(res, selected)
 		if cb then
 			vim.schedule(function()
-				cb(res)
+				cb(res, selected)
 			end)
 		end
 		pcall(api.nvim_win_close, hwin, true)
@@ -329,16 +344,16 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 		pcall(api.nvim_buf_delete, fbuf, { force = true })
 	end
 
-	local opts = { buffer = cbuf, silent = true }
+	local opts_map = { buffer = cbuf, silent = true }
 
 	-- BLOCK HORIZONTAL MOVEMENT
-	vim.keymap.set({ "n", "v" }, "h", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "l", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "<Left>", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "<Right>", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "0", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "^", "<nop>", opts)
-	vim.keymap.set({ "n", "v" }, "$", "<nop>", opts)
+	vim.keymap.set({ "n", "v" }, "h", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "l", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "<Left>", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "<Right>", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "0", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "^", "<nop>", opts_map)
+	vim.keymap.set({ "n", "v" }, "$", "<nop>", opts_map)
 
 	vim.keymap.set("n", "j", function()
 		if cur < #content - 1 then
@@ -349,7 +364,7 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 			set_active(cur)
 			api.nvim_win_set_cursor(cwin, { cur + 1, 0 })
 		end
-	end, opts)
+	end, opts_map)
 
 	vim.keymap.set("n", "k", function()
 		if cur > 0 then
@@ -360,28 +375,34 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb)
 			set_active(cur)
 			api.nvim_win_set_cursor(cwin, { cur + 1, 0 })
 		end
-	end, opts)
+	end, opts_map)
 
+	-- confirm with Enter or 'y' and pass selected index (1-based) to callback
 	vim.keymap.set("n", "y", function()
-		close(true)
-	end, opts)
+		-- pass the selected index
+		close(true, cur + 1)
+	end, opts_map)
 	vim.keymap.set("n", "<CR>", function()
-		close(true)
-	end, opts)
+		close(true, cur + 1)
+	end, opts_map)
+
+	-- cancel
 	vim.keymap.set("n", "n", function()
-		close(false)
-	end, opts)
+		close(false, nil)
+	end, opts_map)
 	vim.keymap.set("n", "<Esc>", function()
-		close(false)
-	end, opts)
+		close(false, nil)
+	end, opts_map)
 end
 
 -- public ----------------------------------------------------------
 
-function M.confirm_async(title, subtitle, subject, lines, cb)
+-- Now accepts optional `opts` table as sixth param; recognized key:
+--   opts.default_index (1-based) -- preselect that item in the list
+function M.confirm_async(title, subtitle, subject, lines, cb, opts)
 	local cfg = config.ui.floating
 	local header, content, footer = build(title, subtitle, subject, lines)
-	open(header, content, footer, cfg, title, subtitle, subject, cb)
+	open(header, content, footer, cfg, title, subtitle, subject, cb, opts)
 end
 
 return M

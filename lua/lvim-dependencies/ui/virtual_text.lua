@@ -3,6 +3,7 @@ local fn = vim.fn
 local defer_fn = vim.defer_fn
 
 local config = require("lvim-dependencies.config")
+local utils = require("lvim-dependencies.utils")
 local state = require("lvim-dependencies.state")
 local validator = require("lvim-dependencies.validator")
 
@@ -32,6 +33,31 @@ local function filename_to_manifest_key(filename)
 	return nil
 end
 
+local function get_declared_version_from_line(line, manifest_key)
+	if not line then return nil end
+	if manifest_key == "package" or manifest_key == "composer" then
+		-- "name": "version"
+		local parts = {}
+		for chunk in string.gmatch(line, [["(.-)"]]) do
+			parts[#parts + 1] = chunk
+			if #parts >= 2 then break end
+		end
+		return parts[2] and vim.trim(parts[2]) or nil
+	elseif manifest_key == "crates" then
+		local v = line:match('=%s*"?([^%s,"]+)"?')
+		return v and vim.trim(v) or nil
+	elseif manifest_key == "pubspec" then
+		local v = line:match(":%s*([^%s#]+)")
+		if not v then return nil end
+		v = v:gsub('[",]$', "")
+		return vim.trim(v)
+	elseif manifest_key == "go" then
+		local v = line:match("^%s*[^%s]+%s+([v%d%.%-%+]+)")
+		return v and vim.trim(v) or nil
+	end
+	return nil
+end
+
 local function get_dependency_name_from_line(line, manifest_key)
 	if not line then return nil end
 	if manifest_key == "package" or manifest_key == "composer" then
@@ -56,7 +82,9 @@ local function get_dependency_name_from_line(line, manifest_key)
 	return nil
 end
 
-local function build_virt_parts(manifest_key, dep_name)
+-- Build virtual-text parts, show latest/installed and append
+-- "(Different in lock - X)" only when declared (in file) differs from installed (lock)
+local function build_virt_parts(manifest_key, dep_name, declared)
 	local deps = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
 	local installed = deps.installed and deps.installed[dep_name]
 	local outdated = deps.outdated and deps.outdated[dep_name]
@@ -75,13 +103,15 @@ local function build_virt_parts(manifest_key, dep_name)
 		return pieces
 	end
 
-	-- outdated / constraint / up-to-date
-	if outdated and outdated.latest then
-		local latest = tostring(outdated.latest)
-		local cur = installed and installed.current and tostring(installed.current) or nil
-		local is_up_to_date = (cur ~= nil and cur == latest)
+	-- gather versions
+	local latest = (outdated and outdated.latest) and tostring(outdated.latest) or nil
+	local cur = (installed and installed.current) and tostring(installed.current) or nil
 
-		if outdated.constraint_newer then
+	-- primary display: prefer latest (if known) else show installed
+	if latest then
+		-- constraint handling / up-to-date / outdated visual as before
+		local is_up_to_date = (cur ~= nil and cur == latest)
+		if outdated and outdated.constraint_newer then
 			local txt = tostring(latest) .. " (constraint)"
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint_newer then
 				return {
@@ -98,20 +128,34 @@ local function build_virt_parts(manifest_key, dep_name)
 			end
 			return { { vt_cfg.prefix, hl.separator }, { latest, hl.up_to_date } }
 		else
+			local parts = {}
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_outdated then
-				return { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_outdated .. " " .. latest, hl.outdated } }
+				parts = { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_outdated .. " " .. latest, hl.outdated } }
+			else
+				parts = { { vt_cfg.prefix, hl.separator }, { latest, hl.outdated } }
 			end
-			return { { vt_cfg.prefix, hl.separator }, { latest, hl.outdated } }
+
+			-- append lock-diff marker ONLY if declared exists and differs from installed
+			if declared and cur then
+				local declared_norm = utils.normalize_version_spec(declared)
+				local cur_norm = utils.normalize_version_spec(cur)
+				if declared_norm and cur_norm and declared_norm ~= cur_norm then
+					parts[#parts + 1] = { " ", hl.separator }
+					parts[#parts + 1] = { ("(Different in lock - %s)"):format(cur), hl.lock_diff }
+				end
+			end
+
+			return parts
 		end
 	end
 
 	-- installed only
 	if installed and installed.current then
-		local cur = tostring(installed.current)
+		local curv = tostring(installed.current)
 		if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-			return { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_up_to_date .. " " .. cur, hl.up_to_date } }
+			return { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_up_to_date .. " " .. curv, hl.up_to_date } }
 		end
-		return { { vt_cfg.prefix, hl.separator }, { cur, hl.up_to_date } }
+		return { { vt_cfg.prefix, hl.separator }, { curv, hl.up_to_date } }
 	end
 
 	return nil
@@ -128,13 +172,13 @@ local function do_display(bufnr, manifest_key)
 	manifest_key = manifest_key or filename_to_manifest_key(filename)
 	if not manifest_key then return end
 
-	-- manifest support check (assume validator exists)
+	-- manifest support check
 	if not validator.is_supported_manifest(manifest_key) then return end
 
 	-- honor explicit disable
 	if vt_cfg.enabled == false then return end
 
-    local ns = tonumber(ensure_namespace()) or 0
+	local ns = tonumber(ensure_namespace()) or 0
 
 	-- clear namespace
 	api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
@@ -155,19 +199,20 @@ local function do_display(bufnr, manifest_key)
 		local line = lines[i]
 		local dep_name = get_dependency_name_from_line(line, manifest_key)
 		if dep_name and (installed_tbl[dep_name] or invalid_tbl[dep_name]) then
+			local declared_version = get_declared_version_from_line(line, manifest_key)
 			local virt_parts
 			if is_loading then
 				if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
-					virt_parts = build_virt_parts(manifest_key, dep_name)
+					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version)
 				else
 					virt_parts = loading_parts
 				end
 			else
 				if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
-					virt_parts = build_virt_parts(manifest_key, dep_name)
+					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version)
 				else
 					if installed_tbl[dep_name] then
-						virt_parts = build_virt_parts(manifest_key, dep_name)
+						virt_parts = build_virt_parts(manifest_key, dep_name, declared_version)
 					end
 				end
 			end
@@ -226,7 +271,7 @@ end
 M.clear = function(bufnr)
 	bufnr = bufnr or fn.bufnr()
 	if bufnr == -1 then return end
-    local ns = tonumber(ensure_namespace()) or 0
+	local ns = tonumber(ensure_namespace()) or 0
 	api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 	if state.set_virtual_text_displayed then
 		state.set_virtual_text_displayed(bufnr, false)
@@ -243,7 +288,7 @@ end
 
 M.debug_extmarks = function(bufnr)
 	bufnr = bufnr or api.nvim_get_current_buf()
-    local ns = tonumber(ensure_namespace()) or 0
+	local ns = tonumber(ensure_namespace()) or 0
 	local marks = api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
 	if not marks or #marks == 0 then
 		print("failed to get extmarks or none present")

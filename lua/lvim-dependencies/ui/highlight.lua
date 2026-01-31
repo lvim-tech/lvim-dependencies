@@ -62,6 +62,10 @@ function M.init()
 		fg = config.ui.highlight.colors.invalid,
 		default = true,
 	})
+	define_hl_if_missing(config.ui.highlight.groups.lock_diff, {
+		fg = config.ui.highlight.colors.lock_diff,
+		default = true,
+	})
 	define_hl_if_missing(config.ui.highlight.groups.constraint_newer, {
 		fg = config.ui.highlight.colors.constraint_newer,
 		default = true,

@@ -75,6 +75,20 @@ M.normalize_entry_val = function(val)
 	end
 end
 
+M.normalize_version_spec = function(v)
+	if not v then return nil end
+	v = tostring(v):gsub("^%s*", ""):gsub("%s*$", "")
+	-- strip common operators (^, ~, >=, <=, =, >, <)
+	v = v:gsub("^[%s%~%^><=]+", "")
+	local sem = v:match("(%d+%.%d+%.%d+)")
+	if sem then return sem end
+	sem = v:match("(%d+%.%d+)")
+	if sem then return sem end
+	local tok = v:match("(%d+)")
+	return tok
+end
+
+
 M.clean_version = function(value)
 	if type(value) ~= "string" then
 		return nil
