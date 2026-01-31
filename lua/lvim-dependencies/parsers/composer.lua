@@ -9,67 +9,51 @@ local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
 	end
-
 	local ok, parsed = pcall(function()
-		if decoder and type(decoder.parse_toml) == "function" then
-			return decoder.parse_toml(content)
-		end
-		if decoder and type(decoder.parse_json) == "function" then
-			return decoder.parse_json(content)
-		end
-		return nil
+		return decoder.parse_json(content)
 	end)
-	if ok and parsed and type(parsed) == "table" then
-		local versions = {}
-		if parsed.package and type(parsed.package) == "table" then
-			for _, p in ipairs(parsed.package) do
-				if p and type(p) == "table" and p.name and p.version then
-					versions[p.name] = tostring(p.version)
-				end
-			end
-		end
-		return versions
+	if not ok or type(parsed) ~= "table" then
+		return nil
 	end
 
 	local versions = {}
-	local lines = vim.split(content, "\n")
-	local in_pkg = false
-	local cur_name = nil
-	for _, ln in ipairs(lines) do
-		if ln:match("^%s*%[%[%s*package%s*%]%]") then
-			in_pkg = true
-			cur_name = nil
-		elseif in_pkg then
-			local name = ln:match("^%s*name%s*=%s*[\"']?(.-)[\"']?%s*$")
-			if name then
-				cur_name = name
-			end
-			local ver = ln:match("^%s*version%s*=%s*[\"']?(.-)[\"']?%s*$")
-			if ver and cur_name then
-				versions[cur_name] = tostring(ver)
-			end
 
-			if ln:match("^%s*%[") and not ln:match("^%s*%[%[") then
-				in_pkg = false
-				cur_name = nil
-			end
-		else
-			local name = ln:match("^%s*name%s*=%s*[\"']?(.-)[\"']?%s*$")
-			local ver = ln:match("^%s*version%s*=%s*[\"']?(.-)[\"']?%s*$")
-			if name and ver then
-				versions[name] = tostring(ver)
+	local function collect(tbl)
+		if not tbl or type(tbl) ~= "table" then
+			return
+		end
+		for _, pkg in ipairs(tbl) do
+			if pkg and type(pkg) == "table" and pkg.name and pkg.version then
+				versions[pkg.name] = tostring(pkg.version)
 			end
 		end
 	end
 
-	if next(versions) then
-		return versions
-	end
+	collect(parsed.packages)
+	collect(parsed["packages-dev"])
 
-	return nil
+	return versions
 end
 
-local function parse_crates_fallback_lines(lines)
+local function is_platform_dependency(name)
+	if not name or name == "" then
+		return true
+	end
+
+	if name == "php" then
+		return true
+	end
+	if name:match("^ext%-") or name:match("^lib%-") then
+		return true
+	end
+
+	if not name:find("/", 1, true) then
+		return true
+	end
+	return false
+end
+
+local function parse_composer_fallback_lines(lines)
 	if not lines or type(lines) ~= "table" then
 		return {}, {}
 	end
@@ -78,8 +62,11 @@ local function parse_crates_fallback_lines(lines)
 		if not s then
 			return nil
 		end
+
 		local t = s:gsub("//.*$", "")
+
 		t = t:gsub("/%*.-%*/", "")
+
 		t = t:gsub(",%s*$", ""):match("^%s*(.-)%s*$")
 		if t == "" then
 			return nil
@@ -87,94 +74,143 @@ local function parse_crates_fallback_lines(lines)
 		return t
 	end
 
-	local function collect_table(start_idx)
+	local function collect_block(start_idx)
 		local tbl = {}
-		local i = start_idx + 1
-		while i <= #lines do
-			local raw = lines[i]
-			local line = strip_comments_and_trim(raw)
+		local brace_level = 0
+		local started = false
+		local last_idx = start_idx
+
+		for i = start_idx, #lines do
+			local raw_line = lines[i]
+			local line = strip_comments_and_trim(raw_line)
 			if not line then
-				i = i + 1
+				last_idx = i
 			else
-				if line:match("^%[") then
+				if not started and line:find("{", 1, true) then
+					started = true
+				end
+
+				for c in line:gmatch(".") do
+					if c == "{" then
+						brace_level = brace_level + 1
+					elseif c == "}" then
+						brace_level = brace_level - 1
+					end
+				end
+
+				for name, ver in line:gmatch('%s*"(.-)"%s*:%s*"(.-)"%s*,?') do
+					if name and ver then
+						tbl[name] = ver
+					end
+				end
+
+				last_idx = i
+				if started and brace_level <= 0 then
 					break
 				end
-
-				local name, val = line:match("^%s*([%w%-%_]+)%s*=%s*[\"']?(.-)[\"']?%s*$")
-				if name then
-					tbl[name] = val
-				end
-				i = i + 1
 			end
 		end
-		return tbl
+
+		return tbl, last_idx
 	end
 
-	local deps = {}
-	local dev_deps = {}
+	local req = {}
+	local reqdev = {}
 	local i = 1
 	while i <= #lines do
 		local raw = lines[i]
-		if raw then
+		if raw ~= nil then
 			local lower = raw:lower()
-
-			if lower:match("^%s*%[dependencies%]%s*$") then
-				local parsed = collect_table(i)
+			if lower:match('%s*"?require"?%s*:') then
+				local parsed, last = collect_block(i)
 				for k, v in pairs(parsed) do
-					local cur = clean_version(v) or tostring(v)
-					deps[k] = { raw = v, current = cur }
+					if not is_platform_dependency(k) then
+						req[k] = v
+					end
 				end
-			elseif lower:match("^%s*%[dev%-dependencies%]%s*$") then
-				local parsed = collect_table(i)
+				if last and last > i then
+					i = last
+				end
+			elseif lower:match('%s*"?require%-dev"?%s*:') then
+				local parsed, last = collect_block(i)
 				for k, v in pairs(parsed) do
-					local cur = clean_version(v) or tostring(v)
-					dev_deps[k] = { raw = v, current = cur }
+					if not is_platform_dependency(k) then
+						reqdev[k] = v
+					end
+				end
+				if last and last > i then
+					i = last
 				end
 			end
 		end
 		i = i + 1
 	end
 
-	return deps, dev_deps
+	return req, reqdev
 end
 
 local function parse_with_decoder(content, lines)
 	local ok, parsed = pcall(function()
-		if decoder and type(decoder.parse_toml) == "function" then
-			return decoder.parse_toml(content)
+		if decoder and type(decoder.parse_json) == "function" then
+			return decoder.parse_json(content)
 		end
-		return nil
+		return vim.fn.json_decode(content)
 	end)
+
 	if ok and parsed and type(parsed) == "table" then
+		local req = parsed.require or {}
+		local reqdev = parsed["require-dev"] or {}
 		local deps = {}
 		local dev_deps = {}
-		local raw_deps = parsed.dependencies or parsed["dependencies"]
-		local raw_dev = parsed["dev-dependencies"] or parsed["dev_dependencies"]
-		if raw_deps and type(raw_deps) == "table" then
-			for name, val in pairs(raw_deps) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
+
+		if req and type(req) == "table" then
+			for name, val in pairs(req) do
+				if not is_platform_dependency(name) then
+					local raw = nil
+					if type(val) == "string" then
+						raw = val
+					else
+						raw = tostring(val)
+					end
+					local cur = clean_version(raw) or tostring(raw)
+					deps[name] = { raw = raw, current = cur }
 				end
-				deps[name] = { raw = raw, current = cur }
 			end
 		end
-		if raw_dev and type(raw_dev) == "table" then
-			for name, val in pairs(raw_dev) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
+
+		if reqdev and type(reqdev) == "table" then
+			for name, val in pairs(reqdev) do
+				if not is_platform_dependency(name) then
+					local raw = nil
+					if type(val) == "string" then
+						raw = val
+					else
+						raw = tostring(val)
+					end
+					local cur = clean_version(raw) or tostring(raw)
+					dev_deps[name] = { raw = raw, current = cur }
 				end
-				dev_deps[name] = { raw = raw, current = cur }
 			end
 		end
-		return { dependencies = deps, devDependencies = dev_deps }
+
+		return { require = deps, require_dev = dev_deps }
 	end
 
-	local fb_deps, fb_dev = parse_crates_fallback_lines(lines or vim.split(content, "\n"))
-	return { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
+	local fb_req, fb_reqdev = parse_composer_fallback_lines(lines or vim.split(content, "\n"))
+	local deps = {}
+	local dev_deps = {}
+	for k, v in pairs(fb_req) do
+		if not is_platform_dependency(k) then
+			deps[k] = { raw = v, current = clean_version(v) or tostring(v) }
+		end
+	end
+	for k, v in pairs(fb_reqdev) do
+		if not is_platform_dependency(k) then
+			dev_deps[k] = { raw = v, current = clean_version(v) or tostring(v) }
+		end
+	end
+
+	return { require = deps, require_dev = dev_deps }
 end
 
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
@@ -183,8 +219,8 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	end
 	parsed_tables = parsed_tables or {}
 
-	local deps = parsed_tables.dependencies or {}
-	local dev_deps = parsed_tables.devDependencies or {}
+	local req = parsed_tables.require or {}
+	local reqdev = parsed_tables.require_dev or {}
 
 	local installed_dependencies = {}
 	local invalid_dependencies = {}
@@ -202,8 +238,8 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		end
 	end
 
-	add(deps, "dependencies")
-	add(dev_deps, "dev_dependencies")
+	add(req, "require")
+	add(reqdev, "require-dev")
 
 	vim.schedule(function()
 		if not vim.api.nvim_buf_is_valid(bufnr) then
@@ -211,11 +247,11 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		end
 
 		if state.save_buffer then
-			pcall(state.save_buffer, bufnr, "crates", vim.api.nvim_buf_get_name(bufnr), buffer_lines)
+			pcall(state.save_buffer, bufnr, "composer", vim.api.nvim_buf_get_name(bufnr), buffer_lines)
 		end
 
 		if state.set_installed then
-			pcall(state.set_installed, "crates", installed_dependencies)
+			pcall(state.set_installed, "composer", installed_dependencies)
 		elseif state.set_dependencies and type(state.set_dependencies) == "function" then
 			local result = {
 				lines = buffer_lines,
@@ -223,14 +259,14 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 				outdated = {},
 				invalid = invalid_dependencies,
 			}
-			pcall(state.set_dependencies, "crates", result)
+			pcall(state.set_dependencies, "composer", result)
 		end
 
 		if state.set_invalid then
-			pcall(state.set_invalid, "crates", invalid_dependencies)
+			pcall(state.set_invalid, "composer", invalid_dependencies)
 		end
 		if state.set_outdated then
-			pcall(state.set_outdated, "crates", state.get_dependencies("crates").outdated or {})
+			pcall(state.set_outdated, "composer", state.get_dependencies("composer").outdated or {})
 		end
 
 		if state.update_buffer_lines then
@@ -242,28 +278,28 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].last_crates_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
+		state.buffers[bufnr].last_composer_parsed =
+			{ installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
-
 		local ok_hash, h = pcall(function()
 			return vim.fn.sha256(content)
 		end)
 		if ok_hash then
-			state.buffers[bufnr].last_crates_hash = h
+			state.buffers[bufnr].last_composer_hash = h
 		end
 		state.buffers[bufnr].last_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
 
 		pcall(function()
 			local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
 			if ok_vt and vt and type(vt.display) == "function" then
-				vt.display(bufnr, "crates")
+				vt.display(bufnr, "composer")
 			end
 		end)
 
 		pcall(function()
 			local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
 			if ok_chk and chk and type(chk.check_manifest_outdated) == "function" then
-				pcall(chk.check_manifest_outdated, bufnr, "crates")
+				pcall(chk.check_manifest_outdated, bufnr, "composer")
 			end
 		end)
 	end)
@@ -280,16 +316,16 @@ M.parse_buffer = function(bufnr)
 
 	local buf_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
-		if state.buffers[bufnr].last_crates_parsed then
+		if state.buffers[bufnr].last_composer_parsed then
 			vim.defer_fn(function()
 				pcall(function()
 					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
 					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "crates")
+						vt.display(bufnr, "composer")
 					end
 				end)
 			end, 10)
-			return state.buffers[bufnr].last_crates_parsed
+			return state.buffers[bufnr].last_composer_parsed
 		end
 	end
 
@@ -299,23 +335,27 @@ M.parse_buffer = function(bufnr)
 	local ok_hash, current_hash = pcall(function()
 		return vim.fn.sha256(content)
 	end)
-	if ok_hash and state.buffers[bufnr].last_crates_hash and state.buffers[bufnr].last_crates_hash == current_hash then
+	if
+		ok_hash
+		and state.buffers[bufnr].last_composer_hash
+		and state.buffers[bufnr].last_composer_hash == current_hash
+	then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
-		if state.buffers[bufnr].last_crates_parsed then
+		if state.buffers[bufnr].last_composer_parsed then
 			vim.defer_fn(function()
 				pcall(function()
 					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
 					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "crates")
+						vt.display(bufnr, "composer")
 					end
 				end)
 			end, 10)
-			return state.buffers[bufnr].last_crates_parsed
+			return state.buffers[bufnr].last_composer_parsed
 		end
 	end
 
 	if state.buffers[bufnr].parse_scheduled then
-		return state.buffers[bufnr].last_crates_parsed
+		return state.buffers[bufnr].last_composer_parsed
 	end
 
 	state.buffers[bufnr].parse_scheduled = true
@@ -333,20 +373,20 @@ M.parse_buffer = function(bufnr)
 			return parse_with_decoder(fresh_content, fresh_lines)
 		end)
 		if ok_decode and parsed then
-			local lock_path = utils.find_lock_for_manifest(bufnr, "crates")
+			local lock_path = utils.find_lock_for_manifest(bufnr, "composer")
 			local lock_versions = nil
 			if lock_path then
 				local lock_content = utils.read_file(lock_path)
 				lock_versions = parse_lock_file_from_content(lock_content)
 			end
 
-			if lock_versions and type(lock_versions) == "table" then
-				for name, info in pairs(parsed.dependencies or {}) do
+			if lock_versions and type(lock_versions) == "table" and parsed then
+				for name, info in pairs(parsed.require or {}) do
 					if lock_versions[name] then
 						info.current = lock_versions[name]
 					end
 				end
-				for name, info in pairs(parsed.devDependencies or {}) do
+				for name, info in pairs(parsed.require_dev or {}) do
 					if lock_versions[name] then
 						info.current = lock_versions[name]
 					end
@@ -355,24 +395,24 @@ M.parse_buffer = function(bufnr)
 
 			do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
 		else
-			local fb_deps, fb_dev = parse_crates_fallback_lines(fresh_lines)
-			local conv = { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
+			local fb_req, fb_reqdev = parse_composer_fallback_lines(fresh_lines)
+			local conv = { require = fb_req or {}, require_dev = fb_reqdev or {} }
 
-			local lock_path = utils.find_lock_for_manifest(bufnr, "crates")
+			local lock_path = utils.find_lock_for_manifest(bufnr, "composer")
 			local lock_versions = nil
 			if lock_path then
 				local lock_content = utils.read_file(lock_path)
 				lock_versions = parse_lock_file_from_content(lock_content)
 			end
 			if lock_versions and type(lock_versions) == "table" then
-				for name in pairs(conv.dependencies or {}) do
+				for name in pairs(conv.require or {}) do
 					if lock_versions[name] then
-						conv.dependencies[name].current = lock_versions[name]
+						conv.require[name].current = lock_versions[name]
 					end
 				end
-				for name in pairs(conv.devDependencies or {}) do
+				for name in pairs(conv.require_dev or {}) do
 					if lock_versions[name] then
-						conv.devDependencies[name].current = lock_versions[name]
+						conv.require_dev[name].current = lock_versions[name]
 					end
 				end
 			end
@@ -381,7 +421,7 @@ M.parse_buffer = function(bufnr)
 		end
 	end, 20)
 
-	return state.buffers[bufnr].last_crates_parsed
+	return state.buffers[bufnr].last_composer_parsed
 end
 
 M.parse_lock_file_content = function(content)
@@ -393,7 +433,7 @@ M.parse_lock_file_path = function(lock_path)
 	return parse_lock_file_from_content(content)
 end
 
-M.filename = "Cargo.toml"
-M.manifest_key = "crates"
+M.filename = "composer.json"
+M.manifest_key = "composer"
 
 return M

@@ -1,39 +1,45 @@
-local M = {}
-
 local api = vim.api
 local fn = vim.fn
 local fmt = string.format
-local notify = vim.notify
 local job = require("plenary.job")
 local curl = require("plenary.curl")
+local config = require("lvim-dependencies.config")
 local decoder = require("lvim-dependencies.libs.decoder")
 local state = require("lvim-dependencies.state")
 local utils = require("lvim-dependencies.utils")
-local fs = require("lvim-dependencies.utils.fs")
-
 local L = vim.log.levels
-
-local BASE_PUB_URI = "https://pub.dartlang.org/api"
-local BASE_CRATES_URI = "https://crates.io/api/v1/crates"
-local BASE_NPM_URI = "https://registry.npmjs.org"
-
-local PUBLISH_DEBOUNCE_MS = 120
-local PER_REQUEST_TIMEOUT_MS = 10000
-local OVERALL_WATCHDOG_MS = 30000
-
--- versions_cache organized by manifest_key -> bufnr -> cache
--- cache: { last_changed, data = {name->{latest}}, pending = {name->{latest}}, publish_timer, watchdog }
 local versions_cache = {}
 
---
--- Utilities: version parsing/comparison and cleaning
---
+local M = {}
+
+-- Helper functions (must be defined before parsers / fetchers)
+local function is_packagist_candidate(name)
+	if not name or name == "" then
+		return false
+	end
+	if name:find("/", 1, true) then
+		return true
+	end
+	return false
+end
+
 local function to_version(str)
 	if not str then
 		return { 0, 0, 0 }
 	end
-	local s = tostring(str):gsub("%^", "")
-	local parts = vim.tbl_map(tonumber, vim.split(s, ".", { plain = true }))
+	local s = tostring(str)
+	if utils and type(utils.clean_version) == "function" then
+		local ok, cv = pcall(utils.clean_version, s)
+		if ok and cv and cv ~= "" then
+			s = cv
+		end
+	end
+	s = s:gsub("^%s*[vV]", "")
+	s = s:gsub("%+.*$", ""):gsub("%-.*$", "")
+	local parts = {}
+	for i, p in ipairs(vim.split(s, ".", { plain = true })) do
+		parts[i] = tonumber(p) or 0
+	end
 	return { parts[1] or 0, parts[2] or 0, parts[3] or 0 }
 end
 
@@ -56,12 +62,9 @@ local function clean(v)
 	if not v then
 		return nil
 	end
-	return utils.clean_version and utils.clean_version(v) or v
+	return utils.clean_version(v)
 end
 
---
--- Extract latest helpers (pub.dev fallback regex)
---
 local function extract_latest_from_pub_body(body)
 	if not body or body == "" then
 		return nil
@@ -93,74 +96,320 @@ local function parse_pubdev_latest_slow(body)
 	return nil
 end
 
---
--- Fetchers for different registries. They follow same signature:
---   fetcher(name, on_success(latest_or_nil), on_error(err_string_or_nil))
---
+-- host failure & negative caches (use config values; no defaults here)
+local host_failures = {} -- host -> { count = n, blackout_until = ts }
+local negative_cache = {} -- key(manifest.."|"..name) -> { ts = now, reason = str }
 
+local function now_ms()
+	return vim.loop.now()
+end
+
+local function host_from_url(url)
+	return url:match("^https?://([^/]+)")
+end
+
+local function is_host_blackouted(host)
+	local rec = host_failures[host]
+	if not rec then
+		return false
+	end
+	return rec.blackout_until and rec.blackout_until > now_ms()
+end
+
+local function record_host_failure(host)
+	host_failures[host] = host_failures[host] or { count = 0, blackout_until = nil, last_failed = 0 }
+	local rec = host_failures[host]
+	rec.count = rec.count + 1
+	rec.last_failed = now_ms()
+	if rec.count >= config.performance.dynamic_throttle.failure_threshold then
+		rec.blackout_until = now_ms() + config.network.host_failure_blackout_ms
+		utils.notify_safe(
+			fmt(
+				"Host %s temporarily suspended for %d ms due to repeated failures",
+				tostring(host),
+				config.network.host_failure_blackout_ms
+			),
+			L.WARN
+		)
+	end
+end
+
+local function clear_host_failures(host)
+	host_failures[host] = nil
+end
+
+local function negative_cache_key(manifest, name)
+	return manifest .. "|" .. (name or "")
+end
+
+local function is_negative_cached(manifest, name)
+	local k = negative_cache_key(manifest, name)
+	local rec = negative_cache[k]
+	if not rec then
+		return false
+	end
+	return (now_ms() - rec.ts) < config.network.negative_cache_ttl_ms
+end
+
+local function set_negative_cache(manifest, name, reason)
+	local k = negative_cache_key(manifest, name)
+	negative_cache[k] = { ts = now_ms(), reason = reason }
+end
+
+local function clear_negative_cache(manifest, name)
+	local k = negative_cache_key(manifest, name)
+	negative_cache[k] = nil
+end
+
+local function backoff_delay(attempt)
+	local base = config.network.request_retry_base_ms
+	local jitter = math.random(0, config.network.request_retry_jitter_ms)
+	local mult = 2 ^ (attempt - 1)
+	return base * mult + jitter
+end
+
+local function perform_request_with_retries(url, name, manifest_key, parser_fn, on_success, on_error)
+	local host = host_from_url(url)
+
+	if is_host_blackouted(host) then
+		on_error(fmt("host %s is temporarily suspended", tostring(host)))
+		return
+	end
+
+	if is_negative_cached(manifest_key, name) then
+		local rec = negative_cache[negative_cache_key(manifest_key, name)]
+		on_error(
+			fmt("negative cache for %s/%s: %s", tostring(manifest_key), tostring(name), tostring(rec and rec.reason))
+		)
+		return
+	end
+
+	local max_retries = config.network.request_max_retries
+	local attempt = 0
+
+	local function try_once()
+		attempt = attempt + 1
+		curl.get({
+			url = url,
+			timeout = config.network.per_request_timeout_ms / 1000,
+			callback = function(response)
+				if not response then
+					if attempt <= max_retries then
+						local delay = backoff_delay(attempt)
+						vim.defer_fn(try_once, delay)
+						return
+					end
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, "no response")
+					on_error(fmt("no response from %s for %s (attempt=%d)", tostring(url), tostring(name), attempt))
+					return
+				end
+
+				local body_len = (response.body and #response.body) or 0
+				local status = response.status or 0
+
+				if body_len == 0 then
+					if attempt <= max_retries then
+						local delay = backoff_delay(attempt)
+						vim.defer_fn(try_once, delay)
+						return
+					end
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, fmt("empty body (status=%d, len=%d)", status, body_len))
+					utils.notify_safe(
+						fmt(
+							"Empty body from %s for %s (status=%d, len=%d)",
+							tostring(url),
+							tostring(name),
+							status,
+							body_len
+						),
+						L.WARN
+					)
+					on_error(fmt("empty body (status=%d, len=%d) for %s", status, body_len, tostring(name)))
+					return
+				end
+
+				if status ~= 200 then
+					if status >= 500 and attempt <= max_retries then
+						local delay = backoff_delay(attempt)
+						vim.defer_fn(try_once, delay)
+						return
+					end
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, fmt("HTTP %d (len=%d)", status, body_len))
+					utils.notify_safe(
+						fmt("HTTP %d from %s for %s (len=%d)", status, tostring(url), tostring(name), body_len),
+						L.WARN
+					)
+					on_error(fmt("HTTP %d for %s", status, tostring(name)))
+					return
+				end
+
+				local ok, parsed, perr = pcall(function()
+					return parser_fn(response.body)
+				end)
+				if not ok then
+					utils.notify_safe(
+						fmt("Parser threw for %s (%s): %s", tostring(name), tostring(url), tostring(parsed)),
+						L.WARN
+					)
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, tostring(parsed))
+					on_error(fmt("parser threw for %s: %s", tostring(name), tostring(parsed)))
+					return
+				end
+
+				if parsed == nil and perr then
+					utils.notify_safe(
+						fmt(
+							"Parse error for %s (%s): %s (status=%d, len=%d)",
+							tostring(name),
+							tostring(url),
+							tostring(perr),
+							status,
+							body_len
+						),
+						L.WARN
+					)
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, tostring(perr))
+					on_error(fmt("parse error for %s: %s", tostring(name), tostring(perr)))
+					return
+				end
+
+				clear_host_failures(host)
+				clear_negative_cache(manifest_key, name)
+				on_success(parsed)
+			end,
+		})
+	end
+
+	try_once()
+end
+
+-- parser helpers returning latest or nil; they only return values (no notify) so wrapper handles notifications
+local function parser_pub(body)
+	local m = extract_latest_from_pub_body(body)
+	if m and m ~= "" then
+		return clean(m)
+	end
+	-- fallback to slower JSON parse helper
+	local latest2 = parse_pubdev_latest_slow(body)
+	if latest2 and latest2 ~= "" then
+		return clean(latest2)
+	end
+	return nil
+end
+
+local function parser_crates(body)
+	local ok, parsed = pcall(function()
+		return decoder.parse_json(body)
+	end)
+	if not ok then
+		error(parsed)
+	end
+	if parsed and type(parsed) == "table" then
+		if parsed.crate and parsed.crate.max_stable_version then
+			return clean(parsed.crate.max_stable_version)
+		end
+		if parsed.crate and parsed.crate.max_version then
+			return clean(parsed.crate.max_version)
+		end
+		if parsed.versions and type(parsed.versions) == "table" and parsed.versions[1] and parsed.versions[1].num then
+			return clean(parsed.versions[1].num)
+		end
+	end
+	local v = body:match('"max_stable_version"%s*:%s*"(.-)"') or body:match('"max_version"%s*:%s*"(.-)"')
+	if v and v ~= "" then
+		return clean(v)
+	end
+	return nil
+end
+
+local function parser_npm(body)
+	local ok, parsed = pcall(function()
+		return decoder.parse_json(body)
+	end)
+	if not ok then
+		error(parsed)
+	end
+	if parsed and type(parsed) == "table" then
+		if parsed["dist-tags"] and parsed["dist-tags"].latest then
+			return clean(parsed["dist-tags"].latest)
+		end
+	end
+	local m = body:match('"dist%-tags"%s*:%s*{.-"latest"%s*:%s*"(.-)"')
+	if m and m ~= "" then
+		return clean(m)
+	end
+	return nil
+end
+
+local function parser_packagist(body)
+	local ok, parsed = pcall(function()
+		return decoder.parse_json(body)
+	end)
+	if not ok then
+		error(parsed)
+	end
+	if parsed and type(parsed) == "table" and parsed.packages then
+		for _, entries in pairs(parsed.packages) do
+			if entries and entries[1] then
+				local entry = entries[1]
+				local v = entry.version or entry["version"] or entry["version_normalized"] or nil
+				if v and v ~= "" then
+					return clean(v)
+				end
+			end
+		end
+	end
+	local m = body:match('"version"%s*:%s*"(.-)"')
+	if m and m ~= "" then
+		return clean(m)
+	end
+	return nil
+end
+
+local function parser_go(body)
+	local ok, parsed = pcall(function()
+		return decoder.parse_json(body)
+	end)
+	if not ok then
+		error(parsed)
+	end
+	if parsed and type(parsed) == "table" and parsed.Version then
+		return tostring(parsed.Version)
+	end
+	local m = body:match('"Version"%s*:%s*"(.-)"') or body:match('"version"%s*:%s*"(.-)"')
+	if m and m ~= "" then
+		return m
+	end
+	return nil
+end
+
+-- fetcher wrappers that call perform_request_with_retries with appropriate parser
 local function fetch_pub_async(name, on_success, on_error)
 	if not name then
 		return on_error("missing name")
 	end
-	curl.get({
-		url = fmt("%s/packages/%s", BASE_PUB_URI, name),
-		timeout = PER_REQUEST_TIMEOUT_MS / 1000,
-		callback = function(response)
-			if not response then
-				return on_error("no response")
-			end
-			if response.status ~= 200 then
-				return on_error(fmt("HTTP %d for %s", response.status, name))
-			end
-			local latest = extract_latest_from_pub_body(response.body)
-			if not latest then
-				latest = parse_pubdev_latest_slow(response.body)
-			end
-			on_success(latest and clean(latest) or nil)
-		end,
-	})
+	local url = fmt("%s/packages/%s", config.network.pubspec_uri, name)
+	perform_request_with_retries(url, name, "pubspec", parser_pub, function(latest)
+		on_success(latest)
+	end, on_error)
 end
 
 local function fetch_crates_async(name, on_success, on_error)
 	if not name then
 		return on_error("missing name")
 	end
-	curl.get({
-		url = fmt("%s/%s", BASE_CRATES_URI, name),
-		timeout = PER_REQUEST_TIMEOUT_MS / 1000,
-		callback = function(response)
-			if not response then
-				return on_error("no response")
-			end
-			if response.status ~= 200 then
-				return on_error(fmt("HTTP %d for %s", response.status, name))
-			end
-			local ok, parsed = pcall(function()
-				return decoder.parse_json(response.body)
-			end)
-			if ok and type(parsed) == "table" then
-				if parsed.crate and parsed.crate.max_stable_version then
-					return on_success(clean(parsed.crate.max_stable_version))
-				end
-				if parsed.crate and parsed.crate.max_version then
-					return on_success(clean(parsed.crate.max_version))
-				end
-				if parsed.versions and type(parsed.versions) == "table" and parsed.versions[1] and parsed.versions[1].num then
-					return on_success(clean(parsed.versions[1].num))
-				end
-			end
-			-- fallback: try regex for max_stable_version or max_version
-			local v = response.body:match('"max_stable_version"%s*:%s*"(.-)"') or response.body:match('"max_version"%s*:%s*"(.-)"')
-			if v and v ~= "" then
-				return on_success(clean(v))
-			end
-			return on_success(nil)
-		end,
-	})
+	local url = fmt("%s/%s", config.network.crates_uri, name)
+	perform_request_with_retries(url, name, "crates", parser_crates, function(latest)
+		on_success(latest)
+	end, on_error)
 end
 
 local function url_encode_npm(name)
-	-- minimal encoding for scoped packages: @scope/name -> %40scope%2Fname
 	if not name then
 		return ""
 	end
@@ -173,45 +422,52 @@ local function fetch_npm_async(name, on_success, on_error)
 		return on_error("missing name")
 	end
 	local enc = url_encode_npm(name)
-	curl.get({
-		url = fmt("%s/%s", BASE_NPM_URI, enc),
-		timeout = PER_REQUEST_TIMEOUT_MS / 1000,
-		callback = function(response)
-			if not response then
-				return on_error("no response")
-			end
-			if response.status ~= 200 then
-				return on_error(fmt("HTTP %d for %s", response.status, name))
-			end
-			local ok, parsed = pcall(function()
-				return decoder.parse_json(response.body)
-			end)
-			if ok and type(parsed) == "table" then
-				if parsed["dist-tags"] and parsed["dist-tags"].latest then
-					return on_success(clean(parsed["dist-tags"].latest))
-				end
-			end
-			-- fallback regex
-			local m = response.body:match('"dist%-tags"%s*:%s*{.-"latest"%s*:%s*"(.-)"')
-			if m and m ~= "" then
-				return on_success(clean(m))
-			end
-			return on_success(nil)
-		end,
-	})
+	local url = fmt("%s/%s", config.network.package_uri, enc)
+	perform_request_with_retries(url, name, "package", parser_npm, function(latest)
+		on_success(latest)
+	end, on_error)
+end
+
+local function fetch_packagist_async(name, on_success, on_error)
+	if not name then
+		return on_error("missing name")
+	end
+	local url = fmt("%s/%s.json", config.network.composer_uri, name)
+	perform_request_with_retries(url, name, "composer", parser_packagist, function(latest)
+		on_success(latest)
+	end, on_error)
+end
+
+local function url_encode_module(s)
+	if not s then
+		return ""
+	end
+	return (s:gsub("([^A-Za-z0-9_~%.%-])", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end))
+end
+
+local function fetch_go_async(name, on_success, on_error)
+	if not name then
+		return on_error("missing name")
+	end
+	local base = tostring(config.network.go_uri):gsub("/+$", "")
+	local enc = url_encode_module(name)
+	local url = fmt("%s/%s/@latest", base, enc)
+	perform_request_with_retries(url, name, "go", parser_go, function(latest)
+		on_success(latest)
+	end, on_error)
 end
 
 local FETCHERS = {
 	pubspec = fetch_pub_async,
 	crates = fetch_crates_async,
 	package = fetch_npm_async,
+	composer = fetch_packagist_async,
+	go = fetch_go_async,
 }
 
---
--- schedule_publish / add_pending_result now accept manifest_key
--- schedule_publish aggregates pending -> data, builds `final` using state.get_dependencies(manifest_key)
--- then calls state.set_outdated(manifest_key, final) and ui.display(bufnr, manifest_key)
---
+-- the rest of the module (scheduling, publishing, CLI fallback, caching, UI triggers)
 local function schedule_publish(bufnr, manifest_key)
 	manifest_key = manifest_key or "pubspec"
 	if not bufnr then
@@ -220,7 +476,7 @@ local function schedule_publish(bufnr, manifest_key)
 
 	versions_cache[manifest_key] = versions_cache[manifest_key] or {}
 	versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr]
-		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil }
+		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil, last_fetched_at = nil }
 
 	local cache = versions_cache[manifest_key][bufnr]
 	if cache.publish_timer then
@@ -255,10 +511,13 @@ local function schedule_publish(bufnr, manifest_key)
 							constraint_newer = true,
 						}
 						goto continue_entry
+					elseif cmp == 0 then
+						goto continue_entry
 					end
 				end
 
-				final[name] = { current = installed_table[name] and installed_table[name].current or nil, latest = info.latest }
+				final[name] =
+					{ current = installed_table[name] and installed_table[name].current or nil, latest = info.latest }
 			end
 			::continue_entry::
 		end
@@ -266,6 +525,10 @@ local function schedule_publish(bufnr, manifest_key)
 		if type(state.set_outdated) == "function" then
 			vim.schedule(function()
 				pcall(state.set_outdated, manifest_key, final)
+
+				versions_cache[manifest_key] = versions_cache[manifest_key] or {}
+				versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr] or {}
+				versions_cache[manifest_key][bufnr].last_fetched_at = vim.loop.now()
 
 				pcall(function()
 					local ok, ui = pcall(require, "lvim-dependencies.ui.virtual_text")
@@ -275,7 +538,7 @@ local function schedule_publish(bufnr, manifest_key)
 				end)
 			end)
 		end
-	end, PUBLISH_DEBOUNCE_MS)
+	end, config.network.publish_debounce_ms)
 end
 
 local function add_pending_result(bufnr, name, latest, manifest_key)
@@ -285,7 +548,7 @@ local function add_pending_result(bufnr, name, latest, manifest_key)
 	end
 	versions_cache[manifest_key] = versions_cache[manifest_key] or {}
 	versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr]
-		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil }
+		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil, last_fetched_at = nil }
 
 	local cache = versions_cache[manifest_key][bufnr]
 	cache.pending = cache.pending or {}
@@ -293,9 +556,6 @@ local function add_pending_result(bufnr, name, latest, manifest_key)
 	schedule_publish(bufnr, manifest_key)
 end
 
---
--- try_cli_commands_async unchanged but calls on_success/on_failure as before
---
 local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_failure)
 	local idx = 1
 	local function try_next()
@@ -316,9 +576,20 @@ local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_fai
 						raw = j:stderr_result()
 					end
 					if raw and #raw > 0 then
-						local ok, parsed = pcall(function()
+						local ok, parsed, perr = pcall(function()
 							return decoder.parse_json(table.concat(raw, "\n"))
 						end)
+						if not ok then
+							utils.notify_safe(
+								fmt("JSON parse threw for CLI output (%s): %s", cmd[1], tostring(parsed)),
+								L.WARN
+							)
+						elseif parsed == nil and perr then
+							utils.notify_safe(
+								fmt("JSON parse error for CLI output (%s): %s", cmd[1], tostring(perr)),
+								L.WARN
+							)
+						end
 						if ok and type(parsed) == "table" and next(parsed) then
 							local filtered = {}
 							for name, info in pairs(parsed) do
@@ -340,17 +611,12 @@ local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_fai
 	try_next()
 end
 
---
--- Generic check function for any manifest_key. It limits concurrency and uses the appropriate fetcher.
--- It mirrors the previous pubspec behavior but is generalized.
---
 function M.check_manifest_outdated(bufnr, manifest_key)
 	bufnr = bufnr or api.nvim_get_current_buf()
 	if bufnr == -1 then
 		return
 	end
 
-	-- manifest discovery: prefer state.get_manifest_key_from_filename if provided
 	local filename = api.nvim_buf_get_name(bufnr) or ""
 	local basename = fn.fnamemodify(filename, ":t")
 	manifest_key = manifest_key
@@ -358,9 +624,9 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		or (basename == "package.json" and "package")
 		or (basename == "Cargo.toml" and "crates")
 		or (basename == "pubspec.yaml" and "pubspec")
+		or (basename == "composer.json" and "composer")
 		or manifest_key
 	if not manifest_key then
-		-- unknown manifest, nothing to do
 		return
 	end
 
@@ -369,7 +635,13 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 	local scalar_deps = {}
 	for name, info in pairs(installed_table) do
 		if info and info.current and info.current ~= "" then
-			scalar_deps[name] = true
+			if manifest_key == "composer" then
+				if is_packagist_candidate(name) then
+					scalar_deps[name] = true
+				end
+			else
+				scalar_deps[name] = true
+			end
 		end
 	end
 
@@ -382,10 +654,8 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- determine working directory from buffer if possible, fallback to cwd
-	local cwd = (fs and fs.get_buffer_dir and fs.get_buffer_dir(bufnr)) or fn.getcwd()
+	local cwd = (utils and utils.get_buffer_dir and utils.get_buffer_dir(bufnr)) or fn.getcwd()
 
-	-- mark loading and show UI immediately
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 	state.buffers[bufnr].is_loading = true
@@ -398,13 +668,31 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end)
 	end)
 
-	-- ensure cache for this manifest/buffer
 	versions_cache[manifest_key] = versions_cache[manifest_key] or {}
 	versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr]
-		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil }
+		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil, last_fetched_at = nil }
 	local cache = versions_cache[manifest_key][bufnr]
 
-	-- watchdog as before (keeps same semantics)
+	local now = vim.loop.now()
+	if
+		cache.last_fetched_at
+		and config.performance.cache_ttl_ms
+		and config.performance.cache_ttl_ms > 0
+		and (now - cache.last_fetched_at) < config.performance.cache_ttl_ms
+	then
+		if type(state.set_outdated) == "function" then
+			vim.schedule(function()
+				pcall(state.set_outdated, manifest_key, state.get_dependencies(manifest_key).outdated or {})
+				local ok_ui, ui = pcall(require, "lvim-dependencies.ui.virtual_text")
+				if ok_ui and ui and type(ui.display) == "function" then
+					pcall(ui.display, bufnr, manifest_key)
+				end
+			end)
+		end
+		state.buffers[bufnr].is_loading = false
+		return
+	end
+
 	if not (cache and cache.watchdog) then
 		local t = nil
 		local ok_new, maybe_t = pcall(function()
@@ -414,7 +702,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 			t = maybe_t
 			local started_ok = pcall(function()
 				t:start(
-					OVERALL_WATCHDOG_MS,
+					config.network.overall_watchdog_ms,
 					0,
 					vim.schedule_wrap(function()
 						if
@@ -484,36 +772,32 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				if versions_cache and versions_cache[manifest_key] and versions_cache[manifest_key][bufnr] then
 					versions_cache[manifest_key][bufnr].watchdog = nil
 				end
-			end, OVERALL_WATCHDOG_MS)
+			end, config.network.overall_watchdog_ms)
 		end
 	end
 
-	-- build names list
 	local names_to_fetch = {}
 	for name, _ in pairs(scalar_deps) do
 		names_to_fetch[#names_to_fetch + 1] = name
 	end
 
-	-- concurrency heuristics reused from original
 	local n = #names_to_fetch
-	local BASE_CONCURRENCY = 6
-	local MAX_CONCURRENCY = 8
-	local concurrency = math.min(MAX_CONCURRENCY, math.max(1, math.floor(n / 6) + 1, BASE_CONCURRENCY))
+	local concurrency = math.min(
+		config.performance.max_concurrency,
+		math.max(1, math.floor(n / 6) + 1, config.performance.base_concurrency)
+	)
 	if n > 80 then
 		concurrency = 1
 	elseif n > 30 then
 		concurrency = math.min(concurrency, 2)
 	end
 
-	-- pick fetcher for this manifest_key and decide CLI fallback properly
 	local fetcher = FETCHERS[manifest_key]
 	local has_flutter = (fn.executable("flutter") == 1)
 	local has_dart = (fn.executable("dart") == 1)
 	local use_cli_fallback = (not fetcher) and (has_flutter or has_dart)
 
-	-- If no fetcher and no CLI fallback, just clear loading and display empty
 	if not fetcher and not use_cli_fallback then
-		-- nothing can fetch versions for this manifest
 		if state.buffers and state.buffers[bufnr] then
 			state.buffers[bufnr].is_loading = false
 		end
@@ -531,7 +815,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- If we will use CLI fallback, run it once and process results
 	if use_cli_fallback and not fetcher then
 		local cmds = {}
 		if has_flutter then
@@ -546,7 +829,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 
 		if #cmds == 0 then
-			-- unlikely, but guard
 			if state.buffers and state.buffers[bufnr] then
 				state.buffers[bufnr].is_loading = false
 			end
@@ -561,7 +843,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 
 		try_cli_commands_async(cmds, cwd, scalar_deps, function(parsed_cli)
-			-- success: parsed_cli is table of name->info
 			versions_cache[manifest_key] = versions_cache[manifest_key] or {}
 			versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr] or { data = {}, pending = {} }
 			local c = versions_cache[manifest_key][bufnr]
@@ -572,7 +853,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 					add_pending_result(bufnr, name, info.latest, manifest_key)
 				end
 			end
-			-- finalize
+
 			vim.schedule(function()
 				local c2 = versions_cache[manifest_key] and versions_cache[manifest_key][bufnr]
 				if c2 then
@@ -593,8 +874,11 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				schedule_publish(bufnr, manifest_key)
 			end)
 		end, function()
-			-- failure
-			if versions_cache[manifest_key] and versions_cache[manifest_key][bufnr] and versions_cache[manifest_key][bufnr].watchdog then
+			if
+				versions_cache[manifest_key]
+				and versions_cache[manifest_key][bufnr]
+				and versions_cache[manifest_key][bufnr].watchdog
+			then
 				pcall(function()
 					versions_cache[manifest_key][bufnr].watchdog:stop()
 				end)
@@ -622,7 +906,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- Otherwise use registry fetcher with limited concurrency
 	local in_flight, idx = 0, 1
 	local total = #names_to_fetch
 
@@ -650,7 +933,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 
 				try_next()
 
-				-- finalize if done
 				if idx > total and in_flight == 0 then
 					vim.schedule(function()
 						local c2 = versions_cache[manifest_key] and versions_cache[manifest_key][bufnr]
@@ -676,7 +958,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 
 			local on_error = function(err)
 				in_flight = in_flight - 1
-				notify(fmt("Error fetching %s: %s", name, tostring(err)), L.ERROR)
+				utils.notify_safe(fmt("Error fetching %s: %s", name, tostring(err)), L.ERROR)
 				local c = versions_cache[manifest_key] and versions_cache[manifest_key][bufnr]
 				if c and c.data then
 					c.data[name] = nil
@@ -708,21 +990,22 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				end
 			end
 
-			-- call fetcher protected
 			pcall(function()
 				fetcher(name, on_success, on_error)
 			end)
 		end
 	end
 
-	-- start
 	try_next()
 end
 
--- clear cache optionally by manifest_key and/or bufnr
 function M.clear_cache(bufnr, manifest_key)
 	if manifest_key then
-		if versions_cache[manifest_key] and versions_cache[manifest_key][bufnr] and versions_cache[manifest_key][bufnr].watchdog then
+		if
+			versions_cache[manifest_key]
+			and versions_cache[manifest_key][bufnr]
+			and versions_cache[manifest_key][bufnr].watchdog
+		then
 			pcall(function()
 				versions_cache[manifest_key][bufnr].watchdog:stop()
 			end)
@@ -736,7 +1019,6 @@ function M.clear_cache(bufnr, manifest_key)
 			versions_cache[manifest_key] = nil
 		end
 	else
-		-- clear all manifests for this buffer
 		for mk, tbl in pairs(versions_cache) do
 			if bufnr and tbl[bufnr] and tbl[bufnr].watchdog then
 				pcall(function()
@@ -753,11 +1035,6 @@ function M.clear_cache(bufnr, manifest_key)
 			end
 		end
 	end
-end
-
--- compatibility wrapper for original name
-function M.check_pubspec_outdated(bufnr)
-	return M.check_manifest_outdated(bufnr, "pubspec")
 end
 
 return M

@@ -1,16 +1,5 @@
--- Adapter/decoder for JSON / TOML / YAML using bundled pure-Lua libs.
--- This version intentionally uses only the bundled libraries:
---   lua/lvim-dependencies/libs/json.lua   (rxi/json.lua)
---   lua/lvim-dependencies/libs/toml.lua   (tinytoml)
---   lua/lvim-dependencies/libs/yaml.lua   (tinyyaml)
---
--- Each parser tries the common API names (parse/decode/load) or calls the module
--- if it is callable. Errors are returned when the expected bundled lib is not
--- available or the parse call fails.
-
 local M = {}
 
--- JSON via bundled rxi/json.lua (expected at lvim-dependencies.libs.json)
 function M.parse_json(content)
 	if not content or content == "" then
 		return nil, "empty content"
@@ -46,7 +35,6 @@ function M.parse_json(content)
 	return nil, "json library has no decode/parse/callable API"
 end
 
--- TOML via bundled tinytoml (expected at lvim-dependencies.libs.toml)
 function M.parse_toml(content)
 	if not content or content == "" then
 		return nil, "empty content"
@@ -82,7 +70,6 @@ function M.parse_toml(content)
 	return nil, "toml library has no parse/decode/callable API"
 end
 
--- YAML via bundled tinyyaml (expected at lvim-dependencies.libs.yaml)
 function M.parse_yaml(content)
 	if not content or content == "" then
 		return nil, "empty content"

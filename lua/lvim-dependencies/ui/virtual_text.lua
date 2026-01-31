@@ -1,13 +1,6 @@
-local state = require("lvim-dependencies.state")
 local config = require("lvim-dependencies.config")
-
-local HL_GROUPS = {
-	outdated = "LvimDepsOutdatedVersion",
-	up_to_date = "LvimDepsUpToDateVersion",
-	invalid = "LvimDepsInvalidVersion",
-	constraint_newer = "LvimDepsConstraintNewer",
-	separator = "LvimDepsSeparator",
-}
+local state = require("lvim-dependencies.state")
+local validator = require("lvim-dependencies.validator")
 
 local M = {}
 
@@ -32,8 +25,14 @@ local function filename_to_manifest_key(filename)
 	if filename == "Cargo.toml" then
 		return "crates"
 	end
-	if filename == "pubspec.yaml" then
+	if filename == "pubspec.yaml" or filename == "pubspec.yml" then
 		return "pubspec"
+	end
+	if filename == "composer.json" then
+		return "composer"
+	end
+	if filename == "go.mod" then
+		return "go"
 	end
 	return nil
 end
@@ -42,7 +41,7 @@ local function get_dependency_name_from_line(line, manifest_key)
 	if not line then
 		return nil
 	end
-	if manifest_key == "package" then
+	if manifest_key == "package" or manifest_key == "composer" then
 		local parts = {}
 		for chunk in string.gmatch(line, [["(.-)"]]) do
 			table.insert(parts, chunk)
@@ -55,50 +54,39 @@ local function get_dependency_name_from_line(line, manifest_key)
 		return line:match("^%s*([%w_%-]+)%s*=")
 	elseif manifest_key == "pubspec" then
 		return line:match("^%s+([%w_%-]+):")
+	elseif manifest_key == "go" then
+		local name = line:match("^%s*require%s+([^%s]+)")
+		if name then
+			return name
+		end
+		name = line:match("^%s+([^%s]+)%s+[^%s]+")
+		if name and name:match("%/") then
+			return name
+		end
+		name = line:match("^%s*([^%s]+)%s+v[%d%w%-%+%.]+")
+		if name and name:match("%/") then
+			return name
+		end
 	end
 	return nil
 end
 
 local function build_virt_parts(manifest_key, dep_name)
-	local ui_cfg = config and config.ui
-	if not ui_cfg then
-		return nil
-	end
-	local vt_cfg = ui_cfg.virtual_text
-	if not vt_cfg then
-		return nil
-	end
-
-	if vt_cfg.prefix == nil then
-		return nil
-	end
-
+	-- use config values directly from config module
 	local deps = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
 	local installed = deps.installed and deps.installed[dep_name]
 	local outdated = deps.outdated and deps.outdated[dep_name]
 	local invalid = deps.invalid and deps.invalid[dep_name]
 
-	local outdated_hl = HL_GROUPS.outdated
-	local up_to_date_hl = HL_GROUPS.up_to_date
-	local invalid_hl = HL_GROUPS.invalid
-	local prefix_hl = HL_GROUPS.separator
-	local info_hl = HL_GROUPS.constraint_newer
-
-	local prefix = vt_cfg.prefix
-	local icon_up = vt_cfg.icon_when_up_to_date
-	local icon_out = vt_cfg.icon_when_outdated
-	local icon_err = vt_cfg.icon_when_invalid
-	local icon_info = vt_cfg.icon_when_constraint_newer
-	local show_icon = vt_cfg.show_status_icon
-
 	if invalid then
 		local pieces = {}
-		pieces[#pieces + 1] = { prefix, prefix_hl }
+		pieces[#pieces + 1] = { config.ui.virtual_text.prefix, config.ui.highlight.groups.separator }
 		local diag = invalid.diagnostic or "ERR"
-		if show_icon and icon_err then
-			pieces[#pieces + 1] = { icon_err .. " " .. diag, invalid_hl }
+		if config.ui.virtual_text.show_status_icon and config.ui.virtual_text.icon_when_invalid then
+			pieces[#pieces + 1] =
+				{ config.ui.virtual_text.icon_when_invalid .. " " .. diag, config.ui.highlight.groups.invalid }
 		else
-			pieces[#pieces + 1] = { diag, invalid_hl }
+			pieces[#pieces + 1] = { diag, config.ui.highlight.groups.invalid }
 		end
 		return pieces
 	end
@@ -110,27 +98,53 @@ local function build_virt_parts(manifest_key, dep_name)
 
 		if outdated.constraint_newer then
 			local txt = tostring(latest) .. " (constraint)"
-			if show_icon and icon_info then
-				return { { prefix, prefix_hl }, { icon_info .. " " .. txt, info_hl } }
+			if config.ui.virtual_text.show_status_icon and config.ui.virtual_text.icon_when_constraint_newer then
+				return {
+					{ config.ui.virtual_text.prefix, config.ui.highlight.groups.separator },
+					{
+						config.ui.virtual_text.icon_when_constraint_newer .. " " .. txt,
+						config.ui.highlight.groups.constraint_newer,
+					},
+				}
 			else
-				return { { prefix, prefix_hl }, { txt, info_hl } }
+				return {
+					{ config.ui.virtual_text.prefix, config.ui.highlight.groups.separator },
+					{ txt, config.ui.highlight.groups.constraint_newer },
+				}
 			end
 		end
 
 		local pieces = {}
-		pieces[#pieces + 1] = { prefix, prefix_hl }
+		pieces[#pieces + 1] = { config.ui.virtual_text.prefix, config.ui.highlight.groups.separator }
 		if is_up_to_date then
-			if show_icon and icon_up then
-				pieces[#pieces + 1] = { icon_up .. " " .. latest, up_to_date_hl }
+			if config.ui.virtual_text.show_status_icon and config.ui.virtual_text.icon_when_up_to_date then
+				pieces[#pieces + 1] = {
+					config.ui.virtual_text.icon_when_up_to_date .. " " .. latest,
+					config.ui.highlight.groups.up_to_date,
+				}
 			else
-				pieces[#pieces + 1] = { latest, up_to_date_hl }
+				pieces[#pieces + 1] = { latest, config.ui.highlight.groups.up_to_date }
 			end
 		else
-			if show_icon and icon_out then
-				pieces[#pieces + 1] = { icon_out .. " " .. latest, outdated_hl }
+			if config.ui.virtual_text.show_status_icon and config.ui.virtual_text.icon_when_outdated then
+				pieces[#pieces + 1] =
+					{ config.ui.virtual_text.icon_when_outdated .. " " .. latest, config.ui.highlight.groups.outdated }
 			else
-				pieces[#pieces + 1] = { latest, outdated_hl }
+				pieces[#pieces + 1] = { latest, config.ui.highlight.groups.outdated }
 			end
+		end
+		return pieces
+	end
+
+	if installed and installed.current then
+		local cur = tostring(installed.current)
+		local pieces = {}
+		pieces[#pieces + 1] = { config.ui.virtual_text.prefix, config.ui.highlight.groups.separator }
+		if config.ui.virtual_text.show_status_icon and config.ui.virtual_text.icon_when_up_to_date then
+			pieces[#pieces + 1] =
+				{ config.ui.virtual_text.icon_when_up_to_date .. " " .. cur, config.ui.highlight.groups.up_to_date }
+		else
+			pieces[#pieces + 1] = { cur, config.ui.highlight.groups.up_to_date }
 		end
 		return pieces
 	end
@@ -139,27 +153,10 @@ local function build_virt_parts(manifest_key, dep_name)
 end
 
 local function get_loading_parts()
-	local ui_cfg = config and config.ui
-	if not ui_cfg then
-		return nil
-	end
-	local vt_cfg = ui_cfg.virtual_text
-	if not vt_cfg then
-		return nil
-	end
-	if vt_cfg.loading == nil then
-		return nil
-	end
-	if vt_cfg.prefix == nil then
-		return nil
-	end
-
-	local prefix = vt_cfg.prefix
-	local prefix_hl = HL_GROUPS.separator
-	local loading_text = vt_cfg.loading
-	local loading_hl = vt_cfg.highlight or ""
-
-	return { { prefix, prefix_hl }, { loading_text, loading_hl } }
+	return {
+		{ config.ui.virtual_text.prefix, config.ui.highlight.groups.separator },
+		{ config.ui.virtual_text.loading, config.ui.highlight.groups.loading },
+	}
 end
 
 local do_display
@@ -175,22 +172,18 @@ do_display = function(bufnr, manifest_key)
 		return
 	end
 
-	if not (config and config.ui and config.ui.virtual_text) then
+	-- ensure manifest_key is supported by validator
+	if not validator.is_supported_manifest(manifest_key) then
 		return
 	end
 
-	local ns = ensure_namespace() or 0
-	ns = tonumber(ns) or 0
-
-	local buffer_meta = state.get_buffer and state.get_buffer(bufnr) or nil
-	local ok_lines, lines = pcall(function()
-		return buffer_meta and buffer_meta.lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-	end)
-	if not ok_lines or not lines then
-		lines = {}
+	-- use config.ui.virtual_text.enabled if present (honour explicit false)
+	if config.ui.virtual_text.enabled == false then
+		return
 	end
 
-	-- clear entire namespace in buffer (we render whole buffer)
+	local ns = ensure_namespace()
+	ns = tonumber(ns) or 0
 	pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
 
 	local deps_tbl = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
@@ -208,31 +201,38 @@ do_display = function(bufnr, manifest_key)
 		loading_parts = get_loading_parts()
 	end
 
-	-- render for dependencies that are either installed OR marked invalid (so invalid-only entries show)
+	local ok_lines, lines = pcall(function()
+		local buffer_meta = state.get_buffer and state.get_buffer(bufnr) or nil
+		return buffer_meta and buffer_meta.lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	end)
+	if not ok_lines or not lines then
+		lines = {}
+	end
+
 	for i = 1, #lines do
 		local line = lines[i]
 		local dep_name = get_dependency_name_from_line(line, manifest_key)
 
-		-- render virt-text if dependency is installed OR explicitly invalid
 		if dep_name and (installed_tbl[dep_name] or invalid_tbl[dep_name]) then
 			local virt_parts = nil
 
 			if is_loading then
-				-- prefer showing real data if available, otherwise loading indicator
 				if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
 					virt_parts = build_virt_parts(manifest_key, dep_name)
 				else
 					virt_parts = loading_parts
 				end
 			else
-				-- not loading: render when we have outdated info or invalid info
 				if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
 					virt_parts = build_virt_parts(manifest_key, dep_name)
+				else
+					if installed_tbl[dep_name] then
+						virt_parts = build_virt_parts(manifest_key, dep_name)
+					end
 				end
 			end
 
 			if virt_parts and #virt_parts > 0 then
-				-- ensure ns is integer and buffer valid
 				local ok_buf = pcall(vim.api.nvim_buf_is_valid, bufnr)
 				if ok_buf and vim.api.nvim_buf_is_valid(bufnr) then
 					pcall(vim.api.nvim_buf_set_extmark, bufnr, ns, i - 1, 0, {
@@ -281,7 +281,7 @@ M.display = function(bufnr, manifest_key)
 		local mk = state.buffers[bufnr].display_requested_manifest
 		state.buffers[bufnr].display_requested_manifest = nil
 		do_display(bufnr, mk)
-	end, 50)
+	end, config.performance.deferred_full_render_ms)
 end
 
 M.clear = function(bufnr)
@@ -289,11 +289,7 @@ M.clear = function(bufnr)
 	if bufnr == -1 then
 		return
 	end
-	-- ensure namespace id is valid integer
 	local ns = ensure_namespace()
-	if not ns or type(ns) ~= "number" then
-		return
-	end
 	pcall(vim.api.nvim_buf_clear_namespace, bufnr, ns, 0, -1)
 	if state.set_virtual_text_displayed then
 		pcall(state.set_virtual_text_displayed, bufnr, false)
@@ -307,9 +303,6 @@ end
 M.debug_extmarks = function(bufnr)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 	local ns = ensure_namespace()
-	if not ns or type(ns) ~= "number" then
-		ns = 0
-	end
 	local ok, marks = pcall(vim.api.nvim_buf_get_extmarks, bufnr, ns, 0, -1, { details = true })
 	if not ok or not marks then
 		print("failed to get extmarks or none present")
