@@ -9,7 +9,7 @@ local function define_hl_if_missing(name, opts)
 	end
 end
 
-function M.setup()
+function M.init()
 	define_hl_if_missing(config.ui.highlight.groups.normal, {
 		bg = config.ui.highlight.colors.bg,
 		fg = config.ui.highlight.colors.fg,

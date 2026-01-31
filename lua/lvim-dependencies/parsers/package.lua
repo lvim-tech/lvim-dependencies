@@ -1,3 +1,11 @@
+local api = vim.api
+local fn = vim.fn
+local schedule = vim.schedule
+local defer_fn = vim.defer_fn
+local split = vim.split
+local table_concat = table.concat
+local tostring = tostring
+
 local decoder = require("lvim-dependencies.libs.decoder")
 local state = require("lvim-dependencies.state")
 local utils = require("lvim-dependencies.utils")
@@ -5,13 +13,13 @@ local clean_version = utils.clean_version
 
 local M = {}
 
+-- Try parse package-lock / npm-shrinkwrap JSON and extract versions
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
 	end
-	local ok, parsed = pcall(function()
-		return decoder.parse_json(content)
-	end)
+
+	local ok, parsed = pcall(decoder.parse_json, content)
 	if not ok or type(parsed) ~= "table" then
 		return nil
 	end
@@ -28,22 +36,17 @@ local function parse_lock_file_from_content(content)
 	return versions
 end
 
+-- Fallback loose parser for package.json-like content (handles JS comments)
 local function parse_package_fallback_lines(lines)
 	if not lines or type(lines) ~= "table" then
 		return {}, {}
 	end
 
 	local function strip_comments_and_trim(s)
-		if not s then
-			return nil
-		end
-
-		local t = s:gsub("//.*$", "")
-		t = t:gsub("/%*.-%*/", "")
-		t = t:gsub(",%s*$", ""):match("^%s*(.-)%s*$")
-		if t == "" then
-			return nil
-		end
+		if not s then return nil end
+		-- remove line comments and simple block comments, then trim and drop trailing commas
+		local t = s:gsub("//.*$", ""):gsub("/%*.-%*/", ""):gsub(",%s*$", ""):match("^%s*(.-)%s*$")
+		if t == "" then return nil end
 		return t
 	end
 
@@ -53,16 +56,19 @@ local function parse_package_fallback_lines(lines)
 		local started = false
 		local last_idx = start_idx
 
+		-- scan until block end (no artificial limit)
 		for i = start_idx, #lines do
 			local raw_line = lines[i]
 			local line = strip_comments_and_trim(raw_line)
 			if not line then
 				last_idx = i
 			else
+				-- detect object start
 				if not started and line:find("{", 1, true) then
 					started = true
 				end
 
+				-- update brace level
 				for c in line:gmatch(".") do
 					if c == "{" then
 						brace_level = brace_level + 1
@@ -71,7 +77,8 @@ local function parse_package_fallback_lines(lines)
 					end
 				end
 
-				for name, ver in line:gmatch("%s*[\"']?([%w%-%_@/%.]+)[\"']?%s*:%s*[\"']([^\"']+)[\"']%s*,?") do
+				-- capture simple "name": "version" entries (handles quoted keys)
+				for name, ver in line:gmatch([[%s*["']?([%w%-%_@/%.]+)["']?%s*:%s*["']([^"']+)["']%s*,?]]) do
 					if name and ver then
 						tbl[name] = ver
 					end
@@ -99,17 +106,13 @@ local function parse_package_fallback_lines(lines)
 				for k, v in pairs(parsed) do
 					deps[k] = { raw = v, current = (clean_version(v) or tostring(v)) }
 				end
-				if last and last > i then
-					i = last
-				end
+				if last and last > i then i = last end
 			elseif lower:match('%s*"?devdependencies"?%s*:') or lower:match('%s*"?dev%-dependencies"?%s*:') then
 				local parsed, last = collect_block(i)
 				for k, v in pairs(parsed) do
 					dev_deps[k] = { raw = v, current = (clean_version(v) or tostring(v)) }
 				end
-				if last and last > i then
-					i = last
-				end
+				if last and last > i then i = last end
 			end
 		end
 		i = i + 1
@@ -118,15 +121,10 @@ local function parse_package_fallback_lines(lines)
 	return deps, dev_deps
 end
 
+-- Use JSON decoder when possible; fallback to loose line parser
 local function parse_with_decoder(content, lines)
-	local ok, parsed = pcall(function()
-		if decoder and type(decoder.parse_json) == "function" then
-			return decoder.parse_json(content)
-		end
-		return vim.fn.json_decode(content)
-	end)
-
-	if ok and parsed and type(parsed) == "table" then
+	local ok, parsed = pcall(decoder.parse_json, content)
+	if ok and type(parsed) == "table" then
 		local deps = {}
 		local dev_deps = {}
 		local optional_deps = {}
@@ -135,64 +133,25 @@ local function parse_with_decoder(content, lines)
 
 		local raw_deps = parsed.dependencies or parsed.deps
 		local raw_dev = parsed.devDependencies or parsed.dev_dependencies
-		local raw_opt = parsed.optionalDependencies
-		local raw_peer = parsed.peerDependencies
+		local raw_opt = parsed.optionalDependencies or parsed.optional_dependencies
+		local raw_peer = parsed.peerDependencies or parsed.peer_dependencies
 		local raw_overrides = parsed.overrides or parsed.dependency_overrides
 
-		if raw_deps and type(raw_deps) == "table" then
-			for name, val in pairs(raw_deps) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
+		local function collect_from_raw(raw_tbl, out_tbl)
+			if raw_tbl and type(raw_tbl) == "table" then
+				for name, val in pairs(raw_tbl) do
+					local raw, has = utils.normalize_entry_val(val)
+					local cur = has and (clean_version(raw) or tostring(raw)) or nil
+					out_tbl[name] = { raw = raw, current = cur }
 				end
-				deps[name] = { raw = raw, current = cur }
 			end
 		end
 
-		if raw_dev and type(raw_dev) == "table" then
-			for name, val in pairs(raw_dev) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
-				end
-				dev_deps[name] = { raw = raw, current = cur }
-			end
-		end
-
-		if raw_opt and type(raw_opt) == "table" then
-			for name, val in pairs(raw_opt) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
-				end
-				optional_deps[name] = { raw = raw, current = cur }
-			end
-		end
-
-		if raw_peer and type(raw_peer) == "table" then
-			for name, val in pairs(raw_peer) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
-				end
-				peer_deps[name] = { raw = raw, current = cur }
-			end
-		end
-
-		if raw_overrides and type(raw_overrides) == "table" then
-			for name, val in pairs(raw_overrides) do
-				local raw, has = utils.normalize_entry_val(val)
-				local cur = nil
-				if has then
-					cur = clean_version(raw) or tostring(raw)
-				end
-				overrides[name] = { raw = raw, current = cur }
-			end
-		end
+		collect_from_raw(raw_deps, deps)
+		collect_from_raw(raw_dev, dev_deps)
+		collect_from_raw(raw_opt, optional_deps)
+		collect_from_raw(raw_peer, peer_deps)
+		collect_from_raw(raw_overrides, overrides)
 
 		return {
 			dependencies = deps,
@@ -203,7 +162,7 @@ local function parse_with_decoder(content, lines)
 		}
 	end
 
-	local fb_deps, fb_dev = parse_package_fallback_lines(lines or vim.split(content, "\n"))
+	local fb_deps, fb_dev = parse_package_fallback_lines(lines or split(content, "\n"))
 	return {
 		dependencies = fb_deps or {},
 		devDependencies = fb_dev or {},
@@ -214,25 +173,16 @@ local function parse_with_decoder(content, lines)
 end
 
 local function map_source_to_scope(source)
-	-- map internal source tags to typical package.json scope names
-	if source == "dependencies" then
-		return "dependencies"
-	elseif source == "dev_dependencies" then
-		return "devDependencies"
-	elseif source == "optional_dependencies" then
-		return "optionalDependencies"
-	elseif source == "peer_dependencies" then
-		return "peerDependencies"
-	elseif source == "overrides" then
-		return "overrides"
-	end
+	if source == "dependencies" then return "dependencies" end
+	if source == "dev_dependencies" then return "devDependencies" end
+	if source == "optional_dependencies" then return "optionalDependencies" end
+	if source == "peer_dependencies" then return "peerDependencies" end
+	if source == "overrides" then return "overrides" end
 	return "dependencies"
 end
 
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
-	if not vim.api.nvim_buf_is_valid(bufnr) then
-		return
-	end
+	if not api.nvim_buf_is_valid(bufnr) then return end
 	parsed_tables = parsed_tables or {}
 
 	local deps = parsed_tables.dependencies or {}
@@ -263,138 +213,88 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	add(peer_deps, "peer_dependencies")
 	add(overrides, "overrides")
 
-	vim.schedule(function()
-		if not vim.api.nvim_buf_is_valid(bufnr) then
-			return
-		end
+	schedule(function()
+		if not api.nvim_buf_is_valid(bufnr) then return end
 
+		-- save buffer meta
 		if state.save_buffer then
-			pcall(state.save_buffer, bufnr, "package", vim.api.nvim_buf_get_name(bufnr), buffer_lines)
+			state.save_buffer(bufnr, "package", api.nvim_buf_get_name(bufnr), buffer_lines)
 		end
 
-		-- prepare state: ensure + clear manifest container
-		if state.ensure_manifest then
-			pcall(state.ensure_manifest, "package")
-		end
-		if state.clear_manifest then
-			pcall(state.clear_manifest, "package")
-		end
+		-- ensure + clear manifest container
+		if state.ensure_manifest then state.ensure_manifest("package") end
+		if state.clear_manifest then state.clear_manifest("package") end
 
-		-- Prefer per-dependency API to capture scopes; fallback to bulk set_installed
+		-- prefer per-dependency API to capture scopes; fallback to bulk set_installed
 		local used_add = false
-		if state.add_installed_dependency and type(state.add_installed_dependency) == "function" then
+		if state.add_installed_dependency then
 			used_add = true
 			for name, info in pairs(installed_dependencies) do
 				local scope = map_source_to_scope(info._source or "dependencies")
-				pcall(state.add_installed_dependency, "package", name, info.current, scope)
+				state.add_installed_dependency("package", name, info.current, scope)
 			end
 		end
 
 		if not used_add then
-			-- build table in expected format { name = { current = "...", scopes = { [scope]=true } } }
 			local bulk = {}
 			for name, info in pairs(installed_dependencies) do
 				local scope = map_source_to_scope(info._source or "dependencies")
 				bulk[name] = { current = info.current, scopes = { [scope] = true } }
 			end
-			if state.set_installed then
-				pcall(state.set_installed, "package", bulk)
-			end
+			if state.set_installed then state.set_installed("package", bulk) end
 		end
 
-		-- invalids
-		if state.set_invalid then
-			pcall(state.set_invalid, "package", invalid_dependencies)
-		end
-
-		-- maintain outdated state (checker will refresh)
-		if state.set_outdated then
-			pcall(state.set_outdated, "package", state.get_dependencies("package").outdated or {})
-		end
+		-- invalids and outdated placeholder
+		if state.set_invalid then state.set_invalid("package", invalid_dependencies) end
+		if state.set_outdated then state.set_outdated("package", state.get_dependencies("package").outdated or {}) end
 
 		-- update buffer cached lines/last run metadata
-		if state.update_buffer_lines then
-			pcall(state.update_buffer_lines, bufnr, buffer_lines)
-		end
-		if state.update_last_run then
-			pcall(state.update_last_run, bufnr)
-		end
+		if state.update_buffer_lines then state.update_buffer_lines(bufnr, buffer_lines) end
+		if state.update_last_run then state.update_last_run(bufnr) end
 
 		-- attach last parsed snapshot to buffer for caching
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].last_package_parsed =
-			{ installed = installed_dependencies, invalid = invalid_dependencies }
+		state.buffers[bufnr].last_package_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
-		local ok_hash, h = pcall(function()
-			return vim.fn.sha256(content)
-		end)
-		if ok_hash then
-			state.buffers[bufnr].last_package_hash = h
-		end
-		state.buffers[bufnr].last_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+
+		-- compute and store hash
+		state.buffers[bufnr].last_package_hash = fn.sha256(content)
+		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
 		-- render virtual text and trigger checker
-		pcall(function()
-			local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-			if ok_vt and vt and type(vt.display) == "function" then
-				vt.display(bufnr, "package")
-			end
-		end)
-
-		pcall(function()
-			local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-			if ok_chk and chk and type(chk.check_manifest_outdated) == "function" then
-				pcall(chk.check_manifest_outdated, bufnr, "package")
-			end
-		end)
+		require("lvim-dependencies.ui.virtual_text").display(bufnr, "package")
+		require("lvim-dependencies.actions.check_manifests").check_manifest_outdated(bufnr, "package")
 	end)
 end
 
 M.parse_buffer = function(bufnr)
-	bufnr = bufnr or vim.fn.bufnr()
-	if bufnr == -1 then
-		return nil
-	end
+	bufnr = bufnr or fn.bufnr()
+	if bufnr == -1 then return nil end
 
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	local buf_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+	local buf_changedtick = api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
 		if state.buffers[bufnr].last_package_parsed then
-			vim.defer_fn(function()
-				pcall(function()
-					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "package")
-					end
-				end)
+			defer_fn(function()
+				require("lvim-dependencies.ui.virtual_text").display(bufnr, "package")
 			end, 10)
 			return state.buffers[bufnr].last_package_parsed
 		end
 	end
 
-	local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-	local content = table.concat(buffer_lines, "\n")
+	local buffer_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	local content = table_concat(buffer_lines, "\n")
 
-	local ok_hash, current_hash = pcall(function()
-		return vim.fn.sha256(content)
-	end)
-	if
-		ok_hash
-		and state.buffers[bufnr].last_package_hash
-		and state.buffers[bufnr].last_package_hash == current_hash
-	then
+	-- quick hash check
+	local current_hash = fn.sha256(content)
+	if state.buffers[bufnr].last_package_hash and state.buffers[bufnr].last_package_hash == current_hash then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
 		if state.buffers[bufnr].last_package_parsed then
-			vim.defer_fn(function()
-				pcall(function()
-					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "package")
-					end
-				end)
+			defer_fn(function()
+				require("lvim-dependencies.ui.virtual_text").display(bufnr, "package")
 			end, 10)
 			return state.buffers[bufnr].last_package_parsed
 		end
@@ -406,18 +306,16 @@ M.parse_buffer = function(bufnr)
 
 	state.buffers[bufnr].parse_scheduled = true
 
-	vim.defer_fn(function()
-		if not vim.api.nvim_buf_is_valid(bufnr) then
+	defer_fn(function()
+		if not api.nvim_buf_is_valid(bufnr) then
 			state.buffers[bufnr].parse_scheduled = false
 			return
 		end
 
-		local fresh_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-		local fresh_content = table.concat(fresh_lines, "\n")
+		local fresh_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+		local fresh_content = table_concat(fresh_lines, "\n")
 
-		local ok_decode, parsed = pcall(function()
-			return parse_with_decoder(fresh_content, fresh_lines)
-		end)
+		local ok_decode, parsed = pcall(parse_with_decoder, fresh_content, fresh_lines)
 		if ok_decode and parsed then
 			local lock_path = utils.find_lock_for_manifest(bufnr, "package")
 			local lock_versions = nil
@@ -428,14 +326,10 @@ M.parse_buffer = function(bufnr)
 
 			if lock_versions and type(lock_versions) == "table" then
 				for name, info in pairs(parsed.dependencies or {}) do
-					if lock_versions[name] then
-						info.current = lock_versions[name]
-					end
+					if lock_versions[name] then info.current = lock_versions[name] end
 				end
 				for name, info in pairs(parsed.devDependencies or {}) do
-					if lock_versions[name] then
-						info.current = lock_versions[name]
-					end
+					if lock_versions[name] then info.current = lock_versions[name] end
 				end
 			end
 
@@ -458,14 +352,10 @@ M.parse_buffer = function(bufnr)
 			end
 			if lock_versions and type(lock_versions) == "table" then
 				for name in pairs(conv.dependencies or {}) do
-					if lock_versions[name] then
-						conv.dependencies[name].current = lock_versions[name]
-					end
+					if lock_versions[name] then conv.dependencies[name].current = lock_versions[name] end
 				end
 				for name in pairs(conv.devDependencies or {}) do
-					if lock_versions[name] then
-						conv.devDependencies[name].current = lock_versions[name]
-					end
+					if lock_versions[name] then conv.devDependencies[name].current = lock_versions[name] end
 				end
 			end
 
@@ -476,9 +366,7 @@ M.parse_buffer = function(bufnr)
 	return state.buffers[bufnr].last_package_parsed
 end
 
-M.parse_lock_file_content = function(content)
-	return parse_lock_file_from_content(content)
-end
+M.parse_lock_file_content = parse_lock_file_from_content
 
 M.parse_lock_file_path = function(lock_path)
 	local content = utils.read_file(lock_path)

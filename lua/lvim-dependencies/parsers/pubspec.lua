@@ -1,7 +1,18 @@
+local api = vim.api
+local fn = vim.fn
+local schedule = vim.schedule
+local defer_fn = vim.defer_fn
+local split = vim.split
+local table_concat = table.concat
+local tostring = tostring
+
 local decoder = require("lvim-dependencies.libs.decoder")
 local state = require("lvim-dependencies.state")
 local utils = require("lvim-dependencies.utils")
 local clean_version = utils.clean_version
+
+local vt = require("lvim-dependencies.ui.virtual_text")
+local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
@@ -10,16 +21,19 @@ local function parse_lock_file_from_content(content)
 		return nil
 	end
 
-	local ok, parsed = pcall(function()
-		if decoder and type(decoder.parse_yaml) == "function" then
-			return decoder.parse_yaml(content)
+	-- try structured parse (YAML/JSON)
+	local parsed = nil
+	local ok, res = pcall(decoder.parse_yaml, content)
+	if ok and type(res) == "table" then
+		parsed = res
+	else
+		ok, res = pcall(decoder.parse_json, content)
+		if ok and type(res) == "table" then
+			parsed = res
 		end
-		if decoder and type(decoder.parse_json) == "function" then
-			return decoder.parse_json(content)
-		end
-		return nil
-	end)
-	if ok and parsed and type(parsed) == "table" then
+	end
+
+	if parsed and type(parsed) == "table" then
 		local versions = {}
 		if parsed.packages and type(parsed.packages) == "table" then
 			for name, info in pairs(parsed.packages) do
@@ -28,27 +42,31 @@ local function parse_lock_file_from_content(content)
 				end
 			end
 		end
-
-		return versions
+		if next(versions) then
+			return versions
+		end
 	end
 
+	-- fallback: simple line-based scan
 	local versions = {}
-	local lines = vim.split(content, "\n")
-	local i = 1
-	while i <= #lines do
+	local lines = split(content, "\n")
+	for i = 1, #lines do
 		local ln = lines[i]
 		local name = ln:match("^%s*([%w%-%_@/%.]+)%s*:%s*$")
 		if name then
-			for j = i + 1, math.min(i + 6, #lines) do
+			for j = i + 1, #lines do
 				local vln = lines[j]
 				local ver = vln:match('^%s*version%s*:%s*"?(.-)"?%s*$')
 				if ver and ver ~= "" then
 					versions[name] = tostring(ver)
 					break
 				end
+				-- stop when block ends (no indent)
+				if vln and not vln:match("^%s") then
+					break
+				end
 			end
 		end
-		i = i + 1
 	end
 
 	if next(versions) then
@@ -85,7 +103,6 @@ local function parse_pubspec_fallback_lines(lines)
 		if not s then
 			return nil
 		end
-
 		local t = s:gsub("%s*#.*$", "")
 		t = t:gsub(",%s*$", ""):match("^%s*(.-)%s*$")
 		if t == "" then
@@ -100,10 +117,10 @@ local function parse_pubspec_fallback_lines(lines)
 		while i <= #lines do
 			local raw = lines[i]
 			local line = strip_comments_and_trim(raw)
-
 			if not line then
 				i = i + 1
 			else
+				-- block ends when no leading indent
 				if not line:match("^%s") then
 					break
 				end
@@ -118,8 +135,10 @@ local function parse_pubspec_fallback_lines(lines)
 							tbl[name] = nil
 						end
 					else
+						-- collect lookahead lines to decide
 						local lookahead = {}
-						for j = i + 1, math.min(i + 8, #lines) do
+						for j = i + 1, math.max(i + 1, i + 8), 1 do
+							if j > #lines then break end
 							lookahead[#lookahead + 1] = lines[j]
 						end
 
@@ -127,19 +146,18 @@ local function parse_pubspec_fallback_lines(lines)
 							tbl[name] = nil
 						else
 							local found = nil
-							for j = i + 1, math.min(i + 8, #lines) do
+							for j = i + 1, #lines do
 								local l2 = lines[j]
 								local v2 = l2:match('^%s*version%s*:%s*"?(.-)"?%s*$')
 								if v2 and v2 ~= "" then
 									found = v2
 									break
 								end
+								if l2 and not l2:match("^%s") then
+									break
+								end
 							end
-							if found then
-								tbl[name] = found
-							else
-								tbl[name] = nil
-							end
+							tbl[name] = found
 						end
 					end
 				end
@@ -179,14 +197,14 @@ local function parse_pubspec_fallback_lines(lines)
 end
 
 local function parse_with_decoder(content, lines)
-	local ok, parsed = pcall(function()
-		if decoder and type(decoder.parse_yaml) == "function" then
-			return decoder.parse_yaml(content)
-		end
-		return nil
-	end)
+	-- Try YAML parse first (pubspec is YAML); if it fails, fall back to line parser.
+	local parsed = nil
+	local ok, res = pcall(decoder.parse_yaml, content)
+	if ok and type(res) == "table" then
+		parsed = res
+	end
 
-	if ok and parsed and type(parsed) == "table" then
+	if parsed then
 		local deps = {}
 		local dev_deps = {}
 		local raw_deps = parsed.dependencies or parsed.depends
@@ -196,20 +214,15 @@ local function parse_with_decoder(content, lines)
 			for name, val in pairs(raw_deps) do
 				if type(val) == "table" then
 					if val.sdk or val.path or val.git then
+						-- skip platform/path/git entries
 					else
 						local raw, has = utils.normalize_entry_val(val)
-						local cur = nil
-						if has then
-							cur = clean_version(raw) or tostring(raw)
-						end
+						local cur = has and (clean_version(raw) or tostring(raw)) or nil
 						deps[name] = { raw = raw, current = cur }
 					end
 				else
 					local raw, has = utils.normalize_entry_val(val)
-					local cur = nil
-					if has then
-						cur = clean_version(raw) or tostring(raw)
-					end
+					local cur = has and (clean_version(raw) or tostring(raw)) or nil
 					deps[name] = { raw = raw, current = cur }
 				end
 			end
@@ -219,20 +232,15 @@ local function parse_with_decoder(content, lines)
 			for name, val in pairs(raw_dev) do
 				if type(val) == "table" then
 					if val.sdk or val.path or val.git then
+						-- skip
 					else
 						local raw, has = utils.normalize_entry_val(val)
-						local cur = nil
-						if has then
-							cur = clean_version(raw) or tostring(raw)
-						end
+						local cur = has and (clean_version(raw) or tostring(raw)) or nil
 						dev_deps[name] = { raw = raw, current = cur }
 					end
 				else
 					local raw, has = utils.normalize_entry_val(val)
-					local cur = nil
-					if has then
-						cur = clean_version(raw) or tostring(raw)
-					end
+					local cur = has and (clean_version(raw) or tostring(raw)) or nil
 					dev_deps[name] = { raw = raw, current = cur }
 				end
 			end
@@ -241,12 +249,12 @@ local function parse_with_decoder(content, lines)
 		return { dependencies = deps, devDependencies = dev_deps }
 	end
 
-	local fb_deps, fb_dev = parse_pubspec_fallback_lines(lines or vim.split(content, "\n"))
+	local fb_deps, fb_dev = parse_pubspec_fallback_lines(lines or split(content, "\n"))
 	return { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
 end
 
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
-	if not vim.api.nvim_buf_is_valid(bufnr) then
+	if not api.nvim_buf_is_valid(bufnr) then
 		return
 	end
 	parsed_tables = parsed_tables or {}
@@ -273,94 +281,56 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	add(deps, "dependencies")
 	add(dev_deps, "dev_dependencies")
 
-	vim.schedule(function()
-		if not vim.api.nvim_buf_is_valid(bufnr) then
+	schedule(function()
+		if not api.nvim_buf_is_valid(bufnr) then
 			return
 		end
 
 		-- save buffer meta
-		if state.save_buffer then
-			pcall(state.save_buffer, bufnr, "pubspec", vim.api.nvim_buf_get_name(bufnr), buffer_lines)
-		end
+		state.save_buffer(bufnr, "pubspec", api.nvim_buf_get_name(bufnr), buffer_lines)
 
-		-- Update state: use new state helpers (clear + add per-dependency to capture scopes)
-		if state.ensure_manifest then
-			pcall(state.ensure_manifest, "pubspec")
-		end
-		if state.clear_manifest then
-			pcall(state.clear_manifest, "pubspec")
-		end
+		-- Update state: ensure + clear manifest container
+		state.ensure_manifest("pubspec")
+		state.clear_manifest("pubspec")
 
-		for name, info in pairs(installed_dependencies) do
-			local scope = info._source or "dependencies"
-			-- scope for pubspec should be "dependencies" or "dev_dependencies"
-			pcall(function()
-				if state.add_installed_dependency and type(state.add_installed_dependency) == "function" then
-					pcall(state.add_installed_dependency, "pubspec", name, info.current, scope)
-				else
-					-- fallback to set_installed batch API if add_installed_dependency is not available
-					-- build table and call set_installed below
-				end
-			end)
-		end
-
-		-- If add_installed_dependency wasn't available (very old state), still set a bulk table
-		if not (state.add_installed_dependency and type(state.add_installed_dependency) == "function") then
-			pcall(state.set_installed, "pubspec", installed_dependencies)
+		-- prefer per-dependency add API if available
+		if state.add_installed_dependency then
+			for name, info in pairs(installed_dependencies) do
+				local scope = info._source or "dependencies"
+				state.add_installed_dependency("pubspec", name, info.current, scope)
+			end
+		else
+			state.set_installed("pubspec", installed_dependencies)
 		end
 
 		-- invalids
-		if state.set_invalid then
-			pcall(state.set_invalid, "pubspec", invalid_dependencies)
-		end
+		state.set_invalid("pubspec", invalid_dependencies)
 
 		-- maintain outdated state (keep previous value if checker will update it later)
-		if state.set_outdated then
-			pcall(state.set_outdated, "pubspec", state.get_dependencies("pubspec").outdated or {})
-		end
+		state.set_outdated("pubspec", state.get_dependencies("pubspec").outdated or {})
 
 		-- update buffer cached lines/last run metadata
-		if state.update_buffer_lines then
-			pcall(state.update_buffer_lines, bufnr, buffer_lines)
-		end
-		if state.update_last_run then
-			pcall(state.update_last_run, bufnr)
-		end
+		state.update_buffer_lines(bufnr, buffer_lines)
+		state.update_last_run(bufnr)
 
 		-- attach last parsed snapshot to buffer for caching
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].last_pubspec_parsed =
-			{ installed = installed_dependencies, invalid = invalid_dependencies }
+		state.buffers[bufnr].last_pubspec_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
 
-		local ok_hash, h = pcall(function()
-			return vim.fn.sha256(content)
-		end)
-		if ok_hash then
-			state.buffers[bufnr].last_pubspec_hash = h
-		end
-		state.buffers[bufnr].last_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+		-- compute and store hash
+		state.buffers[bufnr].last_pubspec_hash = fn.sha256(content)
+		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
 		-- render virtual text and trigger checker
-		pcall(function()
-			local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-			if ok_vt and vt and type(vt.display) == "function" then
-				vt.display(bufnr, "pubspec")
-			end
-		end)
-
-		pcall(function()
-			local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-			if ok_chk and chk and type(chk.check_manifest_outdated) == "function" then
-				pcall(chk.check_manifest_outdated, bufnr, "pubspec")
-			end
-		end)
+		vt.display(bufnr, "pubspec")
+		checker.check_manifest_outdated(bufnr, "pubspec")
 	end)
 end
 
 M.parse_buffer = function(bufnr)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	if bufnr == -1 then
 		return nil
 	end
@@ -368,41 +338,26 @@ M.parse_buffer = function(bufnr)
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	local buf_changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+	local buf_changedtick = api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
 		if state.buffers[bufnr].last_pubspec_parsed then
-			vim.defer_fn(function()
-				pcall(function()
-					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "pubspec")
-					end
-				end)
+			defer_fn(function()
+				vt.display(bufnr, "pubspec")
 			end, 10)
 			return state.buffers[bufnr].last_pubspec_parsed
 		end
 	end
 
-	local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-	local content = table.concat(buffer_lines, "\n")
+	local buffer_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	local content = table_concat(buffer_lines, "\n")
 
-	local ok_hash, current_hash = pcall(function()
-		return vim.fn.sha256(content)
-	end)
-	if
-		ok_hash
-		and state.buffers[bufnr].last_pubspec_hash
-		and state.buffers[bufnr].last_pubspec_hash == current_hash
-	then
+	-- quick hash check
+	local current_hash = fn.sha256(content)
+	if state.buffers[bufnr].last_pubspec_hash and state.buffers[bufnr].last_pubspec_hash == current_hash then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
 		if state.buffers[bufnr].last_pubspec_parsed then
-			vim.defer_fn(function()
-				pcall(function()
-					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-					if ok_vt and vt and type(vt.display) == "function" then
-						vt.display(bufnr, "pubspec")
-					end
-				end)
+			defer_fn(function()
+				vt.display(bufnr, "pubspec")
 			end, 10)
 			return state.buffers[bufnr].last_pubspec_parsed
 		end
@@ -414,18 +369,16 @@ M.parse_buffer = function(bufnr)
 
 	state.buffers[bufnr].parse_scheduled = true
 
-	vim.defer_fn(function()
-		if not vim.api.nvim_buf_is_valid(bufnr) then
+	defer_fn(function()
+		if not api.nvim_buf_is_valid(bufnr) then
 			state.buffers[bufnr].parse_scheduled = false
 			return
 		end
 
-		local fresh_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-		local fresh_content = table.concat(fresh_lines, "\n")
+		local fresh_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+		local fresh_content = table_concat(fresh_lines, "\n")
 
-		local ok_decode, parsed = pcall(function()
-			return parse_with_decoder(fresh_content, fresh_lines)
-		end)
+		local ok_decode, parsed = pcall(parse_with_decoder, fresh_content, fresh_lines)
 		if ok_decode and parsed then
 			local lock_path = utils.find_lock_for_manifest(bufnr, "pubspec")
 			local lock_versions = nil
@@ -477,9 +430,7 @@ M.parse_buffer = function(bufnr)
 	return state.buffers[bufnr].last_pubspec_parsed
 end
 
-M.parse_lock_file_content = function(content)
-	return parse_lock_file_from_content(content)
-end
+M.parse_lock_file_content = parse_lock_file_from_content
 
 M.parse_lock_file_path = function(lock_path)
 	local content = utils.read_file(lock_path)

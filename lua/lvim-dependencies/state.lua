@@ -1,3 +1,7 @@
+local api = vim.api
+local fn = vim.fn
+local os_time = os.time
+
 local M = {
 	is_in_project = false,
 	project_root = nil,
@@ -6,7 +10,6 @@ local M = {
 		has_old_yarn = false,
 		package_manager = nil,
 	},
-	-- initialize all known manifests so callers never hit nil
 	dependencies = {
 		package = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
 		crates = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
@@ -26,16 +29,30 @@ local M = {
 	},
 }
 
--- namespace helpers (keep simple API and maintain .id for existing callers)
+-- Helper: ensure a manifest container exists and returns it
+local function ensure_manifest_table(manifest_key)
+	if not manifest_key then
+		return nil
+	end
+	local deps = M.dependencies[manifest_key]
+	if not deps then
+		deps = { installed = {}, outdated = {}, invalid = {}, last_updated = nil }
+		M.dependencies[manifest_key] = deps
+	end
+	return deps
+end
+
+-- namespace helpers
 function M.namespace.create()
 	M.namespace = M.namespace or {}
 	if not M.namespace.id then
-		M.namespace.id = vim.api.nvim_create_namespace("lvim_dependencies")
+		M.namespace.id = api.nvim_create_namespace("lvim_dependencies")
 	end
 	return M.namespace.id
 end
 
 function M.namespace.get_id()
+	-- return integer or nil (callers can tonumber if needed)
 	return (M.namespace and M.namespace.id) or nil
 end
 
@@ -43,22 +60,22 @@ function M.get_manifest_key_from_filename(filename)
 	return M.filename_to_key and M.filename_to_key[filename] or nil
 end
 
--- buffer helpers
+-- buffer helpers (safe, no-throw)
 function M.save_buffer(bufnr, manifest_key, path, lines)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	M.buffers[bufnr] = M.buffers[bufnr] or {}
 	local b = M.buffers[bufnr]
 	b.id = bufnr
 	b.manifest = manifest_key
-	b.path = path or vim.api.nvim_buf_get_name(bufnr)
-	b.lines = lines or vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+	b.path = path or api.nvim_buf_get_name(bufnr)
+	b.lines = lines or api.nvim_buf_get_lines(bufnr, 0, -1, false)
 	b.is_loaded = true
 	b.is_virtual_text_displayed = false
 	b.last_run = b.last_run or { time = nil }
 end
 
 function M.update_buffer_lines(bufnr, lines)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	if not M.buffers[bufnr] then
 		return
 	end
@@ -66,50 +83,84 @@ function M.update_buffer_lines(bufnr, lines)
 end
 
 function M.get_buffer(bufnr)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	return M.buffers[bufnr]
 end
 
--- ensure manifest container exists
+-- Public ensure_manifest (keeps contract simple)
 function M.ensure_manifest(manifest_key)
 	if not manifest_key then
 		return
 	end
-	M.dependencies[manifest_key] = M.dependencies[manifest_key]
-		or { installed = {}, outdated = {}, invalid = {}, last_updated = nil }
+	ensure_manifest_table(manifest_key)
 end
 
--- set full tables (used by parsers)
+-- Set full tables (parsers call these)
 function M.set_installed(manifest_key, tbl)
-	M.ensure_manifest(manifest_key)
-	M.dependencies[manifest_key].installed = tbl or {}
-	M.dependencies[manifest_key].last_updated = os.time()
+	if not manifest_key then
+		return
+	end
+	local deps = ensure_manifest_table(manifest_key)
+	deps.installed = tbl or {}
+	deps.last_updated = os_time()
 end
 
 function M.set_outdated(manifest_key, tbl)
-	M.ensure_manifest(manifest_key)
-	M.dependencies[manifest_key].outdated = tbl or {}
+	if not manifest_key then
+		return
+	end
+	local deps = ensure_manifest_table(manifest_key)
+	deps.outdated = tbl or {}
 end
 
 function M.set_invalid(manifest_key, tbl)
-	M.ensure_manifest(manifest_key)
-	M.dependencies[manifest_key].invalid = tbl or {}
+	if not manifest_key then
+		return
+	end
+	local deps = ensure_manifest_table(manifest_key)
+	deps.invalid = tbl or {}
 end
 
--- helpers to manage individual installed entries and scopes
--- installed[name] is expected to be either a string (version) or a table { current = "...", scopes = { ["dependencies"]=true, ["devDependencies"]=true, ... } }
+-- Backward-compatible alias used by some parsers
+function M.set_dependencies(manifest_key, tbl)
+	-- some parsers expect set_dependencies(manifest, { lines=..., installed=..., ... })
+	if not manifest_key or not tbl then
+		return
+	end
+	if type(tbl) == "table" and (tbl.installed or tbl.lines) then
+		M.set_installed(manifest_key, tbl.installed or {})
+		M.set_outdated(manifest_key, tbl.outdated or {})
+		M.set_invalid(manifest_key, tbl.invalid or {})
+		-- optionally keep lines in buffer meta
+		if tbl.lines then
+			M.update_buffer_lines(fn.bufnr(), tbl.lines)
+		end
+	else
+		-- direct set_installed(tbl)
+		M.set_installed(manifest_key, tbl)
+	end
+end
+
+-- Add / remove individual installed entries and manage scopes
 function M.add_installed_dependency(manifest_key, name, current_version, scope)
 	if not manifest_key or not name then
 		return
 	end
-	M.ensure_manifest(manifest_key)
 
-	local installed = M.dependencies[manifest_key].installed
+	local deps = ensure_manifest_table(manifest_key)
+	if not deps then
+		return
+	end
+
+	-- ensure installed table exists
+	deps.installed = deps.installed or {}
+	local installed = deps.installed
+
 	local entry = installed[name]
 
 	if not entry then
-		installed[name] = { current = current_version or nil, scopes = {} }
-		entry = installed[name]
+		entry = { current = current_version or nil, scopes = {} }
+		installed[name] = entry
 	else
 		-- normalize entry to table form
 		if type(entry) ~= "table" then
@@ -127,7 +178,8 @@ function M.add_installed_dependency(manifest_key, name, current_version, scope)
 		entry.scopes[scope] = true
 	end
 
-	M.dependencies[manifest_key].last_updated = os.time()
+	-- update timestamp (use local os_time if present, otherwise fallback)
+	deps.last_updated = (os_time and os_time()) or os.time()
 end
 
 function M.remove_installed_dependency(manifest_key, name)
@@ -135,8 +187,17 @@ function M.remove_installed_dependency(manifest_key, name)
 		return
 	end
 	M.ensure_manifest(manifest_key)
-	M.dependencies[manifest_key].installed[name] = nil
-	M.dependencies[manifest_key].last_updated = os.time()
+	local deps = M.dependencies[manifest_key]
+	if not deps then
+		return
+	end
+	local installed = deps.installed
+	if not installed then
+		return
+	end
+
+	installed[name] = nil
+	deps.last_updated = os.time()
 end
 
 function M.get_installed_version(manifest_key, name)
@@ -158,9 +219,8 @@ function M.get_installed_scopes(manifest_key, name)
 	if deps and deps.installed and deps.installed[name] then
 		local entry = deps.installed[name]
 		if type(entry) == "table" and entry.scopes then
-			-- return list of scopes
 			local out = {}
-			for s, _ in pairs(entry.scopes) do
+			for s in pairs(entry.scopes) do
 				out[#out + 1] = s
 			end
 			return out
@@ -185,42 +245,41 @@ function M.get_dependencies(manifest_key)
 	return M.dependencies[manifest_key] or { installed = {}, outdated = {}, invalid = {}, last_updated = nil }
 end
 
--- last-run and skip helpers (used by autocommands)
+-- last-run helpers
 function M.update_last_run(bufnr)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	M.buffers[bufnr] = M.buffers[bufnr] or {}
 	M.buffers[bufnr].last_run = M.buffers[bufnr].last_run or {}
-	M.buffers[bufnr].last_run.time = os.time()
+	M.buffers[bufnr].last_run.time = os_time()
 end
 
 function M.should_skip_last_run(bufnr, window_seconds)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	local wnd = window_seconds or 3600
 	if not M.buffers[bufnr] or not M.buffers[bufnr].last_run or not M.buffers[bufnr].last_run.time then
 		return false
 	end
-	return os.time() < (M.buffers[bufnr].last_run.time or 0) + wnd
+	return os_time() < (M.buffers[bufnr].last_run.time or 0) + wnd
 end
 
 -- virtual text helpers
 function M.clear_virtual_text(bufnr)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	if not M.namespace.id then
 		return
 	end
-	pcall(vim.api.nvim_buf_clear_namespace, bufnr, M.namespace.id, 0, -1)
+	pcall(api.nvim_buf_clear_namespace, bufnr, M.namespace.id, 0, -1)
 	if M.buffers[bufnr] then
 		M.buffers[bufnr].is_virtual_text_displayed = false
 	end
 end
 
 function M.set_virtual_text_displayed(bufnr, val)
-	bufnr = bufnr or vim.fn.bufnr()
+	bufnr = bufnr or fn.bufnr()
 	M.buffers[bufnr] = M.buffers[bufnr] or {}
 	M.buffers[bufnr].is_virtual_text_displayed = val
 end
 
--- convenience: clear manifest state (installed/outdated/invalid)
 function M.clear_manifest(manifest_key)
 	if not manifest_key then
 		return

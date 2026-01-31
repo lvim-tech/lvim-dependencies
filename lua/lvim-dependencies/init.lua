@@ -11,7 +11,8 @@ M.setup = function(user_config)
 		utils.merge(config, user_config)
 	end
 	autocommands.init()
-	highlight.setup()
+	highlight.init()
+    cursor.init()
 end
 
 return M
