@@ -138,7 +138,9 @@ local function parse_pubspec_fallback_lines(lines)
 						-- collect lookahead lines to decide
 						local lookahead = {}
 						for j = i + 1, math.max(i + 1, i + 8), 1 do
-							if j > #lines then break end
+							if j > #lines then
+								break
+							end
 							lookahead[#lookahead + 1] = lines[j]
 						end
 
@@ -316,7 +318,8 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		-- attach last parsed snapshot to buffer for caching
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].last_pubspec_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
+		state.buffers[bufnr].last_pubspec_parsed =
+			{ installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
 
 		-- compute and store hash
@@ -333,6 +336,15 @@ M.parse_buffer = function(bufnr)
 	bufnr = bufnr or fn.bufnr()
 	if bufnr == -1 then
 		return nil
+	end
+
+	-- Skip parsing if update is in progress to avoid race conditions
+	if state.get_updating and type(state.get_updating) == "function" then
+		local is_updating = state.get_updating()
+		if is_updating then
+			-- Update is in progress, skip parsing to preserve outdated info
+			return nil
+		end
 	end
 
 	state.buffers = state.buffers or {}

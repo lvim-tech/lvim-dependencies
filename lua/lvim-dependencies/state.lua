@@ -2,6 +2,8 @@ local api = vim.api
 local fn = vim.fn
 local os_time = os.time
 
+local const = require("lvim-dependencies.const")
+
 local M = {
 	is_in_project = false,
 	project_root = nil,
@@ -10,24 +12,28 @@ local M = {
 		has_old_yarn = false,
 		package_manager = nil,
 	},
-	dependencies = {
-		package = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
-		crates = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
-		pubspec = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
-		composer = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
-		go = { installed = {}, outdated = {}, invalid = {}, last_updated = nil },
-	},
+	dependencies = {},
 	buffers = {},
 	namespace = { id = nil },
-	filename_to_key = {
-		["package.json"] = "package",
-		["Cargo.toml"] = "crates",
-		["pubspec.yaml"] = "pubspec",
-		["pubspec.yml"] = "pubspec",
-		["composer.json"] = "composer",
-		["go.mod"] = "go",
-	},
+	is_updating = false, -- Flag to prevent parsing during package updates
 }
+
+-- Initialize dependencies structure from const
+local function init_dependencies()
+	for _, manifest_key in pairs(const.MANIFEST_KEYS) do
+		if not M.dependencies[manifest_key] then
+			M.dependencies[manifest_key] = {
+				installed = {},
+				outdated = {},
+				invalid = {},
+				last_updated = nil,
+			}
+		end
+	end
+end
+
+-- Initialize on load
+init_dependencies()
 
 -- Helper: ensure a manifest container exists and returns it
 local function ensure_manifest_table(manifest_key)
@@ -52,12 +58,20 @@ function M.namespace.create()
 end
 
 function M.namespace.get_id()
-	-- return integer or nil (callers can tonumber if needed)
 	return (M.namespace and M.namespace.id) or nil
 end
 
 function M.get_manifest_key_from_filename(filename)
-	return M.filename_to_key and M.filename_to_key[filename] or nil
+	return const.MANIFEST_KEYS[filename]
+end
+
+-- Update flag helpers
+function M.set_updating(value)
+	M.is_updating = value
+end
+
+function M.get_updating()
+	return M.is_updating
 end
 
 -- buffer helpers (safe, no-throw)
@@ -87,7 +101,6 @@ function M.get_buffer(bufnr)
 	return M.buffers[bufnr]
 end
 
--- Public ensure_manifest (keeps contract simple)
 function M.ensure_manifest(manifest_key)
 	if not manifest_key then
 		return
@@ -95,7 +108,6 @@ function M.ensure_manifest(manifest_key)
 	ensure_manifest_table(manifest_key)
 end
 
--- Set full tables (parsers call these)
 function M.set_installed(manifest_key, tbl)
 	if not manifest_key then
 		return
@@ -121,9 +133,7 @@ function M.set_invalid(manifest_key, tbl)
 	deps.invalid = tbl or {}
 end
 
--- Backward-compatible alias used by some parsers
 function M.set_dependencies(manifest_key, tbl)
-	-- some parsers expect set_dependencies(manifest, { lines=..., installed=..., ... })
 	if not manifest_key or not tbl then
 		return
 	end
@@ -131,17 +141,14 @@ function M.set_dependencies(manifest_key, tbl)
 		M.set_installed(manifest_key, tbl.installed or {})
 		M.set_outdated(manifest_key, tbl.outdated or {})
 		M.set_invalid(manifest_key, tbl.invalid or {})
-		-- optionally keep lines in buffer meta
 		if tbl.lines then
 			M.update_buffer_lines(fn.bufnr(), tbl.lines)
 		end
 	else
-		-- direct set_installed(tbl)
 		M.set_installed(manifest_key, tbl)
 	end
 end
 
--- Add / remove individual installed entries and manage scopes
 function M.add_installed_dependency(manifest_key, name, current_version, scope)
 	if not manifest_key or not name then
 		return
@@ -152,7 +159,6 @@ function M.add_installed_dependency(manifest_key, name, current_version, scope)
 		return
 	end
 
-	-- ensure installed table exists
 	deps.installed = deps.installed or {}
 	local installed = deps.installed
 
@@ -162,7 +168,6 @@ function M.add_installed_dependency(manifest_key, name, current_version, scope)
 		entry = { current = current_version or nil, scopes = {} }
 		installed[name] = entry
 	else
-		-- normalize entry to table form
 		if type(entry) ~= "table" then
 			entry = { current = entry, scopes = {} }
 			installed[name] = entry
@@ -172,14 +177,12 @@ function M.add_installed_dependency(manifest_key, name, current_version, scope)
 		end
 	end
 
-	-- record scope if provided
 	if scope and scope ~= "" then
 		entry.scopes = entry.scopes or {}
 		entry.scopes[scope] = true
 	end
 
-	-- update timestamp (use local os_time if present, otherwise fallback)
-	deps.last_updated = (os_time and os_time()) or os.time()
+	deps.last_updated = os_time()
 end
 
 function M.remove_installed_dependency(manifest_key, name)
@@ -197,7 +200,7 @@ function M.remove_installed_dependency(manifest_key, name)
 	end
 
 	installed[name] = nil
-	deps.last_updated = os.time()
+	deps.last_updated = os_time()
 end
 
 function M.get_installed_version(manifest_key, name)
@@ -245,7 +248,6 @@ function M.get_dependencies(manifest_key)
 	return M.dependencies[manifest_key] or { installed = {}, outdated = {}, invalid = {}, last_updated = nil }
 end
 
--- last-run helpers
 function M.update_last_run(bufnr)
 	bufnr = bufnr or fn.bufnr()
 	M.buffers[bufnr] = M.buffers[bufnr] or {}
@@ -262,7 +264,6 @@ function M.should_skip_last_run(bufnr, window_seconds)
 	return os_time() < (M.buffers[bufnr].last_run.time or 0) + wnd
 end
 
--- virtual text helpers
 function M.clear_virtual_text(bufnr)
 	bufnr = bufnr or fn.bufnr()
 	if not M.namespace.id then

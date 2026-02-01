@@ -1,5 +1,7 @@
 local api = vim.api
 local fn = vim.fn
+
+local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
 local floating = require("lvim-dependencies.ui.floating")
 local validator = require("lvim-dependencies.validator")
@@ -37,6 +39,8 @@ local function detect_dep_from_line(manifest_key, bufnr)
 
 		local cur_indent = leading_spaces(line)
 		local search_row = row - 1
+		local sections = const.SECTION_NAMES.pubspec
+
 		while search_row >= 1 do
 			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
 			local ptrim = pline:gsub("^%s+", "")
@@ -44,15 +48,12 @@ local function detect_dep_from_line(manifest_key, bufnr)
 				local p_indent = leading_spaces(pline)
 				if p_indent < cur_indent then
 					local parent = ptrim:match("^([%w_%-]+)%s*:%s*$")
-					if
-						parent
-						and (
-							parent == "dependencies"
-							or parent == "dev_dependencies"
-							or parent == "dependency_overrides"
-						)
-					then
-						return name, parent
+					if parent then
+						for _, section in ipairs(sections) do
+							if parent == section then
+								return name, parent
+							end
+						end
 					end
 					break
 				end
@@ -69,25 +70,18 @@ local function detect_dep_from_line(manifest_key, bufnr)
 
 		local cur_indent = leading_spaces(line)
 		local search_row = row - 1
+		local sections = const.SECTION_NAMES[manifest_key]
+
 		while search_row >= 1 do
 			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
 			local ptrim = pline:gsub("^%s+", "")
 			if ptrim ~= "" then
 				local p_indent = leading_spaces(pline)
 				if p_indent < cur_indent then
-					if manifest_key == "package" then
-						if ptrim:match([["dependencies"%s*:]]) then
-							return name, "dependencies"
-						end
-						if ptrim:match([["devDependencies"%s*:]]) or ptrim:match([["dev_dependencies"%s*:]]) then
-							return name, "devDependencies"
-						end
-					else
-						if ptrim:match([["require"%s*:]]) then
-							return name, "require"
-						end
-						if ptrim:match([["require%-dev"%s*:]]) or ptrim:match([["require_dev"%s*:]]) then
-							return name, "require-dev"
+					for _, section in ipairs(sections) do
+						local pattern = string.format([["%s"%s*:]], section:gsub("%-", "%%-"))
+						if ptrim:match(pattern) then
+							return name, section
 						end
 					end
 					break
@@ -101,19 +95,20 @@ local function detect_dep_from_line(manifest_key, bufnr)
 		if not name then
 			return nil, nil
 		end
+
 		local search_row = row - 1
+		local sections = const.SECTION_NAMES.crates
+
 		while search_row >= 1 do
 			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
 			local ptrim = pline:gsub("^%s+", ""):gsub("%s+$", "")
 			if ptrim ~= "" then
 				local section = ptrim:match("^%[(.-)%]$")
 				if section then
-					if
-						section == "dependencies"
-						or section == "dev-dependencies"
-						or section == "build-dependencies"
-					then
-						return name, section
+					for _, valid_section in ipairs(sections) do
+						if section == valid_section then
+							return name, section
+						end
 					end
 					break
 				end
@@ -167,8 +162,6 @@ local function detect_inline_version(manifest_key, line)
 	end
 
 	if manifest_key == "pubspec" then
-		-- accept ranges and common operators (e.g. ^2.0.2, ~1.3.0, >=1.2.0)
-		-- capture any non-space, non-comma sequence after ':'
 		local v = line:match(":%s*([^%s,]+)")
 		if v and v ~= "" then
 			return v
@@ -200,8 +193,6 @@ local function completion_fn(_, cmd_line, _)
 	return {}
 end
 
--- helper: get the "current" line for the given buffer.
--- Uses the buffer's last known cursor (mark ".") if available; falls back to api.nvim_get_current_line().
 local function get_current_line_for_buf(bufnr)
 	if not bufnr or not api.nvim_buf_is_valid(bufnr) then
 		return api.nvim_get_current_line()
@@ -211,22 +202,18 @@ local function get_current_line_for_buf(bufnr)
 	return api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
 end
 
--- helper: split "name@version" or "name:version" into name,version
 local function split_name_version(name, version)
 	if not name or name == "" then
 		return name, version
 	end
-	-- try name@ver
 	local n, v = name:match("^(.+)@(.+)$")
 	if n and v and v ~= "" then
 		return n, v
 	end
-	-- try name:ver
 	n, v = name:match("^(.+):(.+)$")
 	if n and v and v ~= "" then
 		return n, v
 	end
-	-- if version already provided, keep it
 	return name, version
 end
 
@@ -242,7 +229,6 @@ M.install = function(manifest)
 	floating.install(manifest)
 end
 
--- NOTE: signature: (manifest, name, version, scope)
 M.update = function(manifest, name, version, scope)
 	if not manifest or manifest == "" then
 		utils.notify_safe(
@@ -270,10 +256,9 @@ M.update = function(manifest, name, version, scope)
 		resolved_name = detected_name
 		resolved_scope = detected_scope
 
-		local cur_line = get_current_line_for_buf() -- current buffer (command is buffer-local)
+		local cur_line = get_current_line_for_buf()
 		resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
 	else
-		-- if user passed "name@ver" as single arg, split it
 		resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
 
 		if not resolved_version or resolved_version == "" then
@@ -295,7 +280,6 @@ M.update = function(manifest, name, version, scope)
 	floating.update(manifest, resolved_name, resolved_version, resolved_scope)
 end
 
--- NOTE: signature: (manifest, name, version, scope)
 M.delete = function(manifest, name, version, scope)
 	if not manifest or manifest == "" then
 		manifest = detect_manifest_from_buf()
@@ -320,7 +304,6 @@ M.delete = function(manifest, name, version, scope)
 		local cur_line = get_current_line_for_buf()
 		resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
 	else
-		-- split name@version if user supplied that form
 		resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
 
 		if not resolved_scope or resolved_scope == "" then
@@ -371,7 +354,6 @@ function M.create_buf_commands_for(bufnr, manifest)
 		if not manifest_arg or manifest_arg == "" then
 			manifest_arg = manifest or detect_manifest_from_buf(bufnr)
 		end
-		-- handle name@version form if user supplied it
 		name_arg, version_arg = split_name_version(name_arg, version_arg)
 		M.update(manifest_arg, name_arg, version_arg, scope_arg)
 	end, {
@@ -384,7 +366,6 @@ function M.create_buf_commands_for(bufnr, manifest)
 		if not manifest_arg or manifest_arg == "" then
 			manifest_arg = manifest or detect_manifest_from_buf(bufnr)
 		end
-		-- handle name@version form if user supplied it
 		name_arg, version_arg = split_name_version(name_arg, version_arg)
 		M.delete(manifest_arg, name_arg, version_arg, scope_arg)
 	end, {

@@ -3,6 +3,7 @@ local utils = require("lvim-dependencies.utils")
 local autocommands = require("lvim-dependencies.autocommands")
 local highlight = require("lvim-dependencies.ui.highlight")
 local cursor = require("lvim-dependencies.ui.cursor")
+require("lvim-dependencies.debug.instrument")
 
 local M = {}
 
@@ -12,7 +13,7 @@ M.setup = function(user_config)
 	end
 	autocommands.init()
 	highlight.init()
-    cursor.init()
+	cursor.init()
 end
 
 return M

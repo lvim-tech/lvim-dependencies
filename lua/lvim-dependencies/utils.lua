@@ -1,4 +1,5 @@
 local config = require("lvim-dependencies.config")
+local const = require("lvim-dependencies.const")
 
 local M = {}
 
@@ -76,18 +77,22 @@ M.normalize_entry_val = function(val)
 end
 
 M.normalize_version_spec = function(v)
-	if not v then return nil end
+	if not v then
+		return nil
+	end
 	v = tostring(v):gsub("^%s*", ""):gsub("%s*$", "")
-	-- strip common operators (^, ~, >=, <=, =, >, <)
 	v = v:gsub("^[%s%~%^><=]+", "")
 	local sem = v:match("(%d+%.%d+%.%d+)")
-	if sem then return sem end
+	if sem then
+		return sem
+	end
 	sem = v:match("(%d+%.%d+)")
-	if sem then return sem end
+	if sem then
+		return sem
+	end
 	local tok = v:match("(%d+)")
 	return tok
 end
-
 
 M.clean_version = function(value)
 	if type(value) ~= "string" then
@@ -131,14 +136,6 @@ M.read_file = function(path)
 	return table.concat(lines, "\n")
 end
 
-local LOCK_CANDIDATES = {
-	composer = { "composer.lock" },
-	pubspec = { "pubspec.lock" },
-	package = { "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml" },
-	crates = { "Cargo.lock" },
-	go = { "go.sum" },
-}
-
 M.find_lock_for_manifest = function(bufnr, manifest_key)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 	local start_dir = M.get_buffer_dir(bufnr) or vim.fn.getcwd()
@@ -146,7 +143,7 @@ M.find_lock_for_manifest = function(bufnr, manifest_key)
 		start_dir = vim.fn.getcwd()
 	end
 
-	local candidates = LOCK_CANDIDATES[manifest_key] or {}
+	local candidates = const.LOCK_CANDIDATES[manifest_key] or {}
 	local cur = vim.fn.fnamemodify(start_dir, ":p")
 	local seen = {}
 
@@ -166,6 +163,49 @@ M.find_lock_for_manifest = function(bufnr, manifest_key)
 	end
 
 	return nil
+end
+
+-- Check if package exists in lock file for given manifest type
+M.is_package_in_lock = function(manifest, name)
+	local lock_path = M.find_lock_for_manifest(nil, manifest)
+
+	if not lock_path then
+		return false
+	end
+
+	local ok, lines = pcall(vim.fn.readfile, lock_path)
+	if not ok or type(lines) ~= "table" then
+		return false
+	end
+
+	-- Escape special pattern characters in package name
+	local escaped_name = vim.pesc(name)
+
+	for _, line in ipairs(lines) do
+		if manifest == "pubspec" then
+			if line:match("^%s+" .. escaped_name .. "%s*:") then
+				return true
+			end
+		elseif manifest == "crates" then
+			if line:match('name%s*=%s*"' .. escaped_name .. '"') then
+				return true
+			end
+		elseif manifest == "package" then
+			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
+				return true
+			end
+		elseif manifest == "composer" then
+			if line:match('"' .. escaped_name .. '"') then
+				return true
+			end
+		elseif manifest == "go" then
+			if line:match(escaped_name) then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 return M

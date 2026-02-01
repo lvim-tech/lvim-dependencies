@@ -1,5 +1,7 @@
+local api = vim.api
+
+local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
-local inspect = vim.inspect
 local L = vim.log.levels
 
 local M = {}
@@ -16,11 +18,16 @@ end
 
 local function find_pubspec_path()
 	local cwd = vim.fn.getcwd()
+	local manifest_files = const.MANIFEST_FILES.pubspec or { "pubspec.yaml", "pubspec.yml" }
+
 	while true do
-		local candidate = cwd .. "/pubspec.yaml"
-		if vim.fn.filereadable(candidate) == 1 then
-			return candidate
+		for _, filename in ipairs(manifest_files) do
+			local candidate = cwd .. "/" .. filename
+			if vim.fn.filereadable(candidate) == 1 then
+				return candidate
+			end
 		end
+
 		local parent = vim.fn.fnamemodify(cwd, ":h")
 		if parent == cwd or parent == "" then
 			break
@@ -46,7 +53,6 @@ local function write_lines(path, lines)
 	return true
 end
 
--- Helper: find section start index for "dependencies" or "dev_dependencies"
 local function find_section_index(lines, section_name)
 	for i, ln in ipairs(lines) do
 		if ln:match("^%s*" .. vim.pesc(section_name) .. "%s*:") then
@@ -56,7 +62,6 @@ local function find_section_index(lines, section_name)
 	return nil
 end
 
--- Helper: determine section end index (first following non-indented top-level line or EOF)
 local function find_section_end(lines, section_idx)
 	local section_end = #lines
 	for i = section_idx + 1, #lines do
@@ -69,25 +74,19 @@ local function find_section_end(lines, section_idx)
 	return section_end
 end
 
--- Replace package entry (scalar or block) inside given section.
--- Returns new_lines (table) and true on success. If package not found, returns nil,false.
 local function replace_package_in_section(lines, section_idx, section_end, pkg_name, new_line)
 	for i = section_idx + 1, section_end do
 		local ln = lines[i]
-		-- match start of an entry: optional indent, name:
 		local m_name = ln:match("^%s*([%w%-%_%.]+)%s*:")
 		if m_name and tostring(m_name) == tostring(pkg_name) then
-			-- found package start
 			local pkg_indent = ln:match("^(%s*)") or ""
 			local pkg_indent_len = #pkg_indent
-			-- Determine block end: include subsequent lines that are more indented than package line
 			local block_end = i
 			for j = i + 1, section_end do
 				local next_ln = lines[j]
 				if not next_ln then
 					break
 				end
-				-- empty line or top-level (non-space) ends block
 				if next_ln:match("^%S") then
 					break
 				end
@@ -99,7 +98,6 @@ local function replace_package_in_section(lines, section_idx, section_end, pkg_n
 				end
 			end
 
-			-- Build new lines: lines[1..i-1] + { new_line } + lines[block_end+1 .. end]
 			local out = {}
 			for k = 1, i - 1 do
 				out[#out + 1] = lines[k]
@@ -114,8 +112,7 @@ local function replace_package_in_section(lines, section_idx, section_end, pkg_n
 	return nil, false
 end
 
--- Insert package scalar line under section (at section_idx+1)
-local function insert_package_in_section(lines, section_idx, pkg_name, new_line)
+local function insert_package_in_section(lines, section_idx, new_line)
 	local out = {}
 	for k = 1, section_idx do
 		out[#out + 1] = lines[k]
@@ -127,17 +124,54 @@ local function insert_package_in_section(lines, section_idx, pkg_name, new_line)
 	return out, true
 end
 
--- Semver-ish helpers used to sort versions descending
+local function remove_package_from_section(lines, section_idx, section_end, pkg_name)
+	for i = section_idx + 1, section_end do
+		local ln = lines[i]
+		local m_name = ln:match("^%s*([%w%-%_%.]+)%s*:")
+		if m_name and tostring(m_name) == tostring(pkg_name) then
+			local pkg_indent = ln:match("^(%s*)") or ""
+			local pkg_indent_len = #pkg_indent
+			local block_end = i
+			for j = i + 1, section_end do
+				local next_ln = lines[j]
+				if not next_ln then
+					break
+				end
+				if next_ln:match("^%S") then
+					break
+				end
+				local next_indent = next_ln:match("^(%s*)") or ""
+				if #next_indent > pkg_indent_len then
+					block_end = j
+				else
+					break
+				end
+			end
+
+			local out = {}
+			for k = 1, i - 1 do
+				out[#out + 1] = lines[k]
+			end
+			for k = block_end + 1, #lines do
+				out[#out + 1] = lines[k]
+			end
+			return out
+		end
+	end
+	return nil
+end
+
 local function version_parts(v)
-	if not v then return nil end
+	if not v then
+		return nil
+	end
 	v = tostring(v)
-	-- remove quotes and surrounding whitespace/comments
-	v = v:gsub('["\',]', ""):gsub("^%s*", ""):gsub("%s*$", "")
-	-- strip common operators ^ ~ >= <= = < >
+	v = v:gsub("[\"',]", ""):gsub("^%s*", ""):gsub("%s*$", "")
 	v = v:gsub("^[%s%~%^><=]+", "")
-	-- extract main numeric part (x.y.z or x.y or x)
 	local main = v:match("^(%d+%.%d+%.%d+)") or v:match("^(%d+%.%d+)") or v:match("^(%d+)")
-	if not main then return nil end
+	if not main then
+		return nil
+	end
 	local major, minor, patch = main:match("^(%d+)%.(%d+)%.(%d+)")
 	if major and minor and patch then
 		return { tonumber(major), tonumber(minor), tonumber(patch) }
@@ -155,21 +189,29 @@ local function version_parts(v)
 end
 
 local function compare_version_parts(a, b)
-	-- nil means unparseable/lowest
-	if not a and not b then return 0 end
-	if not a then return -1 end
-	if not b then return 1 end
+	if not a and not b then
+		return 0
+	end
+	if not a then
+		return -1
+	end
+	if not b then
+		return 1
+	end
 	for i = 1, 3 do
 		local ai = a[i] or 0
 		local bi = b[i] or 0
-		if ai > bi then return 1 end
-		if ai < bi then return -1 end
+		if ai > bi then
+			return 1
+		end
+		if ai < bi then
+			return -1
+		end
 	end
 	return 0
 end
 
--- Synchronous fetch (keeps compatibility)
-function M.fetch_versions(name, opts)
+function M.fetch_versions(name, _)
 	if not name or name == "" then
 		return nil
 	end
@@ -199,38 +241,87 @@ function M.fetch_versions(name, opts)
 		return nil
 	end
 
-	-- collect versions (unique)
 	local seen, uniq = {}, {}
 	for _, v in ipairs(raw_versions) do
 		local ver = nil
-		if type(v) == "table" and v.version then ver = tostring(v.version) end
-		if type(v) == "string" then ver = tostring(v) end
-		if ver and not seen[ver] then
+		local is_retracted = false
+
+		if type(v) == "table" then
+			ver = v.version and tostring(v.version)
+			-- Filter out retracted versions
+			is_retracted = v.retracted == true
+		elseif type(v) == "string" then
+			ver = tostring(v)
+		end
+
+		-- Skip retracted versions
+		if ver and not seen[ver] and not is_retracted then
 			seen[ver] = true
 			uniq[#uniq + 1] = ver
 		end
 	end
 
-	-- sort uniq by semver desc (highest first). Entries unparseable go to bottom in original order.
 	table.sort(uniq, function(a, b)
 		local pa = version_parts(a)
 		local pb = version_parts(b)
 		local cmp = compare_version_parts(pa, pb)
 		if cmp == 0 then
-			-- preserve original lexical order for equals (or fallback to string compare)
 			return a > b
 		end
-		return cmp == 1 -- a > b means a should come before b (desc)
+		return cmp == 1
 	end)
 
 	return { versions = uniq, current = current }
 end
 
--- Async helper to run pub get and handle success/rollback
-local function run_pub_get_with_rollback(path, old_lines, name, version, scope)
-	-- decide command
-	local has_flutter = false
+local function refresh_buffer(path, fresh_lines)
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	---@diagnostic disable-next-line: deprecated
+	pcall(api.nvim_buf_set_lines, bufnr, 0, -1, false, fresh_lines)
+
+	if saved_cursor then
+		pcall(api.nvim_win_set_cursor, cur_win, saved_cursor)
+	end
+
+	---@diagnostic disable-next-line: deprecated
+	pcall(api.nvim_buf_set_option, bufnr, "modified", false)
+
+	-- DON'T refresh virtual text if update is in progress
+	-- Virtual text will be refreshed after pub get completes
+	local ok_state, state = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(state.get_updating) == "function" then
+		local is_updating = state.get_updating()
+		if is_updating then
+			-- Skip virtual text refresh during update
+			return
+		end
+	end
+
+	-- Refresh virtual text only if NOT updating
+	pcall(function()
+		local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+		if ok_vt and type(vt.display) == "function" then
+			pcall(vt.display, bufnr)
+		end
+	end)
+end
+
+-- Run pub get to sync lockfile with pubspec.yaml changes
+local function run_pub_get(path, name, version, scope, on_success_msg)
 	local lines = read_lines(path)
+	local has_flutter = false
 	if lines then
 		for _, l in ipairs(lines) do
 			if l:match("^%s*flutter%s*:") then
@@ -241,21 +332,27 @@ local function run_pub_get_with_rollback(path, old_lines, name, version, scope)
 	end
 
 	local cmd
+	local cwd = vim.fn.fnamemodify(path, ":h")
+
 	if has_flutter and vim.fn.executable("flutter") == 1 then
 		cmd = { "flutter", "pub", "get" }
 	elseif vim.fn.executable("dart") == 1 then
 		cmd = { "dart", "pub", "get" }
 	else
-		utils.notify_safe("pubspec: neither flutter nor dart CLI available to run pub get", L.ERROR, {})
-		-- restore to be safe
-		if old_lines then
-			pcall(write_lines, path, old_lines)
-		end
+		utils.notify_safe("pubspec: neither flutter nor dart CLI available", L.ERROR, {})
 		return
 	end
 
+	-- Set updating flag BEFORE starting job to block auto-parsing
+	local ok_state, state = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(state.set_updating) == "function" then
+		pcall(state.set_updating, true)
+	end
+
 	local out, err = {}, {}
+
 	vim.fn.jobstart(cmd, {
+		cwd = cwd,
 		stdout_buffered = true,
 		stderr_buffered = true,
 		on_stdout = function(_, data, _)
@@ -275,47 +372,201 @@ local function run_pub_get_with_rollback(path, old_lines, name, version, scope)
 		on_exit = function(_, code, _)
 			vim.schedule(function()
 				if code == 0 then
-					utils.notify_safe("pubspec: pub get finished successfully", L.INFO, {})
-					-- update in-memory state if available
-					local ok_state, state = pcall(require, "lvim-dependencies.state")
-					if ok_state and type(state.add_installed_dependency) == "function" then
-						pcall(state.add_installed_dependency, "pubspec", name, version, scope)
+					utils.notify_safe(
+						on_success_msg or ("pubspec: %s@%s installed"):format(name, tostring(version)),
+						L.INFO,
+						{}
+					)
+
+					local fresh_lines = read_lines(path)
+					if fresh_lines then
+						refresh_buffer(path, fresh_lines)
 					end
-					-- emit user event so UI can refresh
-					pcall(function()
-						vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-						vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
-					end)
+
+					if name and version and scope then
+						local ok_st, st = pcall(require, "lvim-dependencies.state")
+						if ok_st and type(st.add_installed_dependency) == "function" then
+							pcall(st.add_installed_dependency, "pubspec", name, version, scope)
+						end
+
+						-- Trigger full re-parse after delay (wait for pub get to finish completely)
+						vim.defer_fn(function()
+							local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.pubspec")
+							if ok_parser and type(parser.parse_buffer) == "function" then
+								local buf = vim.fn.bufnr(path)
+								if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
+									-- Clear updating flag BEFORE re-parse so parser runs
+									local ok_s, s = pcall(require, "lvim-dependencies.state")
+									if ok_s and type(s.set_updating) == "function" then
+										pcall(s.set_updating, false)
+									end
+
+									-- Parse buffer first
+									pcall(parser.parse_buffer, buf)
+
+									-- Force outdated check after parsing with per-package cache invalidation
+									vim.defer_fn(function()
+										local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+
+										-- Invalidate cache ONLY for the updated package (not all packages)
+										if ok_chk and type(chk.invalidate_package_cache) == "function" then
+											pcall(chk.invalidate_package_cache, buf, "pubspec", name)
+										end
+
+										-- NOW check outdated (will refetch only this package's latest version)
+										if ok_chk and type(chk.check_manifest_outdated) == "function" then
+											pcall(chk.check_manifest_outdated, buf, "pubspec")
+										end
+									end, 300)
+								end
+							end
+						end, 1500)
+
+						pcall(function()
+							vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
+							---@diagnostic disable-next-line: deprecated
+							vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+						end)
+					end
 				else
-					-- rollback: restore old file
+					-- Clear flag on error
+					local ok_s, s = pcall(require, "lvim-dependencies.state")
+					if ok_s and type(s.set_updating) == "function" then
+						pcall(s.set_updating, false)
+					end
+
 					local msg = table.concat(err, "\n")
 					if msg == "" then
 						msg = "pub get exited with code " .. tostring(code)
 					end
-					local okw, werr = pcall(write_lines, path, old_lines)
-					if not okw then
-						utils.notify_safe(
-							("pubspec: pub get failed: %s\nAlso failed to restore pubspec.yaml: %s"):format(
-								msg,
-								tostring(werr)
-							),
-							L.ERROR,
-							{}
-						)
-					else
-						utils.notify_safe(
-							("pubspec: pub get failed; restored pubspec.yaml. Error: %s"):format(msg),
-							L.ERROR,
-							{}
-						)
-					end
+					utils.notify_safe(("pubspec: pub get failed. Error: %s"):format(msg), L.ERROR, {})
 				end
 			end)
 		end,
 	})
 end
 
--- Update signature: M.update(name, opts)
+-- Run pub remove to remove a package
+local function run_pub_remove(path, name)
+	local lines = read_lines(path)
+	local has_flutter = false
+	if lines then
+		for _, l in ipairs(lines) do
+			if l:match("^%s*flutter%s*:") then
+				has_flutter = true
+				break
+			end
+		end
+	end
+
+	local cmd
+	local cwd = vim.fn.fnamemodify(path, ":h")
+
+	if has_flutter and vim.fn.executable("flutter") == 1 then
+		cmd = { "flutter", "pub", "remove", name }
+	elseif vim.fn.executable("dart") == 1 then
+		cmd = { "dart", "pub", "remove", name }
+	else
+		utils.notify_safe("pubspec: neither flutter nor dart CLI available", L.ERROR, {})
+		return
+	end
+
+	-- Set updating flag BEFORE starting job
+	local ok_state, state = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(state.set_updating) == "function" then
+		pcall(state.set_updating, true)
+	end
+
+	local out, err = {}, {}
+
+	vim.fn.jobstart(cmd, {
+		cwd = cwd,
+		stdout_buffered = true,
+		stderr_buffered = true,
+		on_stdout = function(_, data, _)
+			if data then
+				for _, ln in ipairs(data) do
+					out[#out + 1] = ln
+				end
+			end
+		end,
+		on_stderr = function(_, data, _)
+			if data then
+				for _, ln in ipairs(data) do
+					err[#err + 1] = ln
+				end
+			end
+		end,
+		on_exit = function(_, code, _)
+			vim.schedule(function()
+				if code == 0 then
+					utils.notify_safe(("pubspec: %s removed"):format(name), L.INFO, {})
+
+					local fresh_lines = read_lines(path)
+					if fresh_lines then
+						refresh_buffer(path, fresh_lines)
+					end
+
+					local ok_st, st = pcall(require, "lvim-dependencies.state")
+					if ok_st and type(st.remove_installed_dependency) == "function" then
+						pcall(st.remove_installed_dependency, "pubspec", name)
+					end
+
+					-- Re-parse after delay
+					vim.defer_fn(function()
+						local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.pubspec")
+						if ok_parser and type(parser.parse_buffer) == "function" then
+							local buf = vim.fn.bufnr(path)
+							if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
+								-- Clear flag BEFORE re-parse
+								local ok_s, s = pcall(require, "lvim-dependencies.state")
+								if ok_s and type(s.set_updating) == "function" then
+									pcall(s.set_updating, false)
+								end
+
+								pcall(parser.parse_buffer, buf)
+
+								-- Invalidate cache and check outdated
+								vim.defer_fn(function()
+									local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+
+									-- Invalidate cache for removed package
+									if ok_chk and type(chk.invalidate_package_cache) == "function" then
+										pcall(chk.invalidate_package_cache, buf, "pubspec", name)
+									end
+
+									-- Check outdated with fresh data for this package
+									if ok_chk and type(chk.check_manifest_outdated) == "function" then
+										pcall(chk.check_manifest_outdated, buf, "pubspec")
+									end
+								end, 300)
+							end
+						end
+					end, 1500)
+
+					pcall(function()
+						vim.g.lvim_deps_last_updated = name .. "@removed"
+						---@diagnostic disable-next-line: deprecated
+						vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+					end)
+				else
+					-- Clear flag on error
+					local ok_s, s = pcall(require, "lvim-dependencies.state")
+					if ok_s and type(s.set_updating) == "function" then
+						pcall(s.set_updating, false)
+					end
+
+					local msg = table.concat(err, "\n")
+					if msg == "" then
+						msg = "pub remove exited with code " .. tostring(code)
+					end
+					utils.notify_safe(("pubspec: pub remove failed. Error: %s"):format(msg), L.ERROR, {})
+				end
+			end)
+		end,
+	})
+end
+
 function M.update(name, opts)
 	if not name or name == "" then
 		return { ok = false, msg = "package name required" }
@@ -327,7 +578,15 @@ function M.update(name, opts)
 	end
 
 	local scope = opts.scope or "dependencies"
-	if scope ~= "dependencies" and scope ~= "dev_dependencies" then
+	local valid_scopes = const.SECTION_NAMES.pubspec or { "dependencies", "dev_dependencies" }
+	local scope_valid = false
+	for _, s in ipairs(valid_scopes) do
+		if scope == s then
+			scope_valid = true
+			break
+		end
+	end
+	if not scope_valid then
 		scope = "dependencies"
 	end
 
@@ -336,29 +595,22 @@ function M.update(name, opts)
 		return { ok = false, msg = "pubspec.yaml not found in project tree" }
 	end
 
+	-- Read current lines
 	local lines = read_lines(path)
 	if not lines then
-		return { ok = false, msg = "unable to read pubspec.yaml" }
+		return { ok = false, msg = "unable to read pubspec.yaml from disk" }
 	end
 
-	-- keep a copy for rollback
-	local old_lines = {}
-	for i = 1, #lines do
-		old_lines[i] = lines[i]
-	end
-
+	-- Find or create the section
 	local section_idx = find_section_index(lines, scope)
 	if not section_idx then
-		-- create section at end
 		lines[#lines + 1] = ""
 		lines[#lines + 1] = scope .. ":"
 		section_idx = #lines - 1
 	end
 
 	local section_end = find_section_end(lines, section_idx)
-	local pkg_indent = "  " -- default 2 spaces inside dependencies
-	-- prepare new scalar line (use package indent)
-	-- determine indent from first dependency line if any
+	local pkg_indent = "  "
 	local sample_ln = lines[section_idx + 1]
 	if sample_ln then
 		local s_indent = sample_ln:match("^(%s*)") or ""
@@ -368,52 +620,126 @@ function M.update(name, opts)
 	end
 	local new_line = string.format("%s%s: %s", pkg_indent, name, tostring(version))
 
-	-- try replace existing entry (scalar or block)
+	-- Replace or insert package
 	local new_lines, replaced = replace_package_in_section(lines, section_idx, section_end, name, new_line)
 	if not replaced then
-		-- insert new scalar line under section
-		new_lines, _ = insert_package_in_section(lines, section_idx, name, new_line)
+		new_lines, _ = insert_package_in_section(lines, section_idx, new_line)
 	end
 
-	-- (Optional) keep previous sorting behaviour for section entries unchanged here,
-	-- or add section sorting logic if you want file-level ordering.
-	-- For now we keep insertion/replacement, file sorting optional.
-
-	-- write the modified file
+	-- Write changes to disk
 	local okw, werr = write_lines(path, new_lines)
 	if not okw then
 		return { ok = false, msg = "failed to write pubspec.yaml: " .. tostring(werr) }
 	end
 
-	-- start pub get async and handle rollback on failure
-	run_pub_get_with_rollback(path, old_lines, name, version, scope)
+	-- If called from UI, run pub get and show notification
+	if opts.from_ui then
+		utils.notify_safe(("pubspec: updating %s to %s..."):format(name, tostring(version)), L.INFO, {})
+		run_pub_get(path, name, version, scope)
+		return { ok = true, msg = "started" }
+	end
 
-	utils.notify_safe(("pubspec: set %s -> %s and started pub get"):format(name, tostring(version)), L.INFO, {})
+	-- Otherwise just refresh the buffer
+	refresh_buffer(path, new_lines)
 
-	return { ok = true, msg = "started" }
+	-- Update state to reflect the new version immediately
+	local ok_state, state = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(state.add_installed_dependency) == "function" then
+		pcall(state.add_installed_dependency, "pubspec", name, version, scope)
+	end
+
+	-- Trigger event to re-check and refresh virtual text
+	pcall(function()
+		vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
+		---@diagnostic disable-next-line: deprecated
+		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+	end)
+
+	utils.notify_safe(("pubspec: %s -> %s"):format(name, tostring(version)), L.INFO, {})
+
+	return { ok = true, msg = "written" }
 end
 
-function M.add(name, opts)
-	utils.notify_safe(("pubspec.add called: name=%s opts=%s"):format(tostring(name), inspect(opts or {})), L.INFO, {})
-end
-function M.delete(name, opts)
-	utils.notify_safe(
-		("pubspec.delete called: name=%s opts=%s"):format(tostring(name), inspect(opts or {})),
-		L.INFO,
-		{}
-	)
+function M.add(_, _)
 	return { ok = true }
 end
-function M.install(opts)
+
+function M.delete(name, opts)
+	if not name or name == "" then
+		return { ok = false, msg = "package name required" }
+	end
+	opts = opts or {}
+
+	local scope = opts.scope or "dependencies"
+	local valid_scopes = const.SECTION_NAMES.pubspec or { "dependencies", "dev_dependencies" }
+	local scope_valid = false
+	for _, s in ipairs(valid_scopes) do
+		if scope == s then
+			scope_valid = true
+			break
+		end
+	end
+	if not scope_valid then
+		scope = "dependencies"
+	end
+
 	local path = find_pubspec_path()
 	if not path then
-		return { ok = false, msg = "pubspec.yaml not found" }
+		return { ok = false, msg = "pubspec.yaml not found in project tree" }
 	end
-	run_pub_get_with_rollback(path, read_lines(path), "<bulk-install>", nil, "dependencies")
-	return { ok = true, msg = "started" }
+
+	if opts.from_ui then
+		run_pub_remove(path, name)
+		utils.notify_safe(("pubspec: removing %s..."):format(name), L.INFO, {})
+		return { ok = true, msg = "started" }
+	end
+
+	local lines = read_lines(path)
+	if not lines then
+		return { ok = false, msg = "unable to read pubspec.yaml from disk" }
+	end
+
+	local section_idx = find_section_index(lines, scope)
+	if not section_idx then
+		return { ok = false, msg = "section " .. scope .. " not found" }
+	end
+
+	local section_end = find_section_end(lines, section_idx)
+	local new_lines = remove_package_from_section(lines, section_idx, section_end, name)
+	if not new_lines then
+		return { ok = false, msg = "package " .. name .. " not found in " .. scope }
+	end
+
+	local okw, werr = write_lines(path, new_lines)
+	if not okw then
+		return { ok = false, msg = "failed to write pubspec.yaml: " .. tostring(werr) }
+	end
+
+	refresh_buffer(path, new_lines)
+
+	-- Update state to remove the package
+	local ok_state, state = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(state.remove_installed_dependency) == "function" then
+		pcall(state.remove_installed_dependency, "pubspec", name)
+	end
+
+	-- Trigger event to re-check and refresh virtual text
+	pcall(function()
+		vim.g.lvim_deps_last_updated = name .. "@removed"
+		---@diagnostic disable-next-line: deprecated
+		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+	end)
+
+	utils.notify_safe(("pubspec: %s removed"):format(name), L.INFO, {})
+
+	return { ok = true, msg = "removed" }
 end
-function M.check_outdated(opts)
-	utils.notify_safe(("pubspec.check_outdated called: opts=%s"):format(inspect(opts or {})), L.INFO, {})
+
+function M.install(_)
+	return { ok = true }
+end
+
+function M.check_outdated(_)
 	return { ok = true }
 end
 

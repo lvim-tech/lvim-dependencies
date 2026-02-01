@@ -837,5 +837,50 @@ function M.clear_cache(bufnr, manifest_key)
 	end
 end
 
+-- -------------------------
+-- invalidate cache for specific package
+-- -------------------------
+function M.invalidate_package_cache(bufnr, manifest_key, package_name)
+	if not bufnr or not manifest_key or not package_name then
+		return
+	end
+
+	versions_cache[manifest_key] = versions_cache[manifest_key] or {}
+	local cache = versions_cache[manifest_key][bufnr]
+
+	if not cache then
+		return
+	end
+
+	-- Remove from data cache
+	if cache.data and cache.data[package_name] then
+		cache.data[package_name] = nil
+	end
+
+	-- Remove from pending
+	if cache.pending and cache.pending[package_name] then
+		cache.pending[package_name] = nil
+	end
+
+	-- Clear negative cache for this package
+	clear_negative_cache(manifest_key, package_name)
+
+	-- CRITICAL: Reset last_fetched_at to force re-fetch on next check_manifest_outdated
+	cache.last_fetched_at = nil
+end
+
+-- -------------------------
+-- invalidate cache for multiple packages
+-- -------------------------
+function M.invalidate_packages_cache(bufnr, manifest_key, package_names)
+	if not package_names or type(package_names) ~= "table" then
+		return
+	end
+
+	for _, name in ipairs(package_names) do
+		M.invalidate_package_cache(bufnr, manifest_key, name)
+	end
+end
+
 -- expose
 return M
