@@ -63,7 +63,14 @@ local function build(title, subtitle, subject, lines, is_input)
 		table.insert(header, subject)
 		table.insert(header, "") -- Extra empty line after subject
 	end
+
+	-- Add spacing before input/content
 	if #header > 0 then
+		table.insert(header, "")
+	end
+
+	-- INPUT MODE: Add extra empty line before input field
+	if is_input and #header > 0 then
 		table.insert(header, "")
 	end
 
@@ -269,6 +276,19 @@ local function open(header, content, footer, cfg, title, subtitle, subject, cb, 
 	if is_input then
 		api.nvim_set_option_value("modifiable", true, { buf = cbuf })
 		api.nvim_buf_set_lines(cbuf, 0, 1, false, { "" })
+
+		-- Apply input highlight to the entire line (background)
+		api.nvim_buf_set_extmark(cbuf, NS, 0, 0, {
+			end_line = 0,
+			line_hl_group = G.input,
+			priority = 100,
+		})
+
+		-- MARK this buffer as input mode to show cursor
+		local ok_cursor, cursor = pcall(require, "lvim-dependencies.ui.cursor")
+		if ok_cursor and type(cursor.mark_input_buffer) == "function" then
+			cursor.mark_input_buffer(cbuf, true)
+		end
 
 		-- Start in insert mode
 		vim.schedule(function()

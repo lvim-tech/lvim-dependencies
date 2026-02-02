@@ -13,112 +13,250 @@ local clean_version = utils.clean_version
 
 local M = {}
 
--- ------------------------------------------------------------
--- Lock cache (critical for performance on large pnpm-lock.yaml)
--- ------------------------------------------------------------
-local lock_cache = {
-	key = nil, -- lock_path .. "::" .. sha256(lock_content)
-	versions = nil,
-}
-
-local function trim_quotes(v)
-	v = tostring(v or "")
-	v = v:gsub("^%s*", ""):gsub("%s*$", "")
-	v = v:gsub("^['\"]", ""):gsub("['\"]$", "")
-	return v
-end
-
-local function normalize_semverish(v)
-	v = trim_quotes(v)
-	if v == "" then
-		return nil
-	end
-	-- keep leading semver-ish part if present (handles 1.2.3(foo@bar))
-	return v:match("^([0-9]+%.[0-9]+%.[0-9]+[%w%-%._]*)") or v:match("^([0-9]+%.[0-9]+[%w%-%._]*)") or v
-end
-
-local function pnpm_key_to_name_version(key)
-	if not key or key == "" then
-		return nil, nil
-	end
-	key = trim_quotes(key)
-	key = key:gsub("^/", "")
-
-	local name, ver = key:match("^(.+)@(%d+%.%d+%.%d+[^%(]*)")
-	if not ver then
-		name, ver = key:match("^(.+)@(%d+%.%d+[^%(]*)")
-	end
-	if not (name and ver) then
-		return nil, nil
-	end
-
-	name = name:gsub("%s*$", "")
-	ver = normalize_semverish(ver)
-	return name, ver
-end
-
--- Fast pnpm parser: scan only snapshots:/packages: keys and derive name->resolvedVersion
-local function parse_pnpm_snapshots_packages_fast(content)
-	local versions = {}
-	local lines = split(content or "", "\n")
-
-	local in_section = false
-
-	for _, line in ipairs(lines) do
-		if line:match("^snapshots:%s*$") or line:match("^packages:%s*$") then
-			in_section = true
-		elseif line:match("^[^%s]") and not (line:match("^snapshots:%s*$") or line:match("^packages:%s*$")) then
-			in_section = false
-		end
-
-		if in_section then
-			-- 2-space indented YAML key
-			local key = line:match("^%s%s'([^']+)'%s*:%s*$")
-				or line:match('^%s%s"([^"]+)"%s*:%s*$')
-				or line:match("^%s%s([^%s].-)%s*:%s*$")
-
-			if key and key ~= "" then
-				local name, ver = pnpm_key_to_name_version(key)
-				if name and ver then
-					versions[name] = versions[name] or ver
-				end
-			end
-		end
-	end
-
-	return versions
-end
-
 -- Try parse lock files and extract resolved versions (pnpm-lock.yaml / package-lock.json)
-local function parse_lock_file_from_content(content, lock_path)
+local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return {}
 	end
 
-	-- Cache key: lock path + sha of content
-	local cache_key = (lock_path or "") .. "::" .. fn.sha256(content)
-	if lock_cache.key == cache_key and type(lock_cache.versions) == "table" then
-		return lock_cache.versions
-	end
-
-	local versions = {}
-
-	-- pnpm-lock.yaml detection (fast path)
+	-- pnpm-lock.yaml detection
 	if content:match("^lockfileVersion:") or content:match("\nlockfileVersion:") then
-		versions = parse_pnpm_snapshots_packages_fast(content)
+		local versions = {}
+		local lines = split(content, "\n")
 
-		lock_cache.key = cache_key
-		lock_cache.versions = versions
+		local function normalize_val(v)
+			v = tostring(v or ""):gsub("^%s*['\"]", ""):gsub("['\"]%s*$", "")
+			if v == "" then
+				return nil
+			end
+			-- keep leading semver-ish part if present (handles 1.2.3(foo@bar))
+			return v:match("^([0-9]+%.[0-9]+%.[0-9]+[%w%-%._]*)") or v
+		end
+
+		local function match_pkg_key(line, indent_spaces)
+			-- match either:
+			--   <indent>name:
+			--   <indent>"@scope/name":
+			--   <indent>'@scope/name':
+			local indent = string.rep("%s", indent_spaces)
+			return line:match("^" .. indent .. '"([%w%-%_@/%.]+)"%s*:%s*$')
+				or line:match("^" .. indent .. "'([%w%-%_@/%.]+)'%s*:%s*$")
+				or line:match("^" .. indent .. "([%w%-%_@/%.]+):%s*$")
+		end
+
+		local function match_field(line, indent_spaces, field)
+			local indent = string.rep("%s", indent_spaces)
+			return line:match("^" .. indent .. field .. ":%s*(.+)%s*$")
+		end
+
+		-- ---------------------------
+		-- Fix 2: parse resolved versions from snapshots:/packages:
+		-- ---------------------------
+		-- pnpm v9+: snapshots:
+		--   '@babel/core@8.0.0-rc.1':
+		-- pnpm older: packages:
+		--   /@babel/core@8.0.0-rc.1:
+		--
+		-- We extract:
+		--   versions["@babel/core"] = "8.0.0-rc.1"
+		--
+		-- NOTE: snapshot keys can include parentheses:
+		--   'foo@1.2.3(bar@4.5.6)'
+		-- We only keep leading version segment.
+		local mode = "none" -- "none" | "snapshots" | "packages"
+		for _, line in ipairs(lines) do
+			if line:match("^snapshots:%s*$") then
+				mode = "snapshots"
+			elseif line:match("^packages:%s*$") then
+				mode = "packages"
+			elseif line:match("^[^%s]") then
+				-- leaving section on next top-level key
+				if not line:match("^snapshots:%s*$") and not line:match("^packages:%s*$") then
+					mode = "none"
+				end
+			end
+
+			if mode ~= "none" then
+				-- snapshots keys examples (2 space indent):
+				--   '@babel/core@8.0.0-rc.1':
+				--   "@babel/core@8.0.0-rc.1":
+				--   copy-webpack-plugin@13.0.1(webpack@5.0.0):
+				local key = line:match("^%s%s'([^']+)'%s*:%s*$")
+					or line:match('^%s%s"([^"]+)"%s*:%s*$')
+					or line:match("^%s%s([^%s].-)%s*:%s*$")
+
+				if key and key ~= "" then
+					-- packages: keys might start with "/" (older pnpm): "/name@1.2.3"
+					key = key:gsub("^/", "")
+
+					-- Derive name + version by splitting at the last "@<version>" segment.
+					-- Works for:
+					--   name@1.2.3
+					--   @scope/name@1.2.3
+					--   @scope/name@1.2.3(whatever@x)
+					local name, ver = key:match("^(.+)@(%d+%.%d+%.%d+[^%s%(]*)")
+					if not ver then
+						name, ver = key:match("^(.+)@(%d+%.%d+[^%s%(]*)")
+					end
+
+					if name and ver then
+						-- cleanup any trailing decoration for name
+						name = name:gsub("%s*$", "")
+						versions[name] = normalize_val(ver) or versions[name]
+					end
+				end
+			end
+		end
+
+		-- ---------------------------
+		-- Supplement: importers/top-level deps presence (and fallback if snapshots missing)
+		-- ---------------------------
+		-- If snapshots/packages parsing produced no data (some pnpm edge cases),
+		-- we fallback to importers/top-level version fields as before.
+		if vim.tbl_isempty(versions) then
+			-- pnpm layouts:
+			-- 1) top-level dependencies/devDependencies
+			-- 2) importers: .: dependencies/devDependencies (pnpm v9+ / monorepos)
+			local imode = "none" -- "top" | "importers"
+			local in_importer_dot = false
+			local in_deps = false
+			local in_dev = false
+			local current = nil
+
+			local function reset_sections()
+				in_deps = false
+				in_dev = false
+				current = nil
+			end
+
+			for _, line in ipairs(lines) do
+				-- detect top-level blocks / mode switches
+				if line:match("^dependencies:%s*$") then
+					imode = "top"
+					in_deps = true
+					in_dev = false
+					current = nil
+				elseif line:match("^devDependencies:%s*$") then
+					imode = "top"
+					in_deps = false
+					in_dev = true
+					current = nil
+				elseif line:match("^importers:%s*$") then
+					imode = "importers"
+					in_importer_dot = false
+					reset_sections()
+				end
+
+				-- -----------------
+				-- imode == top
+				-- -----------------
+				if imode == "top" then
+					-- leave when another top-level key starts
+					if
+						line:match("^[^%s]")
+						and not line:match("^dependencies:%s*$")
+						and not line:match("^devDependencies:%s*$")
+					then
+						reset_sections()
+					end
+
+					if in_deps or in_dev then
+						-- keys at indent=2
+						local pkg = match_pkg_key(line, 2)
+						if pkg then
+							current = pkg
+						end
+
+						if current then
+							-- fields at indent=4
+							local ver = match_field(line, 4, "version")
+							if ver then
+								versions[current] = normalize_val(ver) or versions[current]
+								current = nil
+							else
+								local spec = match_field(line, 4, "specifier")
+								if spec then
+									-- fallback: at least mark it as present in lock
+									versions[current] = normalize_val(spec) or versions[current]
+									current = nil
+								end
+							end
+						end
+					end
+
+				-- -----------------
+				-- imode == importers
+				-- -----------------
+				elseif imode == "importers" then
+					-- importer header can be: "  .:" or "  \".\":"
+					if line:match("^%s%s%.:%s*$") or line:match('^%s%s"%."%s*:%s*$') then
+						in_importer_dot = true
+						reset_sections()
+					elseif
+						line:match("^%s%s[^%s].-:%s*$")
+						and not (line:match("^%s%s%.:%s*$") or line:match('^%s%s"%."%s*:%s*$'))
+					then
+						-- entering another importer (not ".")
+						in_importer_dot = false
+						reset_sections()
+					end
+
+					if in_importer_dot then
+						-- inside importer ".", deps blocks at indent=4
+						if line:match("^%s%s%s%sdependencies:%s*$") then
+							in_deps = true
+							in_dev = false
+							current = nil
+						elseif line:match("^%s%s%s%sdevDependencies:%s*$") then
+							in_deps = false
+							in_dev = true
+							current = nil
+						elseif
+							line:match("^%s%s%s%s[^%s].-:%s*$")
+							and not line:match("^%s%s%s%s(dependencies|devDependencies):%s*$")
+						then
+							-- leaving deps blocks at importer level when another 4-space key starts
+							reset_sections()
+						end
+
+						if in_deps or in_dev then
+							-- package keys at indent=6
+							local pkg = match_pkg_key(line, 6)
+							if pkg then
+								current = pkg
+							end
+
+							if current then
+								-- fields at indent=8
+								local ver = match_field(line, 8, "version")
+								if ver then
+									versions[current] = normalize_val(ver) or versions[current]
+									current = nil
+								else
+									local spec = match_field(line, 8, "specifier")
+									if spec then
+										-- fallback: at least mark it as present in lock
+										versions[current] = normalize_val(spec) or versions[current]
+										current = nil
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+
 		return versions
 	end
 
 	-- JSON lock (package-lock.json / npm-shrinkwrap.json)
 	local ok, parsed = pcall(decoder.parse_json, content)
 	if not ok or type(parsed) ~= "table" then
-		lock_cache.key = cache_key
-		lock_cache.versions = {}
 		return {}
 	end
+
+	local versions = {}
 
 	-- npm v7+ has packages table
 	if parsed.packages and type(parsed.packages) == "table" then
@@ -141,8 +279,6 @@ local function parse_lock_file_from_content(content, lock_path)
 		end
 	end
 
-	lock_cache.key = cache_key
-	lock_cache.versions = versions
 	return versions
 end
 
@@ -156,6 +292,7 @@ local function parse_package_fallback_lines(lines)
 		if not s then
 			return nil
 		end
+		-- remove line comments and simple block comments, then trim and drop trailing commas
 		local t = s:gsub("//.*$", ""):gsub("/%*.-%*/", ""):gsub(",%s*$", ""):match("^%s*(.-)%s*$")
 		if t == "" then
 			return nil
@@ -169,16 +306,19 @@ local function parse_package_fallback_lines(lines)
 		local started = false
 		local last_idx = start_idx
 
+		-- scan until block end (no artificial limit)
 		for i = start_idx, #lines do
 			local raw_line = lines[i]
 			local line = strip_comments_and_trim(raw_line)
 			if not line then
 				last_idx = i
 			else
+				-- detect object start
 				if not started and line:find("{", 1, true) then
 					started = true
 				end
 
+				-- update brace level
 				for c in line:gmatch(".") do
 					if c == "{" then
 						brace_level = brace_level + 1
@@ -187,6 +327,7 @@ local function parse_package_fallback_lines(lines)
 					end
 				end
 
+				-- capture simple "name": "version" entries (handles quoted keys)
 				for name, ver in line:gmatch([[%s*["']?([%w%-%_@/%.]+)["']?%s*:%s*["']([^"']+)["']%s*,?]]) do
 					if name and ver then
 						tbl[name] = ver
@@ -343,10 +484,12 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			return
 		end
 
+		-- save buffer meta
 		if state.save_buffer then
 			state.save_buffer(bufnr, "package", api.nvim_buf_get_name(bufnr), buffer_lines)
 		end
 
+		-- ensure + clear manifest container
 		if state.ensure_manifest then
 			state.ensure_manifest("package")
 		end
@@ -354,6 +497,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			state.clear_manifest("package")
 		end
 
+		-- prefer per-dependency API to capture scopes; fallback to bulk set_installed
 		local used_add = false
 		if state.add_installed_dependency then
 			used_add = true
@@ -374,6 +518,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			end
 		end
 
+		-- invalids and outdated placeholder
 		if state.set_invalid then
 			state.set_invalid("package", invalid_dependencies)
 		end
@@ -381,6 +526,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			state.set_outdated("package", state.get_dependencies("package").outdated or {})
 		end
 
+		-- update buffer cached lines/last run metadata
 		if state.update_buffer_lines then
 			state.update_buffer_lines(bufnr, buffer_lines)
 		end
@@ -388,14 +534,18 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			state.update_last_run(bufnr)
 		end
 
+		-- attach last parsed snapshot to buffer for caching
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].last_package_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
+		state.buffers[bufnr].last_package_parsed =
+			{ installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
 
+		-- compute and store hash
 		state.buffers[bufnr].last_package_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
+		-- render virtual text and trigger checker
 		require("lvim-dependencies.ui.virtual_text").display(bufnr, "package")
 		require("lvim-dependencies.actions.check_manifests").check_manifest_outdated(bufnr, "package")
 	end)
@@ -423,6 +573,7 @@ M.parse_buffer = function(bufnr)
 	local buffer_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
 	local content = table_concat(buffer_lines, "\n")
 
+	-- quick hash check
 	local current_hash = fn.sha256(content)
 	if state.buffers[bufnr].last_package_hash and state.buffers[bufnr].last_package_hash == current_hash then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
@@ -455,7 +606,7 @@ M.parse_buffer = function(bufnr)
 			local lock_versions = nil
 			if lock_path then
 				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content, lock_path)
+				lock_versions = parse_lock_file_from_content(lock_content)
 			end
 
 			if lock_versions and type(lock_versions) == "table" then
@@ -486,7 +637,7 @@ M.parse_buffer = function(bufnr)
 			local lock_versions = nil
 			if lock_path then
 				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content, lock_path)
+				lock_versions = parse_lock_file_from_content(lock_content)
 			end
 			if lock_versions and type(lock_versions) == "table" then
 				for name in pairs(conv.dependencies or {}) do
@@ -508,13 +659,11 @@ M.parse_buffer = function(bufnr)
 	return state.buffers[bufnr].last_package_parsed
 end
 
-M.parse_lock_file_content = function(content)
-	return parse_lock_file_from_content(content, nil)
-end
+M.parse_lock_file_content = parse_lock_file_from_content
 
 M.parse_lock_file_path = function(lock_path)
 	local content = utils.read_file(lock_path)
-	return parse_lock_file_from_content(content, lock_path)
+	return parse_lock_file_from_content(content)
 end
 
 M.filename = "package.json"

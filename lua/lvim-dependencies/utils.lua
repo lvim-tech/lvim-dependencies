@@ -20,9 +20,14 @@ M.merge = function(base, override)
 end
 
 M.notify_safe = function(msg, level, opts)
-	if config.notify then
+	if config.notify.enabled then
 		vim.schedule(function()
-			pcall(vim.notify, msg, level, opts)
+			local default_opts = {
+				title = config.notify.title,
+				timeout = config.notify.timeout,
+			}
+			local final_opts = vim.tbl_extend("force", default_opts, opts or {})
+			pcall(vim.notify, msg, level, final_opts)
 		end)
 	end
 end
@@ -173,6 +178,18 @@ M.is_package_in_lock = function(manifest, name)
 		return false
 	end
 
+	-- For package manifest, use the parser to get accurate results
+	if manifest == "package" then
+		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
+		if ok_parser and type(parser.parse_lock_file_path) == "function" then
+			local ok_parse, lock_versions = pcall(parser.parse_lock_file_path, lock_path)
+			if ok_parse and type(lock_versions) == "table" then
+				return lock_versions[name] ~= nil
+			end
+		end
+	end
+
+	-- Fallback to old regex-based approach for other manifests
 	local ok, lines = pcall(vim.fn.readfile, lock_path)
 	if not ok or type(lines) ~= "table" then
 		return false
@@ -191,6 +208,7 @@ M.is_package_in_lock = function(manifest, name)
 				return true
 			end
 		elseif manifest == "package" then
+			-- This branch should not be reached due to parser above
 			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
 				return true
 			end

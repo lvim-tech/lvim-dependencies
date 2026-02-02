@@ -4,14 +4,22 @@ local schedule = vim.schedule
 local M = {}
 
 local POPUP_FILETYPES = { "LvimDeps" }
+local INPUT_BUFFERS = {} -- Track input-mode buffers
 local _blend_augroup_id = api.nvim_create_augroup("LvimDepsPopupBlendGroup", { clear = true })
 
+-- Public function to mark buffer as input
+function M.mark_input_buffer(bufnr, is_input)
+	if is_input then
+		INPUT_BUFFERS[bufnr] = true
+	else
+		INPUT_BUFFERS[bufnr] = nil
+	end
+end
+
 local function get_cursor_hl()
-	-- prefer new API nvim_get_hl when available
 	if type(api.nvim_get_hl) == "function" then
 		local ok, hl = pcall(api.nvim_get_hl, 0, { name = "Cursor" })
 		if ok and type(hl) == "table" then
-			-- return raw table, we will access keys safely via string indexing
 			return hl
 		end
 	end
@@ -19,14 +27,11 @@ local function get_cursor_hl()
 end
 
 local function set_cursor_blend(value)
-	-- schedule on main loop; protect with pcall
 	schedule(function()
 		pcall(function()
 			local cur = get_cursor_hl()
-			-- only set blend if nvim_set_hl is available
 			if type(api.nvim_set_hl) == "function" and type(cur) == "table" then
 				local hl = {}
-				-- preserve colors/attrs if present (access via string-keys to avoid LSP warnings)
 				local fg = cur["foreground"] or cur["fg"]
 				local bg = cur["background"] or cur["bg"]
 				local sp = cur["special"] or cur["sp"]
@@ -80,6 +85,10 @@ local function is_popup_buffer(bufnr)
 	return vim.tbl_contains(POPUP_FILETYPES, ft)
 end
 
+local function is_input_buffer(bufnr)
+	return INPUT_BUFFERS[bufnr] == true
+end
+
 local function any_window_has_popup()
 	for _, win in ipairs(api.nvim_list_wins()) do
 		if api.nvim_win_is_valid(win) then
@@ -101,6 +110,12 @@ local function update_cursor_state()
 
 	local ok_buf, cur_buf = pcall(api.nvim_win_get_buf, cur_win)
 	if not ok_buf or not cur_buf or not api.nvim_buf_is_valid(cur_buf) then
+		set_cursor_blend(0)
+		return
+	end
+
+	-- CRITICAL: Show cursor in input buffers
+	if is_input_buffer(cur_buf) then
 		set_cursor_blend(0)
 		return
 	end
@@ -127,7 +142,11 @@ function M.init()
 
 	api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufUnload" }, {
 		group = _blend_augroup_id,
-		callback = function(_)
+		callback = function(ev)
+			-- Clean up tracking when buffer is deleted
+			if ev.buf then
+				INPUT_BUFFERS[ev.buf] = nil
+			end
 			update_cursor_state()
 		end,
 	})
@@ -138,6 +157,7 @@ function M.init()
 			set_cursor_blend(0)
 		end,
 	})
+
 	api.nvim_create_autocmd("CmdlineLeave", {
 		group = _blend_augroup_id,
 		callback = function(_)

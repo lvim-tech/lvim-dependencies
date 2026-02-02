@@ -18,7 +18,7 @@ end
 
 local function find_pubspec_path()
 	local cwd = vim.fn.getcwd()
-	local manifest_files = const.MANIFEST_FILES.pubspec or { "pubspec.yaml", "pubspec.yml" }
+	local manifest_files = const.MANIFEST_FILES.pubspec
 
 	while true do
 		for _, filename in ipairs(manifest_files) do

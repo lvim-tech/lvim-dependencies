@@ -55,10 +55,11 @@ local M = {
 				line_active = "LvimDepsLineActive",
 				line_inactive = "LvimDepsLineInactive",
 				navigation = "LvimDepsNavigation",
+				input = "LvimDepsInsert",
 				outdated = "LvimDepsOutdatedVersion",
 				up_to_date = "LvimDepsUpToDateVersion",
 				invalid = "LvimDepsInvalidVersion",
-                lock_diff = "LvimDepsLockDiff",
+				lock_diff = "LvimDepsLockDiff",
 				constraint_newer = "LvimDepsConstraintNewer",
 				separator = "LvimDepsSeparator",
 				loading = "LvimDepsLoading",
@@ -97,7 +98,11 @@ local M = {
 		show_info = "<leader>di",
 		open_docs = "<leader>dd",
 	},
-	notify = true,
+	notify = {
+		enabled = true,
+        title = "LvimDeps",
+		timeout = 5000,
+	},
 }
 
 return M

@@ -439,7 +439,7 @@ local function schedule_publish(bufnr, manifest_key)
 				if cmp == 1 then
 					final[name] = { current = inst.current, latest = info.latest, constraint_newer = true }
 				elseif cmp == 0 then
-					-- same => skip
+					final[name] = { current = inst.current, latest = info.latest, up_to_date = true }
 				else
 					final[name] = { current = inst.current, latest = info.latest }
 				end

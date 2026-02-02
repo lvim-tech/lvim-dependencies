@@ -50,6 +50,11 @@ function M.init()
 		fg = config.ui.highlight.colors.fg,
 		default = true,
 	})
+	define_hl_if_missing(config.ui.highlight.groups.input, {
+		bg = config.ui.highlight.colors.up_to_date,
+		fg = config.ui.highlight.colors.bg,
+		default = true,
+	})
 	define_hl_if_missing(config.ui.highlight.groups.outdated, {
 		fg = config.ui.highlight.colors.outdated,
 		default = true,

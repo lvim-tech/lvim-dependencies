@@ -90,7 +90,7 @@ local function find_current_section(lines, line_idx, manifest_key)
 		local depth = 0
 		for i = line_idx - 1, 1, -1 do
 			local ln = lines[i]
-
+			
 			-- Count braces
 			local close_count = select(2, ln:gsub("}", ""))
 			local open_count = select(2, ln:gsub("{", ""))
@@ -157,7 +157,7 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 
 	if manifest_key == "package" or manifest_key == "composer" then
 		local section = find_current_section(lines, line_idx, manifest_key)
-
+		
 		if not section then
 			return nil
 		end
@@ -174,7 +174,7 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 				break
 			end
 		end
-
+		
 		return parts[1]
 	elseif manifest_key == "crates" then
 		local section = find_current_section(lines, line_idx, manifest_key)
@@ -253,7 +253,7 @@ local function is_package_in_lock_file(manifest_key, dep_name)
 	local cache_key = manifest_key .. ":" .. dep_name
 	local now = fn.reltime()
 
-	-- cache
+	-- Check cache
 	if lock_file_cache[cache_key] then
 		local cached = lock_file_cache[cache_key]
 		local elapsed_ms = fn.reltimefloat(fn.reltime(cached.time, now)) * 1000
@@ -263,25 +263,14 @@ local function is_package_in_lock_file(manifest_key, dep_name)
 	end
 
 	local lock_path = find_lock_file_path(manifest_key)
+	
 	if not lock_path then
 		lock_file_cache[cache_key] = { result = false, time = now }
 		return false
 	end
 
-	-- For package manifests use the lock parser (pnpm/npm/yarn)
-	if manifest_key == "package" then
-		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
-		if ok_parser and parser and type(parser.parse_lock_file_path) == "function" then
-			local ok_parse, lock_versions = pcall(parser.parse_lock_file_path, lock_path)
-			local found = (ok_parse and type(lock_versions) == "table" and lock_versions[dep_name] ~= nil) or false
-			lock_file_cache[cache_key] = { result = found, time = now }
-			return found
-		end
-		-- if parser missing, fall through to line-scan fallback
-	end
-
-	-- fallback line-scan for other manifests (and package if parser missing)
 	local ok, lines = pcall(fn.readfile, lock_path)
+	
 	if not ok or type(lines) ~= "table" then
 		lock_file_cache[cache_key] = { result = false, time = now }
 		return false
@@ -291,23 +280,18 @@ local function is_package_in_lock_file(manifest_key, dep_name)
 	local found = false
 
 	for _, line in ipairs(lines) do
-		if manifest_key == "pubspec" then
+		if manifest_key == "package" then
+			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
+				found = true
+				break
+			end
+		elseif manifest_key == "pubspec" then
 			if line:match("^%s+" .. escaped_name .. "%s*:") then
 				found = true
 				break
 			end
 		elseif manifest_key == "crates" then
 			if line:match('name%s*=%s*"' .. escaped_name .. '"') then
-				found = true
-				break
-			end
-		elseif manifest_key == "package" then
-			-- fallback: support both JSON and pnpm yaml style
-			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
-				found = true
-				break
-			end
-			if line:match("^%s%s" .. escaped_name .. "%s*:%s*$") then
 				found = true
 				break
 			end
@@ -377,6 +361,19 @@ local function build_virt_parts(manifest_key, dep_name, declared)
 	local latest = (outdated and outdated.latest) and tostring(outdated.latest) or nil
 	local cur = (installed and installed.current) and tostring(installed.current) or nil
 
+	local function append_lock_diff_if_needed(parts)
+		if not declared or not cur then
+			return parts
+		end
+		local declared_norm = normalize_version_spec(declared)
+		local cur_norm = normalize_version_spec(cur)
+		if declared_norm and cur_norm and declared_norm ~= cur_norm then
+			parts[#parts + 1] = { " ", hl.separator }
+			parts[#parts + 1] = { ("(Different in lock - %s)"):format(cur), hl.lock_diff or hl.invalid }
+		end
+		return parts
+	end
+
 	if latest then
 		local latest_s = tostring(latest)
 		local is_up_to_date = (cur ~= nil and cur == latest_s)
@@ -392,37 +389,38 @@ local function build_virt_parts(manifest_key, dep_name, declared)
 			return { { vt_cfg.prefix, hl.separator }, { txt, hl.constraint_newer } }
 		end
 
+		local base_parts = nil
 		if is_up_to_date then
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-				return {
+				base_parts = {
 					{ vt_cfg.prefix, hl.separator },
 					{ vt_cfg.icon_when_up_to_date .. " " .. latest_s, hl.up_to_date },
 				}
 			else
-				return { { vt_cfg.prefix, hl.separator }, { latest_s, hl.up_to_date } }
+				base_parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.up_to_date } }
 			end
 		else
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_outdated then
-				return {
-					{ vt_cfg.prefix, hl.separator },
-					{ vt_cfg.icon_when_outdated .. " " .. latest_s, hl.outdated },
-				}
+				base_parts =
+					{ { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_outdated .. " " .. latest_s, hl.outdated } }
 			else
-				return { { vt_cfg.prefix, hl.separator }, { latest_s, hl.outdated } }
+				base_parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.outdated } }
 			end
 		end
+
+		return append_lock_diff_if_needed(base_parts)
 	end
 
 	if cur then
 		local cur_s = tostring(cur)
+		local parts = nil
 		if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-			return {
-				{ vt_cfg.prefix, hl.separator },
-				{ vt_cfg.icon_when_up_to_date .. " " .. cur_s, hl.up_to_date },
-			}
+			parts = { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_up_to_date .. " " .. cur_s, hl.up_to_date } }
 		else
-			return { { vt_cfg.prefix, hl.separator }, { cur_s, hl.up_to_date } }
+			parts = { { vt_cfg.prefix, hl.separator }, { cur_s, hl.up_to_date } }
 		end
+
+		return append_lock_diff_if_needed(parts)
 	end
 
 	return nil

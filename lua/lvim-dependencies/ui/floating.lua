@@ -8,27 +8,27 @@ local M = {}
 
 M.delete = function(manifest, name, version, scope)
 	if not manifest or manifest == "" then
-		utils.notify_safe("LvimDeps: manifest not provided", L.ERROR, {})
+		utils.notify_safe("manifest not provided", L.ERROR, {})
 		return
 	end
 	if not name or name == "" then
-		utils.notify_safe("LvimDeps: package name not provided", L.ERROR, {})
+		utils.notify_safe("package name not provided", L.ERROR, {})
 		return
 	end
 	if not scope or scope == "" then
-		utils.notify_safe("LvimDeps: scope not provided", L.ERROR, {})
+		utils.notify_safe("scope not provided", L.ERROR, {})
 		return
 	end
 
 	local ok, canonical_scope, verr = validator.validate_manifest_and_scope(manifest, scope)
 	if not ok then
-		utils.notify_safe(("LvimDeps: %s"):format(verr), L.ERROR, {})
+		utils.notify_safe(verr, L.ERROR, {})
 		return
 	end
 
 	-- Check if package is actually in lock file
 	if not utils.is_package_in_lock(manifest, name) then
-		utils.notify_safe(("LvimDeps: %s is not installed (not found in lock file)"):format(name), L.WARN, {})
+		utils.notify_safe(("%s is not installed (not found in lock file)"):format(name), L.WARN, {})
 		return
 	end
 
@@ -39,8 +39,7 @@ M.delete = function(manifest, name, version, scope)
 
 	local title = "DELETE"
 	local subtitle = ("Manifest: %s    Scope: %s"):format(tostring(manifest), tostring(canonical_scope))
-
-	local subject = "Изтрийте следния пакет"
+	local subject = "Delete the following package"
 	local lines = { display_name }
 
 	confirm.confirm_async(title, subtitle, subject, lines, function(confirmed)
@@ -50,12 +49,12 @@ M.delete = function(manifest, name, version, scope)
 
 		local module_name = const.ACTION_MAP[manifest]
 		if not module_name then
-			utils.notify_safe(("LvimDeps: unsupported manifest '%s'"):format(manifest), L.ERROR, {})
+			utils.notify_safe(("unsupported manifest '%s'"):format(manifest), L.ERROR, {})
 			return
 		end
 		local okreq, mod = pcall(require, module_name)
 		if not okreq or type(mod) ~= "table" or type(mod.delete) ~= "function" then
-			utils.notify_safe(("LvimDeps: cannot load delete action for %s"):format(manifest), L.ERROR, {})
+			utils.notify_safe(("cannot load delete action for %s"):format(manifest), L.ERROR, {})
 			return
 		end
 
@@ -67,29 +66,25 @@ M.delete = function(manifest, name, version, scope)
 
 		local success, res = pcall(mod.delete, name, opts)
 		if not success then
-			utils.notify_safe(("LvimDeps: delete action failed: %s"):format(tostring(res)), L.ERROR, {})
+			utils.notify_safe(("delete action failed: %s"):format(tostring(res)), L.ERROR, {})
 			return
 		end
 
 		if type(res) == "table" and res.ok == false then
-			utils.notify_safe(
-				("LvimDeps: failed to delete %s: %s"):format(name, tostring(res.msg or "unknown")),
-				L.ERROR,
-				{}
-			)
+			utils.notify_safe(("failed to delete %s: %s"):format(name, tostring(res.msg or "unknown")), L.ERROR, {})
 		else
-			utils.notify_safe(("LvimDeps: removed %s from %s"):format(name, tostring(manifest)), L.INFO, {})
+			utils.notify_safe(("removed %s from %s"):format(name, tostring(manifest)), L.INFO, {})
 		end
 	end)
 end
 
 M.update = function(manifest, name, version, scope)
 	if not manifest or manifest == "" then
-		utils.notify_safe("LvimDeps: manifest not provided", L.ERROR, {})
+		utils.notify_safe("manifest not provided", L.ERROR, {})
 		return
 	end
 	if not name or name == "" then
-		utils.notify_safe("LvimDeps: package name not provided", L.ERROR, {})
+		utils.notify_safe("package name not provided", L.ERROR, {})
 		return
 	end
 
@@ -97,7 +92,7 @@ M.update = function(manifest, name, version, scope)
 	if scope and scope ~= "" then
 		local ok, cs, verr = validator.validate_manifest_and_scope(manifest, scope)
 		if not ok then
-			utils.notify_safe(("LvimDeps: %s"):format(verr), L.ERROR, {})
+			utils.notify_safe(verr, L.ERROR, {})
 			return
 		end
 		canonical_scope = cs
@@ -105,13 +100,13 @@ M.update = function(manifest, name, version, scope)
 
 	local module_name = const.ACTION_MAP[manifest]
 	if not module_name then
-		utils.notify_safe(("LvimDeps: unsupported manifest '%s'"):format(manifest), L.ERROR, {})
+		utils.notify_safe(("unsupported manifest '%s'"):format(manifest), L.ERROR, {})
 		return
 	end
 
 	local okreq, mod = pcall(require, module_name)
 	if not okreq or type(mod) ~= "table" then
-		utils.notify_safe(("LvimDeps: cannot load update action for %s"):format(manifest), L.ERROR, {})
+		utils.notify_safe(("cannot load update action for %s"):format(manifest), L.ERROR, {})
 		return
 	end
 
@@ -129,7 +124,7 @@ M.update = function(manifest, name, version, scope)
 		opts.from_ui = true
 
 		if type(mod.update) ~= "function" then
-			utils.notify_safe(("LvimDeps: update action not implemented for %s"):format(manifest), L.ERROR, {})
+			utils.notify_safe(("update action not implemented for %s"):format(manifest), L.ERROR, {})
 			return
 		end
 
@@ -137,18 +132,14 @@ M.update = function(manifest, name, version, scope)
 			return mod.update(name, opts)
 		end)
 		if not success then
-			utils.notify_safe(("LvimDeps: update action failed: %s"):format(tostring(res)), L.ERROR, {})
+			utils.notify_safe(("update action failed: %s"):format(tostring(res)), L.ERROR, {})
 			return
 		end
 
 		if type(res) == "table" and res.ok == false then
-			utils.notify_safe(
-				("LvimDeps: failed to update %s: %s"):format(name, tostring(res.msg or "unknown")),
-				L.ERROR,
-				{}
-			)
+			utils.notify_safe(("failed to update %s: %s"):format(name, tostring(res.msg or "unknown")), L.ERROR, {})
 		else
-			utils.notify_safe(("LvimDeps: updated %s in %s"):format(name, tostring(manifest)), L.INFO, {})
+			utils.notify_safe(("updated %s in %s"):format(name, tostring(manifest)), L.INFO, {})
 		end
 	end
 
@@ -273,25 +264,25 @@ end
 
 M.install = function(manifest)
 	if not manifest or manifest == "" then
-		utils.notify_safe("LvimDeps: manifest not provided", L.ERROR, {})
+		utils.notify_safe("manifest not provided", L.ERROR, {})
 		return
 	end
 
 	local module_name = const.ACTION_MAP[manifest]
 	if not module_name then
-		utils.notify_safe(("LvimDeps: unsupported manifest '%s'"):format(manifest), L.ERROR, {})
+		utils.notify_safe(("unsupported manifest '%s'"):format(manifest), L.ERROR, {})
 		return
 	end
 
 	local okreq, mod = pcall(require, module_name)
 	if not okreq or type(mod) ~= "table" then
-		utils.notify_safe(("LvimDeps: cannot load install action for %s"):format(manifest), L.ERROR, {})
+		utils.notify_safe(("cannot load install action for %s"):format(manifest), L.ERROR, {})
 		return
 	end
 
 	-- Step 1: Ask for package name
 	confirm.input_async(
-		"📦 INSTALL PACKAGE",
+		"INSTALL",
 		("Manifest: %s"):format(tostring(manifest)),
 		"Enter package name...",
 		function(confirmed, package_name)
@@ -303,13 +294,13 @@ M.install = function(manifest)
 			package_name = package_name:match("^%s*(.-)%s*$")
 
 			if package_name == "" then
-				utils.notify_safe("LvimDeps: package name cannot be empty", L.WARN, {})
+				utils.notify_safe("package name cannot be empty", L.WARN, {})
 				return
 			end
 
 			-- Step 2: Fetch versions
 			if type(mod.fetch_versions) ~= "function" then
-				utils.notify_safe(("LvimDeps: fetch_versions not implemented for %s"):format(manifest), L.ERROR, {})
+				utils.notify_safe(("fetch_versions not implemented for %s"):format(manifest), L.ERROR, {})
 				return
 			end
 
@@ -318,7 +309,7 @@ M.install = function(manifest)
 			end)
 
 			if not okv or not versions_result then
-				utils.notify_safe(("LvimDeps: failed to fetch versions for %s"):format(package_name), L.ERROR, {})
+				utils.notify_safe(("failed to fetch versions for %s"):format(package_name), L.ERROR, {})
 				return
 			end
 
@@ -330,7 +321,7 @@ M.install = function(manifest)
 			end
 
 			if not versions or #versions == 0 then
-				utils.notify_safe(("LvimDeps: no versions found for %s"):format(package_name), L.WARN, {})
+				utils.notify_safe(("no versions found for %s"):format(package_name), L.WARN, {})
 				return
 			end
 
@@ -357,7 +348,7 @@ M.install = function(manifest)
 
 				local selected_version = index_map[selected_idx]
 				if not selected_version then
-					utils.notify_safe("LvimDeps: invalid version selection", L.ERROR, {})
+					utils.notify_safe("invalid version selection", L.ERROR, {})
 					return
 				end
 
@@ -375,7 +366,7 @@ M.install = function(manifest)
 				end
 
 				if #scope_lines == 0 then
-					utils.notify_safe(("LvimDeps: no valid scopes found for %s"):format(manifest), L.ERROR, {})
+					utils.notify_safe(("no valid scopes found for %s"):format(manifest), L.ERROR, {})
 					return
 				end
 
@@ -385,11 +376,7 @@ M.install = function(manifest)
 
 					-- Install the package
 					if type(mod.update) ~= "function" then
-						utils.notify_safe(
-							("LvimDeps: install action not implemented for %s"):format(manifest),
-							L.ERROR,
-							{}
-						)
+						utils.notify_safe(("install action not implemented for %s"):format(manifest), L.ERROR, {})
 						return
 					end
 
@@ -404,19 +391,19 @@ M.install = function(manifest)
 					end)
 
 					if not success then
-						utils.notify_safe(("LvimDeps: install failed: %s"):format(tostring(res)), L.ERROR, {})
+						utils.notify_safe(("install failed: %s"):format(tostring(res)), L.ERROR, {})
 						return
 					end
 
 					if type(res) == "table" and res.ok == false then
 						utils.notify_safe(
-							("LvimDeps: failed to install %s: %s"):format(package_name, tostring(res.msg or "unknown")),
+							("failed to install %s: %s"):format(package_name, tostring(res.msg or "unknown")),
 							L.ERROR,
 							{}
 						)
 					else
 						utils.notify_safe(
-							("Installing %s@%s in %s..."):format(package_name, selected_version, scope),
+							("installing %s@%s in %s..."):format(package_name, selected_version, scope),
 							L.INFO,
 							{}
 						)
@@ -446,17 +433,13 @@ M.install = function(manifest)
 
 						local scope = scope_map[scope_idx]
 						if not scope then
-							utils.notify_safe("LvimDeps: invalid scope selection", L.ERROR, {})
+							utils.notify_safe("invalid scope selection", L.ERROR, {})
 							return
 						end
 
 						-- Install the package
 						if type(mod.update) ~= "function" then
-							utils.notify_safe(
-								("LvimDeps: install action not implemented for %s"):format(manifest),
-								L.ERROR,
-								{}
-							)
+							utils.notify_safe(("install action not implemented for %s"):format(manifest), L.ERROR, {})
 							return
 						end
 
@@ -471,22 +454,19 @@ M.install = function(manifest)
 						end)
 
 						if not success then
-							utils.notify_safe(("LvimDeps: install failed: %s"):format(tostring(res)), L.ERROR, {})
+							utils.notify_safe(("install failed: %s"):format(tostring(res)), L.ERROR, {})
 							return
 						end
 
 						if type(res) == "table" and res.ok == false then
 							utils.notify_safe(
-								("LvimDeps: failed to install %s: %s"):format(
-									package_name,
-									tostring(res.msg or "unknown")
-								),
+								("failed to install %s: %s"):format(package_name, tostring(res.msg or "unknown")),
 								L.ERROR,
 								{}
 							)
 						else
 							utils.notify_safe(
-								("Installing %s@%s in %s..."):format(package_name, selected_version, scope),
+								("installing %s@%s in %s..."):format(package_name, selected_version, scope),
 								L.INFO,
 								{}
 							)
