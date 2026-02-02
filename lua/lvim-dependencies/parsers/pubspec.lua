@@ -16,66 +16,92 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
+-- ------------------------------------------------------------
+-- Lock parse cache (per lock_path + mtime + size)
+-- ------------------------------------------------------------
+local lock_cache = {
+	-- [lock_path] = { mtime=..., size=..., versions=table }
+}
+
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
 	end
 
-	-- try structured parse (YAML/JSON)
-	local parsed = nil
-	local ok, res = pcall(decoder.parse_yaml, content)
-	if ok and type(res) == "table" then
-		parsed = res
-	else
-		ok, res = pcall(decoder.parse_json, content)
-		if ok and type(res) == "table" then
-			parsed = res
-		end
-	end
-
-	if parsed and type(parsed) == "table" then
+	-- pubspec.lock is YAML
+	local ok, parsed = pcall(decoder.parse_yaml, content)
+	if ok and type(parsed) == "table" then
 		local versions = {}
-		if parsed.packages and type(parsed.packages) == "table" then
-			for name, info in pairs(parsed.packages) do
-				if info and type(info) == "table" and info.version then
+		local pkgs = parsed.packages
+		if type(pkgs) == "table" then
+			for name, info in pairs(pkgs) do
+				if type(info) == "table" and info.version then
 					versions[name] = tostring(info.version)
 				end
 			end
 		end
-		if next(versions) then
+		if next(versions) ~= nil then
 			return versions
 		end
 	end
 
-	-- fallback: simple line-based scan
+	-- Fallback: fast line scan (only what we need)
+	-- We scan:
+	--   <name>:
+	--     version: x.y.z
 	local versions = {}
 	local lines = split(content, "\n")
-	for i = 1, #lines do
-		local ln = lines[i]
+	local current = nil
+
+	for _, ln in ipairs(lines) do
 		local name = ln:match("^%s*([%w%-%_@/%.]+)%s*:%s*$")
 		if name then
-			for j = i + 1, #lines do
-				local vln = lines[j]
-				local ver = vln:match('^%s*version%s*:%s*"?(.-)"?%s*$')
+			current = name
+		else
+			if current then
+				local ver = ln:match('^%s*version%s*:%s*"?(.-)"?%s*$')
 				if ver and ver ~= "" then
-					versions[name] = tostring(ver)
-					break
-				end
-				-- stop when block ends (no indent)
-				if vln and not vln:match("^%s") then
-					break
+					versions[current] = tostring(ver)
+					current = nil
+				elseif ln:match("^[^%s]") then
+					-- end of block
+					current = nil
 				end
 			end
 		end
 	end
 
-	if next(versions) then
+	if next(versions) ~= nil then
 		return versions
 	end
-
 	return nil
 end
 
+local function get_lock_versions(lock_path)
+	if not lock_path then
+		return nil
+	end
+
+	-- Prefer cached read (returns content, mtime, size)
+	local content, mtime, size = utils.read_file_cached(lock_path)
+	if content == nil then
+		lock_cache[lock_path] = nil
+		return nil
+	end
+
+	local cached = lock_cache[lock_path]
+	if cached and cached.mtime == mtime and cached.size == size and type(cached.versions) == "table" then
+		return cached.versions
+	end
+
+	local versions = parse_lock_file_from_content(content)
+	lock_cache[lock_path] = { mtime = mtime, size = size, versions = versions }
+	return versions
+end
+
+-- ------------------------------------------------------------
+-- pubspec.yaml parsing
+-- ------------------------------------------------------------
 local function looks_like_platform_or_nonpub_entry(val_string, lookahead_lines)
 	if val_string and val_string:match("%s*sdk%s*:") then
 		return true
@@ -200,53 +226,37 @@ end
 
 local function parse_with_decoder(content, lines)
 	-- Try YAML parse first (pubspec is YAML); if it fails, fall back to line parser.
-	local parsed = nil
-	local ok, res = pcall(decoder.parse_yaml, content)
-	if ok and type(res) == "table" then
-		parsed = res
-	end
-
-	if parsed then
+	local ok, parsed = pcall(decoder.parse_yaml, content)
+	if ok and type(parsed) == "table" then
 		local deps = {}
 		local dev_deps = {}
+
 		local raw_deps = parsed.dependencies or parsed.depends
 		local raw_dev = parsed.dev_dependencies or parsed["dev_dependencies"] or parsed["dev-dependencies"]
 
-		if raw_deps and type(raw_deps) == "table" then
-			for name, val in pairs(raw_deps) do
+		local function collect(raw_tbl, out_tbl)
+			if not raw_tbl or type(raw_tbl) ~= "table" then
+				return
+			end
+			for name, val in pairs(raw_tbl) do
 				if type(val) == "table" then
 					if val.sdk or val.path or val.git then
 						-- skip platform/path/git entries
 					else
 						local raw, has = utils.normalize_entry_val(val)
 						local cur = has and (clean_version(raw) or tostring(raw)) or nil
-						deps[name] = { raw = raw, current = cur }
+						out_tbl[name] = { raw = raw, current = cur }
 					end
 				else
 					local raw, has = utils.normalize_entry_val(val)
 					local cur = has and (clean_version(raw) or tostring(raw)) or nil
-					deps[name] = { raw = raw, current = cur }
+					out_tbl[name] = { raw = raw, current = cur }
 				end
 			end
 		end
 
-		if raw_dev and type(raw_dev) == "table" then
-			for name, val in pairs(raw_dev) do
-				if type(val) == "table" then
-					if val.sdk or val.path or val.git then
-						-- skip
-					else
-						local raw, has = utils.normalize_entry_val(val)
-						local cur = has and (clean_version(raw) or tostring(raw)) or nil
-						dev_deps[name] = { raw = raw, current = cur }
-					end
-				else
-					local raw, has = utils.normalize_entry_val(val)
-					local cur = has and (clean_version(raw) or tostring(raw)) or nil
-					dev_deps[name] = { raw = raw, current = cur }
-				end
-			end
-		end
+		collect(raw_deps, deps)
+		collect(raw_dev, dev_deps)
 
 		return { dependencies = deps, devDependencies = dev_deps }
 	end
@@ -275,6 +285,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			installed_dependencies[name] = {
 				current = info.current,
 				raw = info.raw,
+				in_lock = info.in_lock,
 				_source = source,
 			}
 		end
@@ -288,45 +299,46 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			return
 		end
 
-		-- save buffer meta
-		state.save_buffer(bufnr, "pubspec", api.nvim_buf_get_name(bufnr), buffer_lines)
+		-- save buffer meta (guard)
+		if state.save_buffer then
+			state.save_buffer(bufnr, "pubspec", api.nvim_buf_get_name(bufnr), buffer_lines)
+		end
 
-		-- Update state: ensure + clear manifest container
 		state.ensure_manifest("pubspec")
 		state.clear_manifest("pubspec")
 
-		-- prefer per-dependency add API if available
-		if state.add_installed_dependency then
-			for name, info in pairs(installed_dependencies) do
-				local scope = info._source or "dependencies"
-				state.add_installed_dependency("pubspec", name, info.current, scope)
-			end
-		else
-			state.set_installed("pubspec", installed_dependencies)
+		-- ------------------------------------------------------------
+		-- UNIVERSAL INSTALLED SHAPE:
+		-- Always set installed entries as table: {current, raw, in_lock, scopes}
+		-- We do NOT rely on state.add_installed_dependency (it can create string entries).
+		-- ------------------------------------------------------------
+		local bulk = {}
+		for name, info in pairs(installed_dependencies) do
+			local scope = info._source or "dependencies"
+			bulk[name] = {
+				current = info.current,
+				raw = info.raw,
+				in_lock = info.in_lock == true, -- normalize to boolean
+				scopes = { [scope] = true },
+			}
 		end
+		state.set_installed("pubspec", bulk)
 
-		-- invalids
 		state.set_invalid("pubspec", invalid_dependencies)
-
-		-- maintain outdated state (keep previous value if checker will update it later)
 		state.set_outdated("pubspec", state.get_dependencies("pubspec").outdated or {})
 
-		-- update buffer cached lines/last run metadata
 		state.update_buffer_lines(bufnr, buffer_lines)
 		state.update_last_run(bufnr)
 
-		-- attach last parsed snapshot to buffer for caching
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
 		state.buffers[bufnr].last_pubspec_parsed =
 			{ installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
 
-		-- compute and store hash
 		state.buffers[bufnr].last_pubspec_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
-		-- render virtual text and trigger checker
 		vt.display(bufnr, "pubspec")
 		checker.check_manifest_outdated(bufnr, "pubspec")
 	end)
@@ -342,7 +354,6 @@ M.parse_buffer = function(bufnr)
 	if state.get_updating and type(state.get_updating) == "function" then
 		local is_updating = state.get_updating()
 		if is_updating then
-			-- Update is in progress, skip parsing to preserve outdated info
 			return nil
 		end
 	end
@@ -363,7 +374,6 @@ M.parse_buffer = function(bufnr)
 	local buffer_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
 	local content = table_concat(buffer_lines, "\n")
 
-	-- quick hash check
 	local current_hash = fn.sha256(content)
 	if state.buffers[bufnr].last_pubspec_hash and state.buffers[bufnr].last_pubspec_hash == current_hash then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
@@ -391,52 +401,31 @@ M.parse_buffer = function(bufnr)
 		local fresh_content = table_concat(fresh_lines, "\n")
 
 		local ok_decode, parsed = pcall(parse_with_decoder, fresh_content, fresh_lines)
-		if ok_decode and parsed then
-			local lock_path = utils.find_lock_for_manifest(bufnr, "pubspec")
-			local lock_versions = nil
-			if lock_path then
-				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content)
-			end
-			if lock_versions and type(lock_versions) == "table" then
-				for name, info in pairs(parsed.dependencies or {}) do
-					if lock_versions[name] then
-						info.current = lock_versions[name]
-					end
-				end
-				for name, info in pairs(parsed.devDependencies or {}) do
-					if lock_versions[name] then
-						info.current = lock_versions[name]
-					end
-				end
-			end
-
-			do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
-		else
+		if not (ok_decode and parsed) then
 			local fb_deps, fb_dev = parse_pubspec_fallback_lines(fresh_lines)
-			local conv = { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
-
-			local lock_path = utils.find_lock_for_manifest(bufnr, "pubspec")
-			local lock_versions = nil
-			if lock_path then
-				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content)
-			end
-			if lock_versions and type(lock_versions) == "table" then
-				for name in pairs(conv.dependencies or {}) do
-					if lock_versions[name] then
-						conv.dependencies[name].current = lock_versions[name]
-					end
-				end
-				for name in pairs(conv.devDependencies or {}) do
-					if lock_versions[name] then
-						conv.devDependencies[name].current = lock_versions[name]
-					end
-				end
-			end
-
-			do_parse_and_update(bufnr, conv, fresh_lines, fresh_content)
+			parsed = { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
 		end
+
+		-- apply lock versions (cached)
+		local lock_path = utils.find_lock_for_manifest(bufnr, "pubspec")
+		local lock_versions = lock_path and get_lock_versions(lock_path) or nil
+
+		local function apply_lock(tbl)
+			for name, info in pairs(tbl or {}) do
+				if lock_versions and lock_versions[name] then
+					info.current = lock_versions[name]
+					info.in_lock = true
+				else
+					-- keep current derived from manifest constraint, but mark as not in lock
+					info.in_lock = false
+				end
+			end
+		end
+
+		apply_lock(parsed.dependencies)
+		apply_lock(parsed.devDependencies)
+
+		do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
 	end, 20)
 
 	return state.buffers[bufnr].last_pubspec_parsed

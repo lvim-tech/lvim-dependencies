@@ -67,12 +67,16 @@ function M.init()
 		fg = config.ui.highlight.colors.invalid,
 		default = true,
 	})
-	define_hl_if_missing(config.ui.highlight.groups.lock_diff, {
-		fg = config.ui.highlight.colors.lock_diff,
+	define_hl_if_missing(config.ui.highlight.groups.not_installed, {
+		fg = config.ui.highlight.colors.not_installed,
 		default = true,
 	})
-	define_hl_if_missing(config.ui.highlight.groups.constraint_newer, {
-		fg = config.ui.highlight.colors.constraint_newer,
+	define_hl_if_missing(config.ui.highlight.groups.resolved, {
+		fg = config.ui.highlight.colors.resolved,
+		default = true,
+	})
+	define_hl_if_missing(config.ui.highlight.groups.constraint, {
+		fg = config.ui.highlight.colors.constraint,
 		default = true,
 	})
 	define_hl_if_missing(config.ui.highlight.groups.separator, {

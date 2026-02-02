@@ -6,17 +6,13 @@ local const = require("lvim-dependencies.const")
 local config = require("lvim-dependencies.config")
 local state = require("lvim-dependencies.state")
 local validator = require("lvim-dependencies.validator")
+local utils = require("lvim-dependencies.utils")
 
 local M = {}
 
--- Localize common config tables for speed
 local vt_cfg = config.ui.virtual_text
 local hl = config.ui.highlight.groups
 local perf = config.performance
-
--- Cache for lock file checks to avoid repeated disk reads
-local lock_file_cache = {}
-local lock_file_cache_ttl = 5000
 
 local function ensure_namespace()
 	state.namespace = state.namespace or {}
@@ -30,24 +26,6 @@ local function filename_to_manifest_key(filename)
 		return mk
 	end
 	return const.MANIFEST_KEYS[filename]
-end
-
-local function normalize_version_spec(v)
-	if not v then
-		return nil
-	end
-	v = tostring(v):gsub("^%s*", ""):gsub("%s*$", "")
-	v = v:gsub("^[%s%~%^><=]+", "")
-	local sem = v:match("(%d+%.%d+%.%d+)")
-	if sem then
-		return sem
-	end
-	sem = v:match("(%d+%.%d+)")
-	if sem then
-		return sem
-	end
-	local tok = v:match("(%d+)")
-	return tok
 end
 
 local function get_declared_version_from_line(line, manifest_key)
@@ -74,7 +52,7 @@ local function get_declared_version_from_line(line, manifest_key)
 		v = v:gsub('[",]$', "")
 		return vim.trim(v)
 	elseif manifest_key == "go" then
-		local v = line:match("^%s*[^%s]+%s+([v%d%.%-%+]+)")
+		local v = line:match("^%s*[^%s]+%s+([v%d%.%-%+%w]+)")
 		return v and vim.trim(v) or nil
 	end
 	return nil
@@ -90,14 +68,9 @@ local function find_current_section(lines, line_idx, manifest_key)
 		local depth = 0
 		for i = line_idx - 1, 1, -1 do
 			local ln = lines[i]
-
-			-- Count braces
 			local close_count = select(2, ln:gsub("}", ""))
 			local open_count = select(2, ln:gsub("{", ""))
 			depth = depth + close_count - open_count
-
-			-- When we hit depth == -1, we've found an opening brace
-			-- Check if this line is a section header
 			if depth == -1 then
 				for _, section in ipairs(sections) do
 					local pattern = string.format([["%s"%s*:]], section:gsub("%-", "%%-"))
@@ -157,12 +130,10 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 
 	if manifest_key == "package" or manifest_key == "composer" then
 		local section = find_current_section(lines, line_idx, manifest_key)
-
 		if not section then
 			return nil
 		end
 
-		-- Skip lines that look like section headers (simple check)
 		if line:match([[:%s*{%s*$]]) then
 			return nil
 		end
@@ -174,14 +145,12 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 				break
 			end
 		end
-
 		return parts[1]
 	elseif manifest_key == "crates" then
 		local section = find_current_section(lines, line_idx, manifest_key)
 		if not section then
 			return nil
 		end
-
 		return line:match("^%s*([%w_%-]+)%s*=")
 	elseif manifest_key == "pubspec" then
 		local section = find_current_section(lines, line_idx, manifest_key)
@@ -194,7 +163,6 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 			return nil
 		end
 
-		-- Exclude special Flutter/Dart keywords
 		local excluded = {
 			sdk = true,
 			git = true,
@@ -231,205 +199,274 @@ local function get_dependency_name_from_line(line, manifest_key, lines, line_idx
 	return nil
 end
 
-local function find_lock_file_path(manifest_key)
-	local cwd = fn.getcwd()
-	local candidates = const.LOCK_CANDIDATES[manifest_key]
+local function get_loading_parts()
+	return { { vt_cfg.prefix, hl.separator }, { vt_cfg.loading, hl.loading } }
+end
 
-	if not candidates then
+-- ------------------------------------------------------------
+-- node_modules version cache (only used for visible packages)
+-- ------------------------------------------------------------
+local node_modules_cache = {
+	-- [name] = { mtime=..., size=..., version="x.y.z" or nil }
+}
+
+local function get_node_modules_version(dep_name)
+	if not dep_name or dep_name == "" then
 		return nil
 	end
 
-	for _, lock_file in ipairs(candidates) do
-		local lock_path = cwd .. "/" .. lock_file
-		if fn.filereadable(lock_path) == 1 then
-			return lock_path
-		end
+	local cwd = fn.getcwd()
+	local pkg_json = cwd .. "/node_modules/" .. dep_name .. "/package.json"
+
+	local st = utils.fs_stat(pkg_json)
+	if not st then
+		node_modules_cache[dep_name] = nil
+		return nil
 	end
 
-	return nil
+	local mtime = (st.mtime and st.mtime.sec) or 0
+	local size = st.size or 0
+
+	local cached = node_modules_cache[dep_name]
+	if cached and cached.mtime == mtime and cached.size == size then
+		return cached.version
+	end
+
+	local content = utils.read_file(pkg_json)
+	if not content or content == "" then
+		node_modules_cache[dep_name] = { mtime = mtime, size = size, version = nil }
+		return nil
+	end
+
+	local ok, parsed = pcall(vim.fn.json_decode, content)
+	local ver = (ok and type(parsed) == "table" and parsed.version and tostring(parsed.version)) or nil
+
+	node_modules_cache[dep_name] = { mtime = mtime, size = size, version = ver }
+	return ver
 end
 
-local function is_package_in_lock_file(manifest_key, dep_name)
-	local cache_key = manifest_key .. ":" .. dep_name
-	local now = fn.reltime()
-
-	-- cache
-	if lock_file_cache[cache_key] then
-		local cached = lock_file_cache[cache_key]
-		local elapsed_ms = fn.reltimefloat(fn.reltime(cached.time, now)) * 1000
-		if elapsed_ms < lock_file_cache_ttl then
-			return cached.result
-		end
+local function declared_target_from(declared_raw, manifest_key)
+	declared_raw = declared_raw and vim.trim(tostring(declared_raw)) or ""
+	if declared_raw == "" then
+		return nil
 	end
 
-	local lock_path = find_lock_file_path(manifest_key)
-	if not lock_path then
-		lock_file_cache[cache_key] = { result = false, time = now }
-		return false
+	if manifest_key == "go" then
+		return declared_raw
 	end
 
-	-- For package manifests use the lock parser (pnpm/npm/yarn)
-	if manifest_key == "package" then
-		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
-		if ok_parser and parser and type(parser.parse_lock_file_path) == "function" then
-			local ok_parse, lock_versions = pcall(parser.parse_lock_file_path, lock_path)
-			local found = (ok_parse and type(lock_versions) == "table" and lock_versions[dep_name] ~= nil) or false
-			lock_file_cache[cache_key] = { result = found, time = now }
-			return found
-		end
-		-- if parser missing, fall through to line-scan fallback
+	local is_exact = declared_raw:match("^%d+%.%d+%.%d+[%w%._%-]*$") ~= nil
+	if is_exact then
+		return declared_raw
 	end
 
-	-- fallback line-scan for other manifests (and package if parser missing)
-	local ok, lines = pcall(fn.readfile, lock_path)
-	if not ok or type(lines) ~= "table" then
-		lock_file_cache[cache_key] = { result = false, time = now }
-		return false
-	end
-
-	local escaped_name = vim.pesc(dep_name)
-	local found = false
-
-	for _, line in ipairs(lines) do
-		if manifest_key == "pubspec" then
-			if line:match("^%s+" .. escaped_name .. "%s*:") then
-				found = true
-				break
-			end
-		elseif manifest_key == "crates" then
-			if line:match('name%s*=%s*"' .. escaped_name .. '"') then
-				found = true
-				break
-			end
-		elseif manifest_key == "package" then
-			-- fallback: support both JSON and pnpm yaml style
-			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
-				found = true
-				break
-			end
-			if line:match("^%s%s" .. escaped_name .. "%s*:%s*$") then
-				found = true
-				break
-			end
-		elseif manifest_key == "composer" then
-			if line:match('"' .. escaped_name .. '"') then
-				found = true
-				break
-			end
-		elseif manifest_key == "go" then
-			if line:match(escaped_name) then
-				found = true
-				break
-			end
-		end
-	end
-
-	lock_file_cache[cache_key] = { result = found, time = now }
-	return found
+	return utils.normalize_version_spec(declared_raw)
 end
 
-local function build_virt_parts(manifest_key, dep_name, declared)
+local function build_badge(label)
+	label = label and tostring(label) or ""
+	return (" [%s]"):format(label)
+end
+
+-- ------------------------------------------------------------
+-- virtual text builder
+-- ------------------------------------------------------------
+local function build_virt_parts(manifest_key, dep_name, declared, has_lock)
 	local deps = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
 	local installed = deps.installed and deps.installed[dep_name]
 	local outdated = deps.outdated and deps.outdated[dep_name]
 	local invalid = deps.invalid and deps.invalid[dep_name]
 
-	-- invalid diagnostic
 	if invalid then
 		local pieces = {}
 		pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
+
 		local diag = invalid.diagnostic or "ERR"
+		local icon = ""
 		if vt_cfg.show_status_icon and vt_cfg.icon_when_invalid then
-			pieces[#pieces + 1] = { vt_cfg.icon_when_invalid .. " " .. diag, hl.invalid }
-		else
-			pieces[#pieces + 1] = { diag, hl.invalid }
+			icon = vt_cfg.icon_when_invalid
 		end
+
+		pieces[#pieces + 1] = { build_badge(icon .. diag), hl.invalid }
 		return pieces
 	end
 
-	-- Check if package is actually in lock file
-	local in_lock = is_package_in_lock_file(manifest_key, dep_name)
+	local in_lock = nil
+	local cur = nil
+	if type(installed) == "table" then
+		in_lock = installed.in_lock
+		cur = installed.current and tostring(installed.current) or nil
+	elseif type(installed) == "string" then
+		cur = tostring(installed)
+		in_lock = nil
+	end
 
-	if not in_lock then
-		if declared then
-			local pieces = {}
-			pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
-			local declared_norm = normalize_version_spec(declared) or declared
-			local txt = declared_norm .. " (not in lock)"
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint_newer then
-				pieces[#pieces + 1] = { vt_cfg.icon_when_constraint_newer .. " " .. txt, hl.constraint_newer }
-			else
-				pieces[#pieces + 1] = { txt, hl.constraint_newer }
-			end
-			return pieces
+	if in_lock == false then
+		local pieces = {}
+		pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
+
+		local declared_norm
+		if manifest_key == "go" then
+			declared_norm = declared or ""
 		else
-			local pieces = {}
-			pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_invalid then
-				pieces[#pieces + 1] = { vt_cfg.icon_when_invalid .. " not installed", hl.invalid }
-			else
-				pieces[#pieces + 1] = { "not installed", hl.invalid }
+			declared_norm = utils.normalize_version_spec(declared) or declared or ""
+		end
+		local shown = (declared_norm ~= "" and declared_norm or "unknown")
+
+		if has_lock == false then
+			local icon = ""
+			if vt_cfg.show_status_icon and vt_cfg.icon_when_not_installed then
+				icon = vt_cfg.icon_when_not_installed
 			end
+			pieces[#pieces + 1] = { icon .. shown, hl.not_installed }
+			pieces[#pieces + 1] = { build_badge("not installed"), hl.not_installed }
 			return pieces
+		end
+
+		local icon = ""
+		if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint then
+			icon = vt_cfg.icon_when_constraint
+		end
+
+		pieces[#pieces + 1] = { icon .. shown, hl.constraint }
+		pieces[#pieces + 1] = { build_badge("constraint"), hl.constraint }
+
+		return pieces
+	end
+
+	-- ------------------------------------------------------------
+	-- Resolved version hint config (works across ecosystems)
+	-- ------------------------------------------------------------
+	local resolved_ver = nil
+	local lock_ver = cur and tostring(cur) or nil
+	local show_resolved = false
+	local mode = vt_cfg.resolved_version or vt_cfg.node_version or "mismatch"
+
+	if mode ~= "never" then
+		if manifest_key == "package" then
+			resolved_ver = get_node_modules_version(dep_name)
+		else
+			if in_lock == true then
+				resolved_ver = lock_ver
+			else
+				resolved_ver = nil
+			end
 		end
 	end
 
-	local latest = (outdated and outdated.latest) and tostring(outdated.latest) or nil
-	local cur = (installed and installed.current) and tostring(installed.current) or nil
+	if resolved_ver and resolved_ver ~= "" and mode ~= "never" then
+		local resolved_norm = vim.trim(tostring(resolved_ver))
+		local lock_norm = lock_ver and vim.trim(tostring(lock_ver)) or ""
+		local declared_target = declared_target_from(declared, manifest_key)
 
+		if mode == "always" then
+			show_resolved = true
+		elseif mode == "mismatch" then
+			if lock_norm ~= "" and resolved_norm ~= lock_norm then
+				show_resolved = true
+			end
+			if
+				not show_resolved
+				and declared_target
+				and declared_target ~= ""
+				and lock_norm ~= ""
+				and lock_norm ~= declared_target
+			then
+				show_resolved = true
+			end
+		elseif mode == "mismatch_or_difflock" then
+			local mismatch = (lock_norm ~= "" and resolved_norm ~= lock_norm)
+			local difflock = not not (
+				declared_target
+				and declared_target ~= ""
+				and lock_norm ~= ""
+				and lock_norm ~= declared_target
+			)
+			show_resolved = (mismatch or difflock) and true or false
+		end
+	end
+
+	local function append_resolved_segment(pieces_tbl, main_ver)
+		if show_resolved and resolved_ver and resolved_ver ~= "" then
+			if main_ver and tostring(main_ver) == tostring(resolved_ver) then
+				return pieces_tbl
+			end
+
+			local icon = ""
+			if vt_cfg.show_status_icon and vt_cfg.icon_when_resolved then
+				icon = vt_cfg.icon_when_resolved
+			end
+			pieces_tbl[#pieces_tbl + 1] =
+				{ " " .. icon .. tostring(resolved_ver) .. build_badge("resolved"), hl.resolved }
+		end
+		return pieces_tbl
+	end
+
+	local latest = (outdated and outdated.latest) and tostring(outdated.latest) or nil
 	if latest then
 		local latest_s = tostring(latest)
 		local is_up_to_date = (cur ~= nil and cur == latest_s)
 
 		if outdated and outdated.constraint_newer then
-			local txt = tostring(latest_s) .. " (constraint)"
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint_newer then
-				return {
-					{ vt_cfg.prefix, hl.separator },
-					{ vt_cfg.icon_when_constraint_newer .. " " .. txt, hl.constraint_newer },
-				}
+			local icon_con = ""
+			if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint then
+				icon_con = vt_cfg.icon_when_constraint
 			end
-			return { { vt_cfg.prefix, hl.separator }, { txt, hl.constraint_newer } }
+
+			local declared_target = declared_target_from(declared, manifest_key)
+			if declared_target and resolved_ver and tostring(declared_target) == tostring(resolved_ver) then
+				show_resolved = false
+			end
+
+			if resolved_ver and cur and tostring(resolved_ver) == tostring(cur) then
+				show_resolved = false
+			end
+
+			local parts = {
+				{ vt_cfg.prefix, hl.separator },
+				{ icon_con .. latest_s, hl.constraint },
+				{ build_badge("constraint"), hl.constraint },
+			}
+
+			return append_resolved_segment(parts, latest_s)
 		end
 
 		if is_up_to_date then
+			local parts
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-				return {
+				parts = {
 					{ vt_cfg.prefix, hl.separator },
 					{ vt_cfg.icon_when_up_to_date .. " " .. latest_s, hl.up_to_date },
 				}
 			else
-				return { { vt_cfg.prefix, hl.separator }, { latest_s, hl.up_to_date } }
+				parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.up_to_date } }
 			end
+			return append_resolved_segment(parts, latest_s)
 		else
+			local parts
 			if vt_cfg.show_status_icon and vt_cfg.icon_when_outdated then
-				return {
+				parts = {
 					{ vt_cfg.prefix, hl.separator },
 					{ vt_cfg.icon_when_outdated .. " " .. latest_s, hl.outdated },
 				}
 			else
-				return { { vt_cfg.prefix, hl.separator }, { latest_s, hl.outdated } }
+				parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.outdated } }
 			end
+			return append_resolved_segment(parts, latest_s)
 		end
 	end
 
 	if cur then
-		local cur_s = tostring(cur)
+		local parts
 		if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-			return {
-				{ vt_cfg.prefix, hl.separator },
-				{ vt_cfg.icon_when_up_to_date .. " " .. cur_s, hl.up_to_date },
-			}
+			parts = { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_up_to_date .. " " .. cur, hl.up_to_date } }
 		else
-			return { { vt_cfg.prefix, hl.separator }, { cur_s, hl.up_to_date } }
+			parts = { { vt_cfg.prefix, hl.separator }, { cur, hl.up_to_date } }
 		end
+		return append_resolved_segment(parts, cur)
 	end
 
 	return nil
-end
-
-local function get_loading_parts()
-	return { { vt_cfg.prefix, hl.separator }, { vt_cfg.loading, hl.loading } }
 end
 
 local function do_display(bufnr, manifest_key)
@@ -453,12 +490,23 @@ local function do_display(bufnr, manifest_key)
 
 	local ns = tonumber(ensure_namespace()) or 0
 
-	api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+	local w0 = fn.line("w0")
+	local wend = fn.line("w$")
+	if not w0 or not wend then
+		return
+	end
+	local start0 = math.max(0, w0 - 1)
+	local end0 = math.max(start0, wend)
+
+	api.nvim_buf_clear_namespace(bufnr, ns, start0, end0)
 
 	local deps_tbl = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
 	local installed_tbl = deps_tbl.installed or {}
 	local outdated_tbl = deps_tbl.outdated or {}
 	local invalid_tbl = deps_tbl.invalid or {}
+
+	local lock_path = utils.find_lock_for_manifest(bufnr, manifest_key)
+	local has_lock = lock_path ~= nil
 
 	local is_loading = state.buffers and state.buffers[bufnr] and state.buffers[bufnr].is_loading
 	local loading_parts = is_loading and get_loading_parts() or nil
@@ -466,24 +514,23 @@ local function do_display(bufnr, manifest_key)
 	local buffer_meta = state.get_buffer(bufnr)
 	local lines = (buffer_meta and buffer_meta.lines) or api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
-	for i = 1, #lines do
+	for i = w0, wend do
 		local line = lines[i]
 		local dep_name = get_dependency_name_from_line(line, manifest_key, lines, i)
 		if dep_name then
 			local should_process = installed_tbl[dep_name] or outdated_tbl[dep_name] or invalid_tbl[dep_name]
-
 			if should_process or is_loading then
 				local declared_version = get_declared_version_from_line(line, manifest_key)
 
 				local virt_parts
 				if is_loading then
 					if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
-						virt_parts = build_virt_parts(manifest_key, dep_name, declared_version)
+						virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, has_lock)
 					else
 						virt_parts = loading_parts
 					end
 				else
-					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version)
+					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, has_lock)
 				end
 
 				if virt_parts and #virt_parts > 0 then
@@ -497,13 +544,7 @@ local function do_display(bufnr, manifest_key)
 		end
 	end
 
-	if state.set_virtual_text_displayed then
-		state.set_virtual_text_displayed(bufnr, true)
-	else
-		state.buffers = state.buffers or {}
-		state.buffers[bufnr] = state.buffers[bufnr] or {}
-		state.buffers[bufnr].is_virtual_text_displayed = true
-	end
+	state.set_virtual_text_displayed(bufnr, true)
 end
 
 M.display = function(bufnr, manifest_key)
@@ -544,84 +585,24 @@ M.clear = function(bufnr)
 	end
 	local ns = tonumber(ensure_namespace()) or 0
 	api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+	state.set_virtual_text_displayed(bufnr, false)
 
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local manifest_key = filename_to_manifest_key(filename)
-	if manifest_key then
-		for key in pairs(lock_file_cache) do
-			if key:match("^" .. vim.pesc(manifest_key) .. ":") then
-				lock_file_cache[key] = nil
-			end
-		end
-	end
-
-	if state.set_virtual_text_displayed then
-		state.set_virtual_text_displayed(bufnr, false)
-	else
-		if state.buffers and state.buffers[bufnr] then
-			state.buffers[bufnr].is_virtual_text_displayed = false
-		end
-	end
 	if state.buffers and state.buffers[bufnr] then
 		state.buffers[bufnr].display_scheduled = false
 		state.buffers[bufnr].display_requested_manifest = nil
 	end
 end
 
-M.clear_lock_cache = function()
-	lock_file_cache = {}
-end
-
-M.debug_extmarks = function(bufnr)
-	bufnr = bufnr or api.nvim_get_current_buf()
-	local ns = tonumber(ensure_namespace()) or 0
-	local marks = api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })
-	if not marks or #marks == 0 then
-		print("failed to get extmarks or none present")
-		return
-	end
-	print("extmarks in ns:", ns, "count:", #marks)
-	for _, m in ipairs(marks) do
-		local id, row, col, details = m[1], m[2], m[3], m[4]
-		print(string.format("id=%s row=%d col=%d", tostring(id), row, col))
-		if details and details.virt_text then
-			print("  virt_text:", vim.inspect(details.virt_text))
-		end
-	end
+M.clear_node_modules_cache = function()
+	node_modules_cache = {}
 end
 
 pcall(function()
-	api.nvim_create_autocmd("User", {
-		pattern = "LvimDepsPackageUpdated",
-		callback = function()
-			M.clear_lock_cache()
-
-			for _, bufnr in ipairs(api.nvim_list_bufs()) do
-				if api.nvim_buf_is_loaded(bufnr) and api.nvim_buf_is_valid(bufnr) then
-					local name = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-					local mk = filename_to_manifest_key(name)
-					if mk then
-						pcall(M.display, bufnr, mk)
-					end
-				end
-			end
-		end,
-	})
-
 	api.nvim_create_autocmd({ "BufWritePost", "FileChangedShellPost" }, {
 		pattern = const.LOCK_FILE_PATTERNS,
 		callback = function()
-			M.clear_lock_cache()
-
-			for _, bufnr in ipairs(api.nvim_list_bufs()) do
-				if api.nvim_buf_is_loaded(bufnr) and api.nvim_buf_is_valid(bufnr) then
-					local name = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-					local mk = filename_to_manifest_key(name)
-					if mk then
-						pcall(M.display, bufnr, mk)
-					end
-				end
-			end
+			M.clear_node_modules_cache()
+			utils.clear_file_cache()
 		end,
 	})
 end)

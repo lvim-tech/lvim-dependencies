@@ -130,6 +130,24 @@ M.clean_version = function(value)
 	return nil
 end
 
+-- ------------------------------------------------------------
+-- File stat + cached reads (to avoid repeated disk IO)
+-- ------------------------------------------------------------
+local file_cache = {
+	-- [path] = { mtime=..., size=..., content="..." }
+}
+
+M.fs_stat = function(path)
+	if not path or path == "" then
+		return nil
+	end
+	local ok, st = pcall(vim.loop.fs_stat, path)
+	if not ok then
+		return nil
+	end
+	return st
+end
+
 M.read_file = function(path)
 	if not path or path == "" then
 		return nil
@@ -141,6 +159,47 @@ M.read_file = function(path)
 	return table.concat(lines, "\n")
 end
 
+-- Cached read: returns content and stat tuple (mtime,size)
+M.read_file_cached = function(path)
+	if not path or path == "" then
+		return nil, nil, nil
+	end
+
+	local st = M.fs_stat(path)
+	if not st then
+		file_cache[path] = nil
+		return nil, nil, nil
+	end
+
+	local mtime = (st.mtime and st.mtime.sec) or 0
+	local size = st.size or 0
+
+	local cached = file_cache[path]
+	if cached and cached.mtime == mtime and cached.size == size and type(cached.content) == "string" then
+		return cached.content, mtime, size
+	end
+
+	local content = M.read_file(path)
+	if not content then
+		file_cache[path] = { mtime = mtime, size = size, content = "" }
+		return "", mtime, size
+	end
+
+	file_cache[path] = { mtime = mtime, size = size, content = content }
+	return content, mtime, size
+end
+
+M.clear_file_cache = function(path)
+	if path then
+		file_cache[path] = nil
+	else
+		file_cache = {}
+	end
+end
+
+-- ------------------------------------------------------------
+-- Lock file discovery
+-- ------------------------------------------------------------
 M.find_lock_for_manifest = function(bufnr, manifest_key)
 	bufnr = bufnr or vim.api.nvim_get_current_buf()
 	local start_dir = M.get_buffer_dir(bufnr) or vim.fn.getcwd()
@@ -170,60 +229,89 @@ M.find_lock_for_manifest = function(bufnr, manifest_key)
 	return nil
 end
 
--- Check if package exists in lock file for given manifest type
-M.is_package_in_lock = function(manifest, name)
-	local lock_path = M.find_lock_for_manifest(nil, manifest)
+-- ------------------------------------------------------------
+-- is_package_in_lock (used by UI actions: update/delete)
+-- Reintroduced for compatibility + correctness.
+-- IMPORTANT: UI rendering must NOT call this; only commands/actions.
+-- ------------------------------------------------------------
+local lock_presence_cache = {
+	-- [lock_path.."::"..name] = { mtime=..., size=..., found=true/false }
+}
 
+M.is_package_in_lock = function(manifest, name, bufnr)
+	if not manifest or manifest == "" or not name or name == "" then
+		return false
+	end
+
+	local lock_path = M.find_lock_for_manifest(bufnr, manifest)
 	if not lock_path then
 		return false
 	end
 
-	-- For package manifest, use the parser to get accurate results
+	-- Use stat-based cache per package per lock file
+	local st = M.fs_stat(lock_path)
+	local mtime = st and st.mtime and st.mtime.sec or 0
+	local size = st and st.size or 0
+	local cache_key = lock_path .. "::" .. name
+	local cached = lock_presence_cache[cache_key]
+	if cached and cached.mtime == mtime and cached.size == size then
+		return cached.found
+	end
+
+	-- For package manifests, use the lock parser (pnpm/npm) for accuracy.
+	-- This is safe because this function is only called from commands/UI actions, not render loops.
 	if manifest == "package" then
 		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
-		if ok_parser and type(parser.parse_lock_file_path) == "function" then
+		if ok_parser and parser and type(parser.parse_lock_file_path) == "function" then
 			local ok_parse, lock_versions = pcall(parser.parse_lock_file_path, lock_path)
-			if ok_parse and type(lock_versions) == "table" then
-				return lock_versions[name] ~= nil
-			end
+			local found = (ok_parse and type(lock_versions) == "table" and lock_versions[name] ~= nil) or false
+			lock_presence_cache[cache_key] = { mtime = mtime, size = size, found = found }
+			return found
 		end
 	end
 
-	-- Fallback to old regex-based approach for other manifests
+	-- Fallback line-scan for other manifests (and package if parser missing)
 	local ok, lines = pcall(vim.fn.readfile, lock_path)
 	if not ok or type(lines) ~= "table" then
+		lock_presence_cache[cache_key] = { mtime = mtime, size = size, found = false }
 		return false
 	end
 
-	-- Escape special pattern characters in package name
 	local escaped_name = vim.pesc(name)
+	local found = false
 
 	for _, line in ipairs(lines) do
 		if manifest == "pubspec" then
 			if line:match("^%s+" .. escaped_name .. "%s*:") then
-				return true
+				found = true
+				break
 			end
 		elseif manifest == "crates" then
 			if line:match('name%s*=%s*"' .. escaped_name .. '"') then
-				return true
-			end
-		elseif manifest == "package" then
-			-- This branch should not be reached due to parser above
-			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
-				return true
+				found = true
+				break
 			end
 		elseif manifest == "composer" then
 			if line:match('"' .. escaped_name .. '"') then
-				return true
+				found = true
+				break
 			end
 		elseif manifest == "go" then
 			if line:match(escaped_name) then
-				return true
+				found = true
+				break
+			end
+		elseif manifest == "package" then
+			-- only if parser missing, very loose fallback
+			if line:match('"' .. escaped_name .. '"') or line:match("'" .. escaped_name .. "'") then
+				found = true
+				break
 			end
 		end
 	end
 
-	return false
+	lock_presence_cache[cache_key] = { mtime = mtime, size = size, found = found }
+	return found
 end
 
 return M

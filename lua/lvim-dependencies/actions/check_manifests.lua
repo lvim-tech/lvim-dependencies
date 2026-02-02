@@ -79,8 +79,17 @@ local function extract_latest_from_pub_body(body)
 	return nil
 end
 
+-- SAFE json parser wrapper to avoid crashing async callbacks
+local function safe_parse_json(body)
+	local ok, parsed = pcall(decoder.parse_json, body)
+	if not ok then
+		return nil
+	end
+	return parsed
+end
+
 local function parse_pubdev_latest_slow(body)
-	local parsed = decoder.parse_json(body)
+	local parsed = safe_parse_json(body)
 	if type(parsed) ~= "table" then
 		return nil
 	end
@@ -237,9 +246,29 @@ local function perform_request_with_retries(url, name, manifest_key, parser_fn, 
 					return
 				end
 
-				local parsed = parser_fn(body)
+				-- Guard: npm registry (and others) sometimes return HTML when blocked/rate-limited.
+				-- Avoid regex fallbacks returning garbage.
+				if body:sub(1, 1) == "<" then
+					if attempt <= max_retries then
+						defer_fn(try_once, backoff_delay(attempt))
+						return
+					end
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, "html response")
+					on_error("registry returned HTML (blocked/rate-limited?)")
+					return
+				end
+
+				-- Ensure parser cannot crash the async callback
+				local okp, parsed = pcall(parser_fn, body)
+				if not okp then
+					record_host_failure(host)
+					set_negative_cache(manifest_key, name, "parser error: " .. tostring(parsed))
+					on_error(fmt("parser error for %s: %s", tostring(name), tostring(parsed)))
+					return
+				end
+
 				if parsed == nil then
-					utils.notify_safe(fmt("Parse returned nil for %s (%s)", tostring(name), tostring(url)), L.WARN)
 					record_host_failure(host)
 					set_negative_cache(manifest_key, name, "parser returned nil")
 					on_error(fmt("parse error for %s", tostring(name)))
@@ -273,7 +302,7 @@ local function parser_pub(body)
 end
 
 local function parser_crates(body)
-	local parsed = decoder.parse_json(body)
+	local parsed = safe_parse_json(body)
 	if type(parsed) == "table" then
 		if parsed.crate then
 			if parsed.crate.max_stable_version then
@@ -287,21 +316,23 @@ local function parser_crates(body)
 			return clean(parsed.versions[1].num)
 		end
 	end
-	local v = body:match('"max_stable_version"%s*:%s*"(.-)"') or body:match('"max_version"%s*:%s*"(.-)"')
-	return (v and v ~= "") and clean(v) or nil
+	return nil
 end
 
 local function parser_npm(body)
-	local parsed = decoder.parse_json(body)
-	if type(parsed) == "table" and parsed["dist-tags"] and parsed["dist-tags"].latest then
+	-- Strict: only trust real JSON to avoid false matches from HTML/error pages.
+	local parsed = safe_parse_json(body)
+	if type(parsed) ~= "table" then
+		return nil
+	end
+	if parsed["dist-tags"] and parsed["dist-tags"].latest then
 		return clean(parsed["dist-tags"].latest)
 	end
-	local m = body:match('"dist%-tags"%s*:%s*{.-"latest"%s*:%s*"(.-)"')
-	return (m and m ~= "") and clean(m) or nil
+	return nil
 end
 
 local function parser_packagist(body)
-	local parsed = decoder.parse_json(body)
+	local parsed = safe_parse_json(body)
 	if type(parsed) == "table" and parsed.packages then
 		for _, entries in pairs(parsed.packages) do
 			if entries and entries[1] then
@@ -313,17 +344,15 @@ local function parser_packagist(body)
 			end
 		end
 	end
-	local m = body:match('"version"%s*:%s*"(.-)"')
-	return (m and m ~= "") and clean(m) or nil
+	return nil
 end
 
 local function parser_go(body)
-	local parsed = decoder.parse_json(body)
+	local parsed = safe_parse_json(body)
 	if type(parsed) == "table" and parsed.Version then
 		return tostring(parsed.Version)
 	end
-	local m = body:match('"Version"%s*:%s*"(.-)"') or body:match('"version"%s*:%s*"(.-)"')
-	return (m and m ~= "") and m or nil
+	return nil
 end
 
 -- -------------------------
@@ -434,21 +463,27 @@ local function schedule_publish(bufnr, manifest_key)
 
 		for name, info in pairs(cache.data or {}) do
 			local inst = installed_table[name]
-			if info and info.latest and inst and inst.current and inst.current ~= "" then
-				local cmp = compare_versions(inst.current, info.latest)
+			local inst_cur = nil
+			if type(inst) == "table" then
+				inst_cur = inst.current
+			elseif type(inst) == "string" then
+				inst_cur = inst
+			end
+
+			if info and info.latest and inst and inst_cur and inst_cur ~= "" then
+				local cmp = compare_versions(inst_cur, info.latest)
 				if cmp == 1 then
-					final[name] = { current = inst.current, latest = info.latest, constraint_newer = true }
+					final[name] = { current = inst_cur, latest = info.latest, constraint_newer = true }
 				elseif cmp == 0 then
-					final[name] = { current = inst.current, latest = info.latest, up_to_date = true }
+					final[name] = { current = inst_cur, latest = info.latest, up_to_date = true }
 				else
-					final[name] = { current = inst.current, latest = info.latest }
+					final[name] = { current = inst_cur, latest = info.latest }
 				end
-			elseif info and info.latest and installed_table[name] then
-				final[name] = { current = installed_table[name].current, latest = info.latest }
+			elseif info and info.latest and inst then
+				final[name] = { current = inst_cur, latest = info.latest }
 			end
 		end
 
-		-- schedule state updates + ui display on main loop
 		schedule(function()
 			state.set_outdated(manifest_key, final)
 			cache.last_fetched_at = now_ms()
@@ -491,7 +526,7 @@ local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_fai
 						raw = j:stderr_result()
 					end
 					if raw and #raw > 0 then
-						local parsed = decoder.parse_json(table.concat(raw, "\n"))
+						local parsed = safe_parse_json(table.concat(raw, "\n"))
 						if type(parsed) == "table" and next(parsed) then
 							local filtered = {}
 							for name, info in pairs(parsed) do
@@ -539,7 +574,13 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 	local installed_table = deps_state.installed or {}
 	local scalar_deps = {}
 	for name, info in pairs(installed_table) do
-		if info and info.current and info.current ~= "" then
+		local cur = nil
+		if type(info) == "table" then
+			cur = info.current
+		elseif type(info) == "string" then
+			cur = info
+		end
+		if cur and cur ~= "" then
 			if manifest_key == "composer" then
 				if is_packagist_candidate(name) then
 					scalar_deps[name] = true
@@ -563,7 +604,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 	state.buffers[bufnr].is_loading = true
 
-	-- update UI immediately (non-blocking)
 	schedule(function()
 		ui.display(bufnr, manifest_key)
 	end)
@@ -588,7 +628,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- watchdog creation (try new timer, fallback to defer)
 	if not (cache and cache.watchdog) then
 		local ok_new, t = pcall(vim.loop.new_timer)
 		if ok_new and t then
@@ -626,7 +665,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr] or {}
 				versions_cache[manifest_key][bufnr].watchdog = t
 			else
-				-- затваряме таймера и логваме причината за провала
 				pcall(function()
 					t:close()
 				end)
@@ -643,7 +681,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 	end
 
-	-- build name list
 	local names_to_fetch = {}
 	for name in pairs(scalar_deps) do
 		names_to_fetch[#names_to_fetch + 1] = name
@@ -674,7 +711,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- CLI fallback path
 	if use_cli_fallback and not fetcher then
 		local cmds = {}
 		if has_flutter then
@@ -741,7 +777,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		return
 	end
 
-	-- concurrent fetching
 	local in_flight, idx, total = 0, 1, #names_to_fetch
 
 	local function finish_phase_if_done()
@@ -799,7 +834,6 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				finish_phase_if_done()
 			end
 
-			-- call fetcher directly
 			fetcher(name, on_success, on_error)
 		end
 	end
@@ -852,12 +886,10 @@ function M.invalidate_package_cache(bufnr, manifest_key, package_name)
 		return
 	end
 
-	-- Remove from data cache
 	if cache.data and cache.data[package_name] then
 		cache.data[package_name] = nil
 	end
 
-	-- Remove from pending
 	if cache.pending and cache.pending[package_name] then
 		cache.pending[package_name] = nil
 	end
@@ -865,7 +897,6 @@ function M.invalidate_package_cache(bufnr, manifest_key, package_name)
 	-- Clear negative cache for this package
 	clear_negative_cache(manifest_key, package_name)
 
-	-- CRITICAL: Reset last_fetched_at to force re-fetch on next check_manifest_outdated
 	cache.last_fetched_at = nil
 end
 
@@ -882,5 +913,4 @@ function M.invalidate_packages_cache(bufnr, manifest_key, package_names)
 	end
 end
 
--- expose
 return M

@@ -99,9 +99,43 @@ local function schedule_handle(bufnr, delay, full_check)
 	end, delay)
 end
 
+-- Light UI refresh: ONLY re-render virtual text for visible range.
+-- No parsing, no network.
+local function schedule_light_render(bufnr, delay)
+	state.buffers = state.buffers or {}
+	state.buffers[bufnr] = state.buffers[bufnr] or {}
+
+	if state.buffers[bufnr].light_render_scheduled then
+		return
+	end
+
+	state.buffers[bufnr].light_render_scheduled = true
+	defer_fn(function()
+		state.buffers[bufnr].light_render_scheduled = false
+
+		if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+			return
+		end
+
+		local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+		local entry = parsers[filename]
+		if not entry then
+			return
+		end
+
+		local manifest_key = entry.key
+		if config[manifest_key] and config[manifest_key].enabled == false then
+			return
+		end
+
+		virtual_text.display(bufnr, manifest_key)
+	end, delay or 25)
+end
+
 local function on_buf_enter(args)
 	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
 
+	-- Full parse+check on enter (debounced)
 	schedule_handle(bufnr, 50, true)
 
 	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
@@ -113,7 +147,20 @@ end
 
 local function on_buf_write(args)
 	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+	-- Parse+render (no check) after write (debounced)
 	schedule_handle(bufnr, 200, false)
+end
+
+-- When scrolling, just re-render visible range (fast path).
+local function on_win_scrolled(args)
+	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+	schedule_light_render(bufnr, 20)
+end
+
+-- When cursor holds (idle), re-render visible range (covers cases where w0/w$ changes without WinScrolled)
+local function on_cursor_hold(args)
+	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+	schedule_light_render(bufnr, 40)
 end
 
 M.init = function()
@@ -129,6 +176,19 @@ M.init = function()
 		group = group,
 		pattern = const.MANIFEST_PATTERNS,
 		callback = on_buf_write,
+	})
+
+	-- Light-weight UI refresh hooks (NO parse/check)
+	api.nvim_create_autocmd({ "WinScrolled" }, {
+		group = group,
+		pattern = const.MANIFEST_PATTERNS,
+		callback = on_win_scrolled,
+	})
+
+	api.nvim_create_autocmd({ "CursorHold" }, {
+		group = group,
+		pattern = const.MANIFEST_PATTERNS,
+		callback = on_cursor_hold,
 	})
 end
 

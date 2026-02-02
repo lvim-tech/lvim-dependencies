@@ -15,7 +15,16 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
--- Try to extract versions from a go.sum-like lock content
+-- ------------------------------------------------------------
+-- Lock parse cache (per lock_path + mtime + size)
+-- ------------------------------------------------------------
+local lock_cache = {
+	-- [lock_path] = { mtime=..., size=..., versions=table }
+}
+
+-- ------------------------------------------------------------
+-- Lock parsing (go.sum)
+-- ------------------------------------------------------------
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
@@ -45,6 +54,30 @@ local function parse_lock_file_from_content(content)
 	return nil
 end
 
+local function get_lock_versions(lock_path)
+	if not lock_path then
+		return nil
+	end
+
+	local content, mtime, size = utils.read_file_cached(lock_path)
+	if content == nil then
+		lock_cache[lock_path] = nil
+		return nil
+	end
+
+	local cached = lock_cache[lock_path]
+	if cached and cached.mtime == mtime and cached.size == size and type(cached.versions) == "table" then
+		return cached.versions
+	end
+
+	local versions = parse_lock_file_from_content(content)
+	lock_cache[lock_path] = { mtime = mtime, size = size, versions = versions }
+	return versions
+end
+
+-- ------------------------------------------------------------
+-- go.mod parsing
+-- ------------------------------------------------------------
 local function strip_comments_and_trim(s)
 	if not s then
 		return nil
@@ -67,7 +100,6 @@ local function parse_go_fallback_lines(lines)
 		if not name or name == "" then
 			return
 		end
-		-- skip non-module lines
 		if name:find("/", 1, true) == nil then
 			return
 		end
@@ -112,10 +144,12 @@ local function parse_go_fallback_lines(lines)
 end
 
 local function parse_with_decoder(content, lines)
-	-- keep a simple contract: return table with require=...
 	return { require = parse_go_fallback_lines(lines or split(content, "\n")) }
 end
 
+-- ------------------------------------------------------------
+-- Parse + state update
+-- ------------------------------------------------------------
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	if not api.nvim_buf_is_valid(bufnr) then
 		return
@@ -134,6 +168,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		installed_dependencies[name] = {
 			current = info.current,
 			raw = info.raw,
+			in_lock = info.in_lock,
 			_source = "require",
 		}
 	end
@@ -143,41 +178,40 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			return
 		end
 
-		-- save buffer meta
-		state.save_buffer(bufnr, "go", api.nvim_buf_get_name(bufnr), buffer_lines)
-
-		-- prefer set_installed API; fallback to set_dependencies if present
-		if state.set_installed then
-			state.set_installed("go", installed_dependencies)
-		elseif state.set_dependencies then
-			local result = {
-				lines = buffer_lines,
-				installed = installed_dependencies,
-				outdated = {},
-				invalid = invalid_dependencies,
-			}
-			state.set_dependencies("go", result)
+		if state.save_buffer then
+			state.save_buffer(bufnr, "go", api.nvim_buf_get_name(bufnr), buffer_lines)
 		end
 
-		-- invalids and outdated placeholder
-		if state.set_invalid then state.set_invalid("go", invalid_dependencies) end
-		if state.set_outdated then state.set_outdated("go", state.get_dependencies("go").outdated or {}) end
+		state.ensure_manifest("go")
+		state.clear_manifest("go")
 
-		-- update buffer cached lines/last run metadata
-		if state.update_buffer_lines then state.update_buffer_lines(bufnr, buffer_lines) end
-		if state.update_last_run then state.update_last_run(bufnr) end
+		-- UNIVERSAL INSTALLED SHAPE
+		local bulk = {}
+		for name, info in pairs(installed_dependencies) do
+			local scope = info._source or "require"
+			bulk[name] = {
+				current = info.current,
+				raw = info.raw,
+				in_lock = info.in_lock == true,
+				scopes = { [scope] = true },
+			}
+		end
+		state.set_installed("go", bulk)
 
-		-- attach last parsed snapshot to buffer for caching
+		state.set_invalid("go", invalid_dependencies)
+		state.set_outdated("go", state.get_dependencies("go").outdated or {})
+
+		state.update_buffer_lines(bufnr, buffer_lines)
+		state.update_last_run(bufnr)
+
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
 		state.buffers[bufnr].last_go_parsed = { installed = installed_dependencies, invalid = invalid_dependencies }
 		state.buffers[bufnr].parse_scheduled = false
 
-		-- compute and store hash
 		state.buffers[bufnr].last_go_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
-		-- render virtual text and trigger checker
 		vt.display(bufnr, "go")
 		checker.check_manifest_outdated(bufnr, "go")
 	end)
@@ -234,19 +268,20 @@ M.parse_buffer = function(bufnr)
 		local parsed = parse_with_decoder(fresh_content, fresh_lines)
 
 		local lock_path = utils.find_lock_for_manifest(bufnr, "go")
-		local lock_versions = nil
-		if lock_path then
-			local lock_content = utils.read_file(lock_path)
-			lock_versions = parse_lock_file_from_content(lock_content)
-		end
+		local lock_versions = lock_path and get_lock_versions(lock_path) or nil
 
-		if lock_versions and type(lock_versions) == "table" and parsed then
-			for name, info in pairs(parsed.require or {}) do
-				if lock_versions[name] then
+		local function apply_lock(tbl)
+			for name, info in pairs(tbl or {}) do
+				if lock_versions and lock_versions[name] then
 					info.current = lock_versions[name]
+					info.in_lock = true
+				else
+					info.in_lock = false
 				end
 			end
 		end
+
+		apply_lock(parsed.require)
 
 		do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
 	end, 20)

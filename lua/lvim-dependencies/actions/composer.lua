@@ -17,24 +17,10 @@ local function urlencode(str)
 end
 
 local function find_composer_json_path()
-	local cwd = vim.fn.getcwd()
 	local manifest_files = const.MANIFEST_FILES.composer or { "composer.json" }
-
-	while true do
-		for _, filename in ipairs(manifest_files) do
-			local candidate = cwd .. "/" .. filename
-			if vim.fn.filereadable(candidate) == 1 then
-				return candidate
-			end
-		end
-
-		local parent = vim.fn.fnamemodify(cwd, ":h")
-		if parent == cwd or parent == "" then
-			break
-		end
-		cwd = parent
-	end
-	return nil
+	local cwd = vim.fn.getcwd()
+	local found = vim.fs.find(manifest_files, { upward = true, path = cwd, type = "file" })
+	return found and found[1] or nil
 end
 
 local function read_json(path)
@@ -44,7 +30,7 @@ local function read_json(path)
 	end
 
 	local text = table.concat(content, "\n")
-	local ok_json, data = pcall(vim.fn.json_decode, text)
+	local ok_json, data = pcall(vim.json.decode, text)
 	if not ok_json or type(data) ~= "table" then
 		return nil
 	end
@@ -53,22 +39,21 @@ local function read_json(path)
 end
 
 local function write_json(path, data)
-	local ok, json_str = pcall(vim.fn.json_encode, data)
-	if not ok or not json_str then
+	local ok, formatted = pcall(vim.json.encode, data)
+	if not ok or not formatted then
 		return false, "failed to encode JSON"
 	end
 
 	-- Pretty print with 4-space indent (Composer convention)
-	local formatted = vim.fn.json_encode(data)
-	-- Try to use jq for pretty printing if available
 	if vim.fn.executable("jq") == 1 then
-		local jq_result = vim.fn.system("jq --indent 4 .", formatted)
+		local esc = formatted:gsub("'", [['"'"']])
+		local jq_result = vim.fn.system("printf '%s' '" .. esc .. "' | jq --indent 4 .")
 		if vim.v.shell_error == 0 and jq_result ~= "" then
 			formatted = jq_result
 		end
 	end
 
-	local lines = vim.split(formatted, "\n")
+	local lines = vim.split(formatted, "\n", { plain = true })
 	local ok_write, err = pcall(vim.fn.writefile, lines, path)
 	if not ok_write then
 		return false, tostring(err)
@@ -77,57 +62,127 @@ local function write_json(path, data)
 	return true
 end
 
-local function parse_version(v)
+-- ------------------------------------------------------------
+-- Semver compare (handles v prefix + prerelease)
+-- ------------------------------------------------------------
+local function parse_semver(v)
 	if not v then
 		return nil
 	end
 	v = tostring(v)
-	-- Remove Composer version constraints (^, ~, >=, etc.)
+	v = v:gsub("^%s*", ""):gsub("%s*$", "")
+	v = v:gsub("^v", "")
 	v = v:gsub("^[%^~><=]+", "")
-	-- Extract semantic version
-	local major, minor, patch = v:match("^(%d+)%.(%d+)%.(%d+)")
-	if major and minor and patch then
-		return { tonumber(major), tonumber(minor), tonumber(patch) }
+	v = v:gsub("%+.*$", "")
+	local major, minor, patch, pre = v:match("^(%d+)%.(%d+)%.(%d+)%-(.+)$")
+	if not major then
+		major, minor, patch = v:match("^(%d+)%.(%d+)%.(%d+)$")
 	end
-	local maj_min = v:match("^(%d+)%.(%d+)")
-	if maj_min then
-		local ma, mi = v:match("^(%d+)%.(%d+)")
-		return { tonumber(ma), tonumber(mi), 0 }
+	if major then
+		return {
+			major = tonumber(major) or 0,
+			minor = tonumber(minor) or 0,
+			patch = tonumber(patch) or 0,
+			pre = pre,
+		}
 	end
-	local single = v:match("^(%d+)")
-	if single then
-		return { tonumber(single), 0, 0 }
+
+	local ma, mi = v:match("^(%d+)%.(%d+)$")
+	if ma then
+		return { major = tonumber(ma) or 0, minor = tonumber(mi) or 0, patch = 0, pre = nil }
+	end
+	local m1 = v:match("^(%d+)$")
+	if m1 then
+		return { major = tonumber(m1) or 0, minor = 0, patch = 0, pre = nil }
 	end
 	return nil
 end
 
-local function compare_versions(a, b)
-	local pa = parse_version(a)
-	local pb = parse_version(b)
-
-	if not pa and not pb then
-		return 0
+local function split_pre(pre)
+	if not pre or pre == "" then
+		return {}
 	end
-	if not pa then
+	return vim.split(pre, ".", { plain = true })
+end
+
+local function cmp_ident(a, b)
+	local na = tonumber(a)
+	local nb = tonumber(b)
+	if na and nb then
+		if na == nb then
+			return 0
+		end
+		return na < nb and -1 or 1
+	end
+	if na and not nb then
 		return -1
 	end
-	if not pb then
+	if not na and nb then
+		return 1
+	end
+	if a == b then
+		return 0
+	end
+	return a < b and -1 or 1
+end
+
+local function compare_semver(a, b)
+	if not a and not b then
+		return 0
+	end
+	if not a then
+		return -1
+	end
+	if not b then
 		return 1
 	end
 
-	for i = 1, 3 do
-		local ai = pa[i] or 0
-		local bi = pb[i] or 0
-		if ai > bi then
+	if a.major ~= b.major then
+		return a.major < b.major and -1 or 1
+	end
+	if a.minor ~= b.minor then
+		return a.minor < b.minor and -1 or 1
+	end
+	if a.patch ~= b.patch then
+		return a.patch < b.patch and -1 or 1
+	end
+
+	if not a.pre and not b.pre then
+		return 0
+	end
+	if not a.pre and b.pre then
+		return 1
+	end
+	if a.pre and not b.pre then
+		return -1
+	end
+
+	local ap = split_pre(a.pre)
+	local bp = split_pre(b.pre)
+	local n = math.max(#ap, #bp)
+	for i = 1, n do
+		local ai = ap[i]
+		local bi = bp[i]
+		if ai == nil and bi == nil then
+			return 0
+		end
+		if ai == nil then
+			return -1
+		end
+		if bi == nil then
 			return 1
 		end
-		if ai < bi then
-			return -1
+		local c = cmp_ident(ai, bi)
+		if c ~= 0 then
+			return c
 		end
 	end
 	return 0
 end
 
+-- ------------------------------------------------------------
+-- Fetch versions
+-- ------------------------------------------------------------
 function M.fetch_versions(name, _)
 	if not name or name == "" then
 		return nil
@@ -139,24 +194,19 @@ function M.fetch_versions(name, _)
 		current = state.get_installed_version("composer", name)
 	end
 
-	-- Packagist API endpoint
 	local encoded_name = urlencode(name)
 	local url = ("https://repo.packagist.org/p2/%s.json"):format(encoded_name)
 
-	local ok_http, body = pcall(function()
-		return vim.fn.system({ "curl", "-fsS", "--max-time", "10", url })
-	end)
-
-	if not ok_http or not body or body == "" then
+	local res = vim.system({ "curl", "-fsS", "--max-time", "10", url }, { text = true }):wait()
+	if not res or res.code ~= 0 or not res.stdout or res.stdout == "" then
 		return nil
 	end
 
-	local ok_json, parsed = pcall(vim.fn.json_decode, body)
+	local ok_json, parsed = pcall(vim.json.decode, res.stdout)
 	if not ok_json or type(parsed) ~= "table" then
 		return nil
 	end
 
-	-- Extract versions from packages[name] array
 	local packages = parsed.packages
 	if not packages or type(packages) ~= "table" then
 		return nil
@@ -171,9 +221,8 @@ function M.fetch_versions(name, _)
 	for _, entry in ipairs(pkg_data) do
 		if type(entry) == "table" and entry.version then
 			local ver = tostring(entry.version)
-			-- Skip dev versions (dev-master, dev-main, etc.)
 			if not ver:match("^dev%-") then
-				table.insert(versions, ver)
+				versions[#versions + 1] = ver
 			end
 		end
 	end
@@ -182,21 +231,21 @@ function M.fetch_versions(name, _)
 		return nil
 	end
 
-	-- Remove duplicates
 	local seen = {}
 	local unique = {}
 	for _, v in ipairs(versions) do
 		if not seen[v] then
 			seen[v] = true
-			table.insert(unique, v)
+			unique[#unique + 1] = v
 		end
 	end
 
-	-- Sort versions (newest first)
 	table.sort(unique, function(a, b)
-		local cmp = compare_versions(a, b)
+		local pa = parse_semver(a)
+		local pb = parse_semver(b)
+		local cmp = compare_semver(pa, pb)
 		if cmp == 0 then
-			return a > b
+			return tostring(a) > tostring(b)
 		end
 		return cmp == 1
 	end)
@@ -204,6 +253,9 @@ function M.fetch_versions(name, _)
 	return { versions = unique, current = current }
 end
 
+-- ------------------------------------------------------------
+-- Buffer refresh
+-- ------------------------------------------------------------
 local function refresh_buffer(path, data)
 	local bufnr = vim.fn.bufnr(path)
 	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
@@ -218,33 +270,29 @@ local function refresh_buffer(path, data)
 		saved_cursor = api.nvim_win_get_cursor(cur_win)
 	end
 
-	-- Convert data to formatted JSON lines
-	local ok, json_str = pcall(vim.fn.json_encode, data)
+	local ok, json_str = pcall(vim.json.encode, data)
 	if not ok then
 		return
 	end
 
 	local formatted = json_str
 	if vim.fn.executable("jq") == 1 then
-		local jq_result = vim.fn.system("jq --indent 4 .", formatted)
+		local esc = formatted:gsub("'", [['"'"']])
+		local jq_result = vim.fn.system("printf '%s' '" .. esc .. "' | jq --indent 4 .")
 		if vim.v.shell_error == 0 and jq_result ~= "" then
 			formatted = jq_result
 		end
 	end
 
-	local lines = vim.split(formatted, "\n")
-
-	---@diagnostic disable-next-line: deprecated
+	local lines = vim.split(formatted, "\n", { plain = true })
 	pcall(api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
 
 	if saved_cursor then
 		pcall(api.nvim_win_set_cursor, cur_win, saved_cursor)
 	end
 
-	---@diagnostic disable-next-line: deprecated
-	pcall(api.nvim_buf_set_option, bufnr, "modified", false)
+	vim.bo[bufnr].modified = false
 
-	-- Refresh virtual text
 	local ok_state, state = pcall(require, "lvim-dependencies.state")
 	if ok_state and type(state.get_updating) == "function" then
 		local is_updating = state.get_updating()
@@ -261,6 +309,13 @@ local function refresh_buffer(path, data)
 	end)
 end
 
+local function trigger_package_updated()
+	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
+end
+
+-- ------------------------------------------------------------
+-- Composer commands
+-- ------------------------------------------------------------
 local function run_composer_require(path, name, version, scope)
 	local cwd = vim.fn.fnamemodify(path, ":h")
 
@@ -269,9 +324,8 @@ local function run_composer_require(path, name, version, scope)
 		return
 	end
 
-	local cmd
 	local pkg_spec = version and (name .. ":" .. version) or name
-
+	local cmd
 	if scope == "require-dev" then
 		cmd = { "composer", "require", "--dev", pkg_spec }
 	else
@@ -283,90 +337,66 @@ local function run_composer_require(path, name, version, scope)
 		pcall(state.set_updating, true)
 	end
 
-	local out, err = {}, {}
+	vim.system(cmd, { cwd = cwd, text = true }, function(res)
+		vim.schedule(function()
+			if res and res.code == 0 then
+				utils.notify_safe(("%s@%s installed"):format(name, tostring(version)), L.INFO, {})
 
-	vim.fn.jobstart(cmd, {
-		cwd = cwd,
-		stdout_buffered = true,
-		stderr_buffered = true,
-		on_stdout = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					out[#out + 1] = ln
+				local data = read_json(path)
+				if data then
+					refresh_buffer(path, data)
 				end
-			end
-		end,
-		on_stderr = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					err[#err + 1] = ln
-				end
-			end
-		end,
-		on_exit = function(_, code, _)
-			vim.schedule(function()
-				if code == 0 then
-					utils.notify_safe(("%s@%s installed"):format(name, tostring(version)), L.INFO, {})
 
-					local data = read_json(path)
-					if data then
-						refresh_buffer(path, data)
+				if name and version and scope then
+					local ok_st, st = pcall(require, "lvim-dependencies.state")
+					if ok_st and type(st.add_installed_dependency) == "function" then
+						pcall(st.add_installed_dependency, "composer", name, version, scope)
 					end
 
-					if name and version and scope then
-						local ok_st, st = pcall(require, "lvim-dependencies.state")
-						if ok_st and type(st.add_installed_dependency) == "function" then
-							pcall(st.add_installed_dependency, "composer", name, version, scope)
-						end
-
-						vim.defer_fn(function()
-							local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.composer")
-							if ok_parser and type(parser.parse_buffer) == "function" then
-								local buf = vim.fn.bufnr(path)
-								if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
-									local ok_s, s = pcall(require, "lvim-dependencies.state")
-									if ok_s and type(s.set_updating) == "function" then
-										pcall(s.set_updating, false)
-									end
-
-									pcall(parser.parse_buffer, buf)
-
-									vim.defer_fn(function()
-										local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-
-										if ok_chk and type(chk.invalidate_package_cache) == "function" then
-											pcall(chk.invalidate_package_cache, buf, "composer", name)
-										end
-
-										if ok_chk and type(chk.check_manifest_outdated) == "function" then
-											pcall(chk.check_manifest_outdated, buf, "composer")
-										end
-									end, 300)
+					vim.defer_fn(function()
+						local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.composer")
+						if ok_parser and type(parser.parse_buffer) == "function" then
+							local buf = vim.fn.bufnr(path)
+							if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
+								local ok_s, s = pcall(require, "lvim-dependencies.state")
+								if ok_s and type(s.set_updating) == "function" then
+									pcall(s.set_updating, false)
 								end
+
+								pcall(parser.parse_buffer, buf)
+
+								vim.defer_fn(function()
+									local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+									if ok_chk and type(chk.invalidate_package_cache) == "function" then
+										pcall(chk.invalidate_package_cache, buf, "composer", name)
+									end
+									if ok_chk and type(chk.check_manifest_outdated) == "function" then
+										pcall(chk.check_manifest_outdated, buf, "composer")
+									end
+								end, 300)
 							end
-						end, 1500)
+						end
+					end, 1500)
 
-						pcall(function()
-							vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-							---@diagnostic disable-next-line: deprecated
-							vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
-						end)
-					end
-				else
-					local ok_s, s = pcall(require, "lvim-dependencies.state")
-					if ok_s and type(s.set_updating) == "function" then
-						pcall(s.set_updating, false)
-					end
-
-					local msg = table.concat(err, "\n")
-					if msg == "" then
-						msg = "composer require exited with code " .. tostring(code)
-					end
-					utils.notify_safe(("composer require failed: %s"):format(msg), L.ERROR, {})
+					pcall(function()
+						vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
+						trigger_package_updated()
+					end)
 				end
-			end)
-		end,
-	})
+			else
+				local ok_s, s = pcall(require, "lvim-dependencies.state")
+				if ok_s and type(s.set_updating) == "function" then
+					pcall(s.set_updating, false)
+				end
+
+				local msg = (res and res.stderr) or ""
+				if msg == "" then
+					msg = "composer require exited with code " .. tostring(res and res.code or "unknown")
+				end
+				utils.notify_safe(("composer require failed: %s"):format(msg), L.ERROR, {})
+			end
+		end)
+	end)
 end
 
 local function run_composer_remove(path, name)
@@ -384,88 +414,64 @@ local function run_composer_remove(path, name)
 		pcall(state.set_updating, true)
 	end
 
-	local out, err = {}, {}
+	vim.system(cmd, { cwd = cwd, text = true }, function(res)
+		vim.schedule(function()
+			if res and res.code == 0 then
+				utils.notify_safe(("%s removed"):format(name), L.INFO, {})
 
-	vim.fn.jobstart(cmd, {
-		cwd = cwd,
-		stdout_buffered = true,
-		stderr_buffered = true,
-		on_stdout = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					out[#out + 1] = ln
+				local data = read_json(path)
+				if data then
+					refresh_buffer(path, data)
 				end
-			end
-		end,
-		on_stderr = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					err[#err + 1] = ln
+
+				local ok_st, st = pcall(require, "lvim-dependencies.state")
+				if ok_st and type(st.remove_installed_dependency) == "function" then
+					pcall(st.remove_installed_dependency, "composer", name)
 				end
-			end
-		end,
-		on_exit = function(_, code, _)
-			vim.schedule(function()
-				if code == 0 then
-					utils.notify_safe(("%s removed"):format(name), L.INFO, {})
 
-					local data = read_json(path)
-					if data then
-						refresh_buffer(path, data)
-					end
-
-					local ok_st, st = pcall(require, "lvim-dependencies.state")
-					if ok_st and type(st.remove_installed_dependency) == "function" then
-						pcall(st.remove_installed_dependency, "composer", name)
-					end
-
-					vim.defer_fn(function()
-						local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.composer")
-						if ok_parser and type(parser.parse_buffer) == "function" then
-							local buf = vim.fn.bufnr(path)
-							if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
-								local ok_s, s = pcall(require, "lvim-dependencies.state")
-								if ok_s and type(s.set_updating) == "function" then
-									pcall(s.set_updating, false)
-								end
-
-								pcall(parser.parse_buffer, buf)
-
-								vim.defer_fn(function()
-									local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-
-									if ok_chk and type(chk.invalidate_package_cache) == "function" then
-										pcall(chk.invalidate_package_cache, buf, "composer", name)
-									end
-
-									if ok_chk and type(chk.check_manifest_outdated) == "function" then
-										pcall(chk.check_manifest_outdated, buf, "composer")
-									end
-								end, 300)
+				vim.defer_fn(function()
+					local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.composer")
+					if ok_parser and type(parser.parse_buffer) == "function" then
+						local buf = vim.fn.bufnr(path)
+						if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
+							local ok_s, s = pcall(require, "lvim-dependencies.state")
+							if ok_s and type(s.set_updating) == "function" then
+								pcall(s.set_updating, false)
 							end
+
+							pcall(parser.parse_buffer, buf)
+
+							vim.defer_fn(function()
+								local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+								if ok_chk and type(chk.invalidate_package_cache) == "function" then
+									pcall(chk.invalidate_package_cache, buf, "composer", name)
+								end
+								if ok_chk and type(chk.check_manifest_outdated) == "function" then
+									pcall(chk.check_manifest_outdated, buf, "composer")
+								end
+							end, 300)
 						end
-					end, 1500)
-
-					pcall(function()
-						vim.g.lvim_deps_last_updated = name .. "@removed"
-						---@diagnostic disable-next-line: deprecated
-						vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
-					end)
-				else
-					local ok_s, s = pcall(require, "lvim-dependencies.state")
-					if ok_s and type(s.set_updating) == "function" then
-						pcall(s.set_updating, false)
 					end
+				end, 1500)
 
-					local msg = table.concat(err, "\n")
-					if msg == "" then
-						msg = "composer remove exited with code " .. tostring(code)
-					end
-					utils.notify_safe(("composer remove failed: %s"):format(msg), L.ERROR, {})
+				pcall(function()
+					vim.g.lvim_deps_last_updated = name .. "@removed"
+					trigger_package_updated()
+				end)
+			else
+				local ok_s, s = pcall(require, "lvim-dependencies.state")
+				if ok_s and type(s.set_updating) == "function" then
+					pcall(s.set_updating, false)
 				end
-			end)
-		end,
-	})
+
+				local msg = (res and res.stderr) or ""
+				if msg == "" then
+					msg = "composer remove exited with code " .. tostring(res and res.code or "unknown")
+				end
+				utils.notify_safe(("composer remove failed: %s"):format(msg), L.ERROR, {})
+			end
+		end)
+	end)
 end
 
 function M.update(name, opts)
@@ -501,12 +507,10 @@ function M.update(name, opts)
 		return { ok = false, msg = "unable to read composer.json" }
 	end
 
-	-- Ensure scope exists
 	if not data[scope] then
 		data[scope] = {}
 	end
 
-	-- Update version (Composer uses ^ prefix by default)
 	data[scope][name] = "^" .. version
 
 	if opts.from_ui then
@@ -529,8 +533,7 @@ function M.update(name, opts)
 
 	pcall(function()
 		vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-		---@diagnostic disable-next-line: deprecated
-		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+		trigger_package_updated()
 	end)
 
 	utils.notify_safe(("%s -> %s"):format(name, tostring(version)), L.INFO, {})
@@ -597,8 +600,7 @@ function M.delete(name, opts)
 
 	pcall(function()
 		vim.g.lvim_deps_last_updated = name .. "@removed"
-		---@diagnostic disable-next-line: deprecated
-		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+		trigger_package_updated()
 	end)
 
 	utils.notify_safe(("%s removed"):format(name), L.INFO, {})
