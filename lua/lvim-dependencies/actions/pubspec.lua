@@ -39,6 +39,43 @@ local function write_lines(path, lines)
 	return true
 end
 
+local function apply_buffer_change(path, change)
+	if not change then
+		return
+	end
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	local start0 = change.start0 or 0
+	local end0 = change.end0 or 0
+	local replacement = change.lines or {}
+
+	pcall(api.nvim_buf_set_lines, bufnr, start0, end0, false, replacement)
+
+	if saved_cursor then
+		local row = saved_cursor[1]
+		if start0 < row - 1 then
+			local removed = end0 - start0
+			local added = #replacement
+			local delta = added - removed
+			row = math.max(1, row + delta)
+		end
+		pcall(api.nvim_win_set_cursor, cur_win, { row, saved_cursor[2] })
+	end
+
+	vim.bo[bufnr].modified = false
+end
+
 local function find_section_index(lines, section_name)
 	for i, ln in ipairs(lines) do
 		if ln:match("^%s*" .. vim.pesc(section_name) .. "%s*:") then
@@ -60,7 +97,19 @@ local function find_section_end(lines, section_idx)
 	return section_end
 end
 
-local function replace_package_in_section(lines, section_idx, section_end, pkg_name, new_line)
+local function extract_version_from_line(line)
+	if not line then
+		return nil
+	end
+	local v = line:match(":%s*([^%s#]+)")
+	if not v then
+		return nil
+	end
+	v = v:gsub('[",]$', "")
+	return vim.trim(v)
+end
+
+local function find_package_block(lines, section_idx, section_end, pkg_name)
 	for i = section_idx + 1, section_end do
 		local ln = lines[i]
 		local m_name = ln:match("^%s*([%w%-%_%.]+)%s*:")
@@ -83,19 +132,29 @@ local function replace_package_in_section(lines, section_idx, section_end, pkg_n
 					break
 				end
 			end
-
-			local out = {}
-			for k = 1, i - 1 do
-				out[#out + 1] = lines[k]
-			end
-			out[#out + 1] = new_line
-			for k = block_end + 1, #lines do
-				out[#out + 1] = lines[k]
-			end
-			return out, true
+			return i, block_end, ln
 		end
 	end
-	return nil, false
+	return nil, nil, nil
+end
+
+local function replace_package_in_section(lines, section_idx, section_end, pkg_name, new_line)
+	local i, block_end = find_package_block(lines, section_idx, section_end, pkg_name)
+	if not i then
+		return nil, false, nil
+	end
+
+	local out = {}
+	for k = 1, i - 1 do
+		out[#out + 1] = lines[k]
+	end
+	out[#out + 1] = new_line
+	for k = block_end + 1, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local change = { start0 = i - 1, end0 = block_end, lines = { new_line } }
+	return out, true, change
 end
 
 local function insert_package_in_section(lines, section_idx, new_line)
@@ -107,44 +166,28 @@ local function insert_package_in_section(lines, section_idx, new_line)
 	for k = section_idx + 1, #lines do
 		out[#out + 1] = lines[k]
 	end
-	return out, true
+
+	local insert_at = section_idx + 1
+	local change = { start0 = insert_at - 1, end0 = insert_at - 1, lines = { new_line } }
+	return out, true, change
 end
 
 local function remove_package_from_section(lines, section_idx, section_end, pkg_name)
-	for i = section_idx + 1, section_end do
-		local ln = lines[i]
-		local m_name = ln:match("^%s*([%w%-%_%.]+)%s*:")
-		if m_name and tostring(m_name) == tostring(pkg_name) then
-			local pkg_indent = ln:match("^(%s*)") or ""
-			local pkg_indent_len = #pkg_indent
-			local block_end = i
-			for j = i + 1, section_end do
-				local next_ln = lines[j]
-				if not next_ln then
-					break
-				end
-				if next_ln:match("^%S") then
-					break
-				end
-				local next_indent = next_ln:match("^(%s*)") or ""
-				if #next_indent > pkg_indent_len then
-					block_end = j
-				else
-					break
-				end
-			end
-
-			local out = {}
-			for k = 1, i - 1 do
-				out[#out + 1] = lines[k]
-			end
-			for k = block_end + 1, #lines do
-				out[#out + 1] = lines[k]
-			end
-			return out
-		end
+	local i, block_end = find_package_block(lines, section_idx, section_end, pkg_name)
+	if not i then
+		return nil, nil
 	end
-	return nil
+
+	local out = {}
+	for k = 1, i - 1 do
+		out[#out + 1] = lines[k]
+	end
+	for k = block_end + 1, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local change = { start0 = i - 1, end0 = block_end, lines = {} }
+	return out, change
 end
 
 local function version_parts(v)
@@ -298,6 +341,100 @@ local function trigger_package_updated()
 	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
+local function apply_pubspec_update(path, name, version, scope)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read pubspec.yaml from disk"
+	end
+
+	local section_idx = find_section_index(lines, scope)
+	local section_end = nil
+	local change = nil
+	local new_lines = nil
+
+	if not section_idx then
+		local insert_lines = { "", scope .. ":" }
+		local pkg_indent = "  "
+		local new_line = string.format("%s%s: %s", pkg_indent, name, tostring(version))
+		for _, l in ipairs(insert_lines) do
+			lines[#lines + 1] = l
+		end
+		lines[#lines + 1] = new_line
+
+		local start0 = (#lines - #insert_lines - 1)
+		change = { start0 = start0, end0 = start0, lines = { "", scope .. ":", new_line } }
+		new_lines = lines
+	else
+		section_end = find_section_end(lines, section_idx)
+		local i, _, ln = find_package_block(lines, section_idx, section_end, name)
+
+		if i and ln then
+			local current_version = extract_version_from_line(ln)
+			if current_version and tostring(current_version) == tostring(version) then
+				return false, "version unchanged"
+			end
+		end
+
+		local pkg_indent = "  "
+		local sample_ln = lines[section_idx + 1]
+		if sample_ln then
+			local s_indent = sample_ln:match("^(%s*)") or ""
+			if #s_indent > 0 then
+				pkg_indent = s_indent
+			end
+		end
+		local new_line = string.format("%s%s: %s", pkg_indent, name, tostring(version))
+
+		local replaced = false
+		new_lines, replaced, change = replace_package_in_section(lines, section_idx, section_end, name, new_line)
+		if not replaced then
+			new_lines, _, change = insert_package_in_section(lines, section_idx, new_line)
+		end
+	end
+
+	local okw, werr = write_lines(path, new_lines)
+	if not okw then
+		return false, "failed to write pubspec.yaml: " .. tostring(werr)
+	end
+
+	apply_buffer_change(path, change)
+	return true
+end
+
+local function apply_pubspec_remove(path, name)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read pubspec.yaml from disk"
+	end
+
+	local scopes = const.SECTION_NAMES.pubspec or { "dependencies", "dev_dependencies" }
+	local new_lines = nil
+	local change = nil
+
+	for _, scope in ipairs(scopes) do
+		local section_idx = find_section_index(lines, scope)
+		if section_idx then
+			local section_end = find_section_end(lines, section_idx)
+			new_lines, change = remove_package_from_section(lines, section_idx, section_end, name)
+			if new_lines then
+				break
+			end
+		end
+	end
+
+	if not new_lines then
+		return false, "package not found"
+	end
+
+	local okw, werr = write_lines(path, new_lines)
+	if not okw then
+		return false, "failed to write pubspec.yaml: " .. tostring(werr)
+	end
+
+	apply_buffer_change(path, change)
+	return true
+end
+
 -- Run pub get to sync lockfile with pubspec.yaml changes
 local function run_pub_get(path, name, version, scope, on_success_msg)
 	local lines = read_lines(path)
@@ -337,9 +474,8 @@ local function run_pub_get(path, name, version, scope, on_success_msg)
 					{}
 				)
 
-				local fresh_lines = read_lines(path)
-				if fresh_lines then
-					refresh_buffer(path, fresh_lines)
+				if name and version and scope then
+					apply_pubspec_update(path, name, version, scope)
 				end
 
 				if name and version and scope then
@@ -429,10 +565,7 @@ local function run_pub_remove(path, name)
 			if res and res.code == 0 then
 				utils.notify_safe(("pubspec: %s removed"):format(name), L.INFO, {})
 
-				local fresh_lines = read_lines(path)
-				if fresh_lines then
-					refresh_buffer(path, fresh_lines)
-				end
+				apply_pubspec_remove(path, name)
 
 				local ok_st, st = pcall(require, "lvim-dependencies.state")
 				if ok_st and type(st.remove_installed_dependency) == "function" then

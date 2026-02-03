@@ -64,6 +64,27 @@ local function clean(v)
 	return utils.clean_version(v)
 end
 
+local function go_module_path_for_version(name, version)
+	if not name or name == "" then
+		return name
+	end
+
+	if name:match("/v%d+$") then
+		return name
+	end
+
+	if name:match("%.v%d+$") then
+		return name
+	end
+
+	local major = (to_version(version) or {})[1] or 0
+	if major >= 2 then
+		return name .. "/v" .. tostring(major)
+	end
+
+	return name
+end
+
 local function extract_latest_from_pub_body(body)
 	if not body or body == "" then
 		return nil
@@ -320,7 +341,6 @@ local function parser_crates(body)
 end
 
 local function parser_npm(body)
-	-- Strict: only trust real JSON to avoid false matches from HTML/error pages.
 	local parsed = safe_parse_json(body)
 	if type(parsed) ~= "table" then
 		return nil
@@ -471,13 +491,23 @@ local function schedule_publish(bufnr, manifest_key)
 			end
 
 			if info and info.latest and inst and inst_cur and inst_cur ~= "" then
-				local cmp = compare_versions(inst_cur, info.latest)
+				local latest = info.latest
+				local cmp = compare_versions(inst_cur, latest)
+
+				if manifest_key == "composer" then
+					local inst_clean = clean(inst_cur) or inst_cur
+					local latest_clean = clean(latest) or latest
+					cmp = compare_versions(inst_clean, latest_clean)
+					latest = latest_clean
+					inst_cur = inst_clean
+				end
+
 				if cmp == 1 then
-					final[name] = { current = inst_cur, latest = info.latest, constraint_newer = true }
+					final[name] = { current = inst_cur, latest = latest, constraint_newer = true }
 				elseif cmp == 0 then
-					final[name] = { current = inst_cur, latest = info.latest, up_to_date = true }
+					final[name] = { current = inst_cur, latest = latest, up_to_date = true }
 				else
-					final[name] = { current = inst_cur, latest = info.latest }
+					final[name] = { current = inst_cur, latest = latest }
 				end
 			elseif info and info.latest and inst then
 				final[name] = { current = inst_cur, latest = info.latest }
@@ -506,7 +536,6 @@ local function add_pending_result(bufnr, name, latest, manifest_key)
 	schedule_publish(bufnr, manifest_key)
 end
 
--- CLI fallback helper
 local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_failure)
 	local idx = 1
 	local function try_next()
@@ -573,6 +602,8 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 	local deps_state = state.get_dependencies(manifest_key)
 	local installed_table = deps_state.installed or {}
 	local scalar_deps = {}
+	local go_fetch_names = nil
+
 	for name, info in pairs(installed_table) do
 		local cur = nil
 		if type(info) == "table" then
@@ -587,6 +618,11 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				end
 			else
 				scalar_deps[name] = true
+			end
+
+			if manifest_key == "go" then
+				go_fetch_names = go_fetch_names or {}
+				go_fetch_names[name] = go_module_path_for_version(name, cur)
 			end
 		end
 	end
@@ -804,6 +840,11 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 			idx = idx + 1
 			in_flight = in_flight + 1
 
+			local fetch_name = name
+			if manifest_key == "go" and go_fetch_names and go_fetch_names[name] then
+				fetch_name = go_fetch_names[name]
+			end
+
 			local on_success = function(latest)
 				in_flight = in_flight - 1
 				versions_cache[manifest_key] = versions_cache[manifest_key] or {}
@@ -824,7 +865,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 
 			local on_error = function(err)
 				in_flight = in_flight - 1
-				utils.notify_safe(fmt("Error fetching %s: %s", name, tostring(err)), L.ERROR)
+				utils.notify_safe(fmt("Error fetching %s: %s", fetch_name, tostring(err)), L.ERROR)
 				local c = versions_cache[manifest_key] and versions_cache[manifest_key][bufnr]
 				if c and c.data then
 					c.data[name] = nil
@@ -834,7 +875,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				finish_phase_if_done()
 			end
 
-			fetcher(name, on_success, on_error)
+			fetcher(fetch_name, on_success, on_error)
 		end
 	end
 

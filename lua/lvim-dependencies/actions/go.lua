@@ -6,7 +6,7 @@ local L = vim.log.levels
 
 local M = {}
 
-local function urlencode_module(str)
+local function urlencode(str)
 	if not str then
 		return ""
 	end
@@ -17,24 +17,10 @@ local function urlencode_module(str)
 end
 
 local function find_go_mod_path()
-	local cwd = vim.fn.getcwd()
 	local manifest_files = const.MANIFEST_FILES.go or { "go.mod" }
-
-	while true do
-		for _, filename in ipairs(manifest_files) do
-			local candidate = cwd .. "/" .. filename
-			if vim.fn.filereadable(candidate) == 1 then
-				return candidate
-			end
-		end
-
-		local parent = vim.fn.fnamemodify(cwd, ":h")
-		if parent == cwd or parent == "" then
-			break
-		end
-		cwd = parent
-	end
-	return nil
+	local cwd = vim.fn.getcwd()
+	local found = vim.fs.find(manifest_files, { upward = true, path = cwd, type = "file" })
+	return found and found[1] or nil
 end
 
 local function read_lines(path)
@@ -53,17 +39,71 @@ local function write_lines(path, lines)
 	return true
 end
 
+local function apply_buffer_change(path, change)
+	if not change then
+		return
+	end
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	local start0 = change.start0 or 0
+	local end0 = change.end0 or 0
+	local replacement = change.lines or {}
+
+	pcall(api.nvim_buf_set_lines, bufnr, start0, end0, false, replacement)
+
+	if saved_cursor then
+		local row = saved_cursor[1]
+		if start0 < row - 1 then
+			local removed = end0 - start0
+			local added = #replacement
+			local delta = added - removed
+			row = math.max(1, row + delta)
+		end
+		pcall(api.nvim_win_set_cursor, cur_win, { row, saved_cursor[2] })
+	end
+
+	vim.bo[bufnr].modified = false
+end
+
 local function parse_version(v)
 	if not v then
 		return nil
 	end
 	v = tostring(v)
-	-- Handle Go version formats: v1.2.3, v0.0.0-20231201120000-abc123456789
 	local major, minor, patch = v:match("^v?(%d+)%.(%d+)%.(%d+)")
 	if major and minor and patch then
 		return { tonumber(major), tonumber(minor), tonumber(patch) }
 	end
 	return nil
+end
+
+local function normalize_version(version)
+	if not version or version == "" then
+		return version
+	end
+	local v = tostring(version)
+	if v:sub(1, 1) ~= "v" and v:match("^%d") then
+		return "v" .. v
+	end
+	return v
+end
+
+local function version_has_incompatible(v)
+	if not v then
+		return false
+	end
+	return tostring(v):find("+incompatible", 1, true) ~= nil
 end
 
 local function compare_versions(a, b)
@@ -93,6 +133,170 @@ local function compare_versions(a, b)
 	return 0
 end
 
+local function strip_major_path(name)
+	if not name then
+		return name
+	end
+	return name:gsub("/v%d+$", "")
+end
+
+local function is_gopkg_in(name)
+	return name and name:match("%.v%d+$") ~= nil
+end
+
+local function go_module_path_for_version(name, version)
+	if not name or name == "" then
+		return name
+	end
+
+	if name:match("/v%d+$") then
+		return name
+	end
+
+	if name:match("%.v%d+$") then
+		return name
+	end
+
+	local major = (parse_version(version) or {})[1] or 0
+	if major >= 2 then
+		return name .. "/v" .. tostring(major)
+	end
+
+	return name
+end
+
+local function resolve_update_module_name(name, version)
+	if not name or name == "" then
+		return name
+	end
+
+	if is_gopkg_in(name) then
+		return name
+	end
+
+	if version_has_incompatible(version) then
+		return strip_major_path(name)
+	end
+
+	return go_module_path_for_version(name, version)
+end
+
+local function fetch_go_proxy_versions(module_name)
+	local encoded_name = urlencode(module_name)
+	local url = ("https://proxy.golang.org/%s/@v/list"):format(encoded_name)
+
+	local res = vim.system({ "curl", "-fsS", "--max-time", "10", url }, { text = true }):wait()
+	if not res or res.code ~= 0 or not res.stdout or res.stdout == "" then
+		return nil
+	end
+
+	local versions = {}
+	for line in res.stdout:gmatch("[^\r\n]+") do
+		local trimmed = line:match("^%s*(.-)%s*$")
+		if trimmed and trimmed ~= "" then
+			versions[#versions + 1] = trimmed
+		end
+	end
+
+	if #versions == 0 then
+		return nil
+	end
+	return versions
+end
+
+local function should_migrate_imports(name, module_name)
+	if not name or not module_name then
+		return false
+	end
+	if name == module_name then
+		return false
+	end
+	if is_gopkg_in(name) or is_gopkg_in(module_name) then
+		return false
+	end
+	return true
+end
+
+local function resolve_import_migration(name, module_name)
+	if not should_migrate_imports(name, module_name) then
+		return nil, nil
+	end
+	local old_import = name
+	local new_import = module_name
+	if old_import == new_import then
+		return nil, nil
+	end
+	return old_import, new_import
+end
+
+local function find_go_files_with_import(cwd, old_import)
+	if vim.fn.executable("rg") == 1 then
+		local res = vim.fn.systemlist({ "rg", "-l", "--no-messages", "--glob", "*.go", old_import, cwd })
+		if type(res) == "table" then
+			return res
+		end
+	end
+
+	local files = vim.fs.find(function(p)
+		return p:sub(-3) == ".go"
+	end, { path = cwd, type = "file", limit = math.huge })
+
+	local hits = {}
+	for _, f in ipairs(files or {}) do
+		local lines = read_lines(f)
+		if lines then
+			for _, line in ipairs(lines) do
+				if line:find(old_import, 1, true) then
+					hits[#hits + 1] = f
+					break
+				end
+			end
+		end
+	end
+
+	return hits
+end
+
+local function migrate_imports(cwd, old_import, new_import)
+	if not old_import or not new_import or old_import == new_import then
+		return 0, 0
+	end
+
+	local files = find_go_files_with_import(cwd, old_import)
+	if not files or #files == 0 then
+		return 0, 0
+	end
+
+	local changed_files = 0
+	local changed_lines = 0
+
+	for _, path in ipairs(files) do
+		local lines = read_lines(path)
+		if lines then
+			local changed = false
+			for i, line in ipairs(lines) do
+				local new_line = line
+				new_line = new_line:gsub('"' .. old_import .. '/"', '"' .. new_import .. '/"')
+				new_line = new_line:gsub('"' .. old_import .. "/", '"' .. new_import .. "/")
+				new_line = new_line:gsub('"' .. old_import .. '"', '"' .. new_import .. '"')
+				if new_line ~= line then
+					lines[i] = new_line
+					changed = true
+					changed_lines = changed_lines + 1
+				end
+			end
+			if changed then
+				local ok = write_lines(path, lines)
+				if ok then
+					changed_files = changed_files + 1
+				end
+			end
+		end
+	end
+
+	return changed_files, changed_lines
+end
+
 function M.fetch_versions(name, _)
 	if not name or name == "" then
 		return nil
@@ -104,23 +308,58 @@ function M.fetch_versions(name, _)
 		current = state.get_installed_version("go", name)
 	end
 
-	local encoded_name = urlencode_module(name)
-	local url = ("https://proxy.golang.org/%s/@v/list"):format(encoded_name)
+	local targets = {}
+	local target_set = {}
 
-	local ok_http, body = pcall(function()
-		return vim.fn.system({ "curl", "-fsS", "--max-time", "10", url })
-	end)
-
-	if not ok_http or not body or body == "" then
-		return nil
+	local function add_target(t)
+		if t and t ~= "" and not target_set[t] then
+			target_set[t] = true
+			targets[#targets + 1] = t
+		end
 	end
 
-	-- Parse version list (one per line)
+	local has_path_major = name:match("/v%d+$") ~= nil
+	local has_dot_major = name:match("%.v%d+$") ~= nil
+
+	if has_path_major then
+		add_target(name)
+		add_target(strip_major_path(name))
+	elseif has_dot_major then
+		add_target(name)
+	else
+		add_target(name)
+	end
+
+	local base_versions = fetch_go_proxy_versions(name)
+	if not has_dot_major and base_versions then
+		local max_major = 0
+		for _, v in ipairs(base_versions) do
+			local pv = parse_version(v)
+			if pv and pv[1] and pv[1] > max_major then
+				max_major = pv[1]
+			end
+		end
+		if max_major >= 2 then
+			add_target(name .. "/v" .. tostring(max_major))
+		end
+	end
+
+	if current and not has_dot_major then
+		add_target(go_module_path_for_version(name, current))
+	end
+
 	local versions = {}
-	for line in body:gmatch("[^\r\n]+") do
-		local trimmed = line:match("^%s*(.-)%s*$")
-		if trimmed and trimmed ~= "" then
-			table.insert(versions, trimmed)
+	local seen = {}
+
+	for _, t in ipairs(targets) do
+		local list = fetch_go_proxy_versions(t)
+		if list then
+			for _, v in ipairs(list) do
+				if v and not seen[v] then
+					seen[v] = true
+					versions[#versions + 1] = v
+				end
+			end
 		end
 	end
 
@@ -128,7 +367,6 @@ function M.fetch_versions(name, _)
 		return nil
 	end
 
-	-- Sort versions (newest first)
 	table.sort(versions, function(a, b)
 		local cmp = compare_versions(a, b)
 		if cmp == 0 then
@@ -145,18 +383,15 @@ local function find_require_block(lines)
 	local in_require = false
 
 	for i, line in ipairs(lines) do
-		-- Single-line require
 		if line:match("^require%s+") and not line:match("^require%s*%(") then
-			return nil, nil -- Single-line format, not block
+			return nil, nil
 		end
 
-		-- Multi-line require block start
 		if line:match("^require%s*%(") then
 			start_idx = i
 			in_require = true
 		end
 
-		-- End of require block
 		if in_require and line:match("^%)") then
 			end_idx = i
 			break
@@ -173,7 +408,6 @@ local function find_module_in_require(lines, start_idx, end_idx, module_name)
 
 	for i = start_idx + 1, end_idx - 1 do
 		local line = lines[i]
-		-- Match: module_name v1.2.3
 		local mod, ver = line:match("^%s*([^%s]+)%s+([^%s]+)")
 		if mod and tostring(mod) == tostring(module_name) then
 			return i, ver
@@ -183,47 +417,125 @@ local function find_module_in_require(lines, start_idx, end_idx, module_name)
 	return nil, nil
 end
 
-local function refresh_buffer(path, fresh_lines)
+local function find_module_in_require_any(lines, start_idx, end_idx, names)
+	for _, n in ipairs(names) do
+		local idx, ver = find_module_in_require(lines, start_idx, end_idx, n)
+		if idx then
+			return idx, ver, n
+		end
+	end
+	return nil, nil, nil
+end
+
+local function reparse_and_check_debounced(path, updated_module_name)
 	local bufnr = vim.fn.bufnr(path)
 	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
 		return
 	end
 
-	local cur_buf = api.nvim_get_current_buf()
-	local cur_win = api.nvim_get_current_win()
-	local saved_cursor = nil
-
-	if cur_buf == bufnr then
-		saved_cursor = api.nvim_win_get_cursor(cur_win)
-	end
-
-	---@diagnostic disable-next-line: deprecated
-	pcall(api.nvim_buf_set_lines, bufnr, 0, -1, false, fresh_lines)
-
-	if saved_cursor then
-		pcall(api.nvim_win_set_cursor, cur_win, saved_cursor)
-	end
-
-	---@diagnostic disable-next-line: deprecated
-	pcall(api.nvim_buf_set_option, bufnr, "modified", false)
-
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.get_updating) == "function" then
-		local is_updating = state.get_updating()
-		if is_updating then
-			return
+	vim.defer_fn(function()
+		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.go")
+		if ok_parser and type(parser.parse_buffer) == "function" then
+			pcall(parser.parse_buffer, bufnr)
 		end
-	end
+	end, 250)
 
-	pcall(function()
-		local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-		if ok_vt and type(vt.display) == "function" then
-			pcall(vt.display, bufnr)
+	vim.defer_fn(function()
+		local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+		if ok_chk and type(chk.invalidate_package_cache) == "function" and updated_module_name then
+			pcall(chk.invalidate_package_cache, bufnr, "go", updated_module_name)
 		end
-	end)
+		if ok_chk and type(chk.check_manifest_outdated) == "function" then
+			pcall(chk.check_manifest_outdated, bufnr, "go")
+		end
+	end, 1200)
 end
 
-local function run_go_get(path, name, version)
+local function set_updating_flag(v)
+	local ok_state, st = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(st.set_updating) == "function" then
+		pcall(st.set_updating, v)
+	end
+end
+
+local function trigger_package_updated()
+	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
+end
+
+local function apply_go_update(path, name, version, original_name)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read go.mod"
+	end
+
+	local start_idx, end_idx = find_require_block(lines)
+	if not start_idx or not end_idx then
+		return false, "require block not found in go.mod"
+	end
+
+	local module_name = resolve_update_module_name(name, version)
+	local candidates = { name, strip_major_path(name), module_name, original_name }
+
+	local mod_idx, existing_ver = find_module_in_require_any(lines, start_idx, end_idx, candidates)
+	local new_line = string.format("\t%s %s", module_name, version)
+
+	if mod_idx and existing_ver and tostring(existing_ver) == tostring(version) then
+		return false, "version unchanged"
+	end
+
+	if mod_idx then
+		lines[mod_idx] = new_line
+		local ok_write, werr = write_lines(path, lines)
+		if not ok_write then
+			return false, "failed to write go.mod: " .. tostring(werr)
+		end
+		apply_buffer_change(path, { start0 = mod_idx - 1, end0 = mod_idx, lines = { new_line } })
+		return true
+	end
+
+	table.insert(lines, end_idx, new_line)
+	local ok_write, werr = write_lines(path, lines)
+	if not ok_write then
+		return false, "failed to write go.mod: " .. tostring(werr)
+	end
+	apply_buffer_change(path, { start0 = end_idx - 1, end0 = end_idx - 1, lines = { new_line } })
+	return true
+end
+
+local function apply_go_remove(path, name)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read go.mod"
+	end
+
+	local start_idx, end_idx = find_require_block(lines)
+	if not start_idx or not end_idx then
+		return false, "require block not found in go.mod"
+	end
+
+	local candidates = { name, strip_major_path(name) }
+	local mod_idx, _, found_name = find_module_in_require_any(lines, start_idx, end_idx, candidates)
+	if not mod_idx then
+		return false, "module " .. name .. " not found in require block"
+	end
+
+	local new_lines = {}
+	for i, line in ipairs(lines) do
+		if i ~= mod_idx then
+			new_lines[#new_lines + 1] = line
+		end
+	end
+
+	local ok_write, werr = write_lines(path, new_lines)
+	if not ok_write then
+		return false, "failed to write go.mod: " .. tostring(werr)
+	end
+
+	apply_buffer_change(path, { start0 = mod_idx - 1, end0 = mod_idx, lines = {} })
+	return true, found_name or name
+end
+
+local function run_go_get(path, name, version, original_name)
 	local cwd = vim.fn.fnamemodify(path, ":h")
 
 	if vim.fn.executable("go") == 0 then
@@ -231,107 +543,82 @@ local function run_go_get(path, name, version)
 		return
 	end
 
-	local pkg_spec = version and (name .. "@" .. version) or name
-	local cmd = { "go", "get", pkg_spec }
+	version = normalize_version(version)
 
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.set_updating) == "function" then
-		pcall(state.set_updating, true)
+	if version_has_incompatible(version) and name:match("/v%d+$") then
+		name = strip_major_path(name)
 	end
 
-	local out, err = {}, {}
+	local module_name = resolve_update_module_name(name, version)
 
-	vim.fn.jobstart(cmd, {
-		cwd = cwd,
-		stdout_buffered = true,
-		stderr_buffered = true,
-		on_stdout = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					out[#out + 1] = ln
+	local old_import, new_import
+	if original_name and original_name ~= name and version_has_incompatible(version) then
+		old_import, new_import = original_name, module_name
+	else
+		old_import, new_import = resolve_import_migration(name, module_name)
+	end
+
+	if old_import and new_import then
+		local changed_files, changed_lines = migrate_imports(cwd, old_import, new_import)
+		if changed_files > 0 then
+			utils.notify_safe(
+				("Migrated %d file(s) / %d line(s) imports to %s"):format(changed_files, changed_lines, new_import),
+				L.INFO,
+				{}
+			)
+		else
+			utils.notify_safe(
+				("No imports updated. If your code still imports %s, go.mod may revert."):format(old_import),
+				L.WARN,
+				{}
+			)
+		end
+	end
+
+	local pkg_spec = version and (module_name .. "@" .. version) or module_name
+	local cmd = { "go", "get", pkg_spec }
+
+	set_updating_flag(true)
+
+	vim.system(cmd, { cwd = cwd, text = true }, function(res)
+		vim.schedule(function()
+			if not res or res.code ~= 0 then
+				set_updating_flag(false)
+
+				local msg = (res and res.stderr) or ""
+				if msg == "" then
+					msg = "go get exited with code " .. tostring(res and res.code or "unknown")
 				end
+				utils.notify_safe(("go get failed: %s"):format(msg), L.ERROR, {})
+				return
 			end
-		end,
-		on_stderr = function(_, data, _)
-			if data then
-				for _, ln in ipairs(data) do
-					err[#err + 1] = ln
-				end
-			end
-		end,
-		on_exit = function(_, code, _)
-			vim.schedule(function()
-				if code == 0 then
-					utils.notify_safe(("%s@%s installed"):format(name, tostring(version)), L.INFO, {})
 
-					-- Run go mod tidy to clean up
-					vim.fn.jobstart({ "go", "mod", "tidy" }, {
-						cwd = cwd,
-						on_exit = function(_, _, _)
-							vim.schedule(function()
-								local fresh_lines = read_lines(path)
-								if fresh_lines then
-									refresh_buffer(path, fresh_lines)
-								end
+			utils.notify_safe(("%s@%s installed"):format(module_name, tostring(version)), L.INFO, {})
 
-								if name and version then
-									local ok_st, st = pcall(require, "lvim-dependencies.state")
-									if ok_st and type(st.add_installed_dependency) == "function" then
-										pcall(st.add_installed_dependency, "go", name, version, "require")
-									end
+			vim.system({ "go", "mod", "tidy" }, { cwd = cwd, text = true }, function(res2)
+				vim.schedule(function()
+					set_updating_flag(false)
 
-									vim.defer_fn(function()
-										local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.go")
-										if ok_parser and type(parser.parse_buffer) == "function" then
-											local buf = vim.fn.bufnr(path)
-											if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
-												local ok_s, s = pcall(require, "lvim-dependencies.state")
-												if ok_s and type(s.set_updating) == "function" then
-													pcall(s.set_updating, false)
-												end
-
-												pcall(parser.parse_buffer, buf)
-
-												vim.defer_fn(function()
-													local ok_chk, chk =
-														pcall(require, "lvim-dependencies.actions.check_manifests")
-
-													if ok_chk and type(chk.invalidate_package_cache) == "function" then
-														pcall(chk.invalidate_package_cache, buf, "go", name)
-													end
-
-													if ok_chk and type(chk.check_manifest_outdated) == "function" then
-														pcall(chk.check_manifest_outdated, buf, "go")
-													end
-												end, 300)
-											end
-										end
-									end, 1500)
-
-									pcall(function()
-										vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-										---@diagnostic disable-next-line: deprecated
-										vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
-									end)
-								end
-							end)
-						end,
-					})
-				else
-					local ok_s, s = pcall(require, "lvim-dependencies.state")
-					if ok_s and type(s.set_updating) == "function" then
-						pcall(s.set_updating, false)
+					if not res2 or res2.code ~= 0 then
+						local msg = (res2 and res2.stderr) or ""
+						if msg == "" then
+							msg = "go mod tidy exited with code " .. tostring(res2 and res2.code or "unknown")
+						end
+						utils.notify_safe(("go mod tidy failed: %s"):format(msg), L.ERROR, {})
+						return
 					end
 
-					local msg = table.concat(err, "\n")
-					if msg == "" then
-						msg = "go get exited with code " .. tostring(code)
-					end
-					utils.notify_safe(("go get failed: %s"):format(msg), L.ERROR, {})
-				end
+					apply_go_update(path, module_name, version, original_name)
+					reparse_and_check_debounced(path, module_name)
+
+					pcall(function()
+						vim.g.lvim_deps_last_updated = module_name .. "@" .. tostring(version)
+						trigger_package_updated()
+					end)
+				end)
 			end)
-		end,
-	})
+		end)
+	end)
 end
 
 local function run_go_remove(path, name)
@@ -342,116 +629,36 @@ local function run_go_remove(path, name)
 		return
 	end
 
-	-- Remove from go.mod manually, then run go mod tidy
-	local lines = read_lines(path)
-	if not lines then
-		utils.notify_safe("unable to read go.mod", L.ERROR, {})
-		return
-	end
-
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.set_updating) == "function" then
-		pcall(state.set_updating, true)
-	end
-
-	local start_idx, end_idx = find_require_block(lines)
-	if not start_idx or not end_idx then
-		utils.notify_safe("require block not found in go.mod", L.ERROR, {})
-		local ok_s, s = pcall(require, "lvim-dependencies.state")
-		if ok_s and type(s.set_updating) == "function" then
-			pcall(s.set_updating, false)
-		end
-		return
-	end
-
-	local mod_idx, _ = find_module_in_require(lines, start_idx, end_idx, name)
-	if not mod_idx then
+	local ok, found_name = apply_go_remove(path, name)
+	if not ok then
 		utils.notify_safe(("module %s not found in go.mod"):format(name), L.WARN, {})
-		local ok_s, s = pcall(require, "lvim-dependencies.state")
-		if ok_s and type(s.set_updating) == "function" then
-			pcall(s.set_updating, false)
-		end
 		return
 	end
 
-	-- Remove the line
-	local new_lines = {}
-	for i, line in ipairs(lines) do
-		if i ~= mod_idx then
-			table.insert(new_lines, line)
-		end
-	end
+	set_updating_flag(true)
+	vim.system({ "go", "mod", "tidy" }, { cwd = cwd, text = true }, function(res)
+		vim.schedule(function()
+			set_updating_flag(false)
 
-	local ok_write, werr = write_lines(path, new_lines)
-	if not ok_write then
-		utils.notify_safe(("failed to write go.mod: %s"):format(tostring(werr)), L.ERROR, {})
-		local ok_s, s = pcall(require, "lvim-dependencies.state")
-		if ok_s and type(s.set_updating) == "function" then
-			pcall(s.set_updating, false)
-		end
-		return
-	end
-
-	-- Run go mod tidy
-	vim.fn.jobstart({ "go", "mod", "tidy" }, {
-		cwd = cwd,
-		on_exit = function(_, code, _)
-			vim.schedule(function()
-				if code == 0 then
-					utils.notify_safe(("%s removed"):format(name), L.INFO, {})
-
-					local fresh_lines = read_lines(path)
-					if fresh_lines then
-						refresh_buffer(path, fresh_lines)
-					end
-
-					local ok_st, st = pcall(require, "lvim-dependencies.state")
-					if ok_st and type(st.remove_installed_dependency) == "function" then
-						pcall(st.remove_installed_dependency, "go", name)
-					end
-
-					vim.defer_fn(function()
-						local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.go")
-						if ok_parser and type(parser.parse_buffer) == "function" then
-							local buf = vim.fn.bufnr(path)
-							if buf ~= -1 and api.nvim_buf_is_loaded(buf) then
-								local ok_s, s = pcall(require, "lvim-dependencies.state")
-								if ok_s and type(s.set_updating) == "function" then
-									pcall(s.set_updating, false)
-								end
-
-								pcall(parser.parse_buffer, buf)
-
-								vim.defer_fn(function()
-									local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-
-									if ok_chk and type(chk.invalidate_package_cache) == "function" then
-										pcall(chk.invalidate_package_cache, buf, "go", name)
-									end
-
-									if ok_chk and type(chk.check_manifest_outdated) == "function" then
-										pcall(chk.check_manifest_outdated, buf, "go")
-									end
-								end, 300)
-							end
-						end
-					end, 1500)
-
-					pcall(function()
-						vim.g.lvim_deps_last_updated = name .. "@removed"
-						---@diagnostic disable-next-line: deprecated
-						vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
-					end)
-				else
-					local ok_s, s = pcall(require, "lvim-dependencies.state")
-					if ok_s and type(s.set_updating) == "function" then
-						pcall(s.set_updating, false)
-					end
-					utils.notify_safe("go mod tidy failed after removal", L.ERROR, {})
+			if not res or res.code ~= 0 then
+				local msg = (res and res.stderr) or ""
+				if msg == "" then
+					msg = "go mod tidy exited with code " .. tostring(res and res.code or "unknown")
 				end
+				utils.notify_safe(("go mod tidy failed after removal: %s"):format(msg), L.ERROR, {})
+				return
+			end
+
+			utils.notify_safe(("%s removed"):format(found_name or name), L.INFO, {})
+
+			reparse_and_check_debounced(path, found_name or name)
+
+			pcall(function()
+				vim.g.lvim_deps_last_updated = (found_name or name) .. "@removed"
+				trigger_package_updated()
 			end)
-		end,
-	})
+		end)
+	end)
 end
 
 function M.update(name, opts)
@@ -464,6 +671,14 @@ function M.update(name, opts)
 		return { ok = false, msg = "version is required" }
 	end
 
+	version = normalize_version(version)
+
+	local original_name = name
+
+	if version_has_incompatible(version) and name:match("/v%d+$") then
+		name = strip_major_path(name)
+	end
+
 	local path = find_go_mod_path()
 	if not path then
 		return { ok = false, msg = "go.mod not found in project tree" }
@@ -471,51 +686,26 @@ function M.update(name, opts)
 
 	if opts.from_ui then
 		utils.notify_safe(("updating %s to %s..."):format(name, tostring(version)), L.INFO, {})
-		run_go_get(path, name, version)
+		run_go_get(path, name, version, original_name)
 		return { ok = true, msg = "started" }
 	end
 
-	local lines = read_lines(path)
-	if not lines then
-		return { ok = false, msg = "unable to read go.mod" }
+	local ok_apply, err = apply_go_update(path, name, version, original_name)
+	if not ok_apply and err == "version unchanged" then
+		return { ok = true, msg = "unchanged" }
+	end
+	if not ok_apply then
+		return { ok = false, msg = err }
 	end
 
-	local start_idx, end_idx = find_require_block(lines)
-	if not start_idx or not end_idx then
-		return { ok = false, msg = "require block not found in go.mod" }
-	end
-
-	local mod_idx, _ = find_module_in_require(lines, start_idx, end_idx, name)
-
-	local new_line = string.format("\t%s %s", name, version)
-
-	if mod_idx then
-		-- Replace existing
-		lines[mod_idx] = new_line
-	else
-		-- Insert new (before closing paren)
-		table.insert(lines, end_idx, new_line)
-	end
-
-	local ok_write, werr = write_lines(path, lines)
-	if not ok_write then
-		return { ok = false, msg = "failed to write go.mod: " .. tostring(werr) }
-	end
-
-	refresh_buffer(path, lines)
-
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.add_installed_dependency) == "function" then
-		pcall(state.add_installed_dependency, "go", name, version, "require")
-	end
+	reparse_and_check_debounced(path, resolve_update_module_name(name, version))
 
 	pcall(function()
-		vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-		---@diagnostic disable-next-line: deprecated
-		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+		vim.g.lvim_deps_last_updated = resolve_update_module_name(name, version) .. "@" .. tostring(version)
+		trigger_package_updated()
 	end)
 
-	utils.notify_safe(("%s -> %s"):format(name, tostring(version)), L.INFO, {})
+	utils.notify_safe(("%s -> %s"):format(resolve_update_module_name(name, version), tostring(version)), L.INFO, {})
 
 	return { ok = true, msg = "written" }
 end
@@ -536,53 +726,24 @@ function M.delete(name, opts)
 	end
 
 	if opts.from_ui then
-		run_go_remove(path, name)
 		utils.notify_safe(("removing %s..."):format(name), L.INFO, {})
+		run_go_remove(path, name)
 		return { ok = true, msg = "started" }
 	end
 
-	local lines = read_lines(path)
-	if not lines then
-		return { ok = false, msg = "unable to read go.mod" }
-	end
-
-	local start_idx, end_idx = find_require_block(lines)
-	if not start_idx or not end_idx then
-		return { ok = false, msg = "require block not found in go.mod" }
-	end
-
-	local mod_idx, _ = find_module_in_require(lines, start_idx, end_idx, name)
-	if not mod_idx then
+	local ok_remove, found_name = apply_go_remove(path, name)
+	if not ok_remove then
 		return { ok = false, msg = "module " .. name .. " not found in require block" }
 	end
 
-	-- Remove the line
-	local new_lines = {}
-	for i, line in ipairs(lines) do
-		if i ~= mod_idx then
-			table.insert(new_lines, line)
-		end
-	end
-
-	local ok_write, werr = write_lines(path, new_lines)
-	if not ok_write then
-		return { ok = false, msg = "failed to write go.mod: " .. tostring(werr) }
-	end
-
-	refresh_buffer(path, new_lines)
-
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.remove_installed_dependency) == "function" then
-		pcall(state.remove_installed_dependency, "go", name)
-	end
+	reparse_and_check_debounced(path, found_name or name)
 
 	pcall(function()
-		vim.g.lvim_deps_last_updated = name .. "@removed"
-		---@diagnostic disable-next-line: deprecated
-		vim.api.nvim_exec("doautocmd User LvimDepsPackageUpdated", false)
+		vim.g.lvim_deps_last_updated = (found_name or name) .. "@removed"
+		trigger_package_updated()
 	end)
 
-	utils.notify_safe(("%s removed"):format(name), L.INFO, {})
+	utils.notify_safe(("%s removed"):format(found_name or name), L.INFO, {})
 
 	return { ok = true, msg = "removed" }
 end

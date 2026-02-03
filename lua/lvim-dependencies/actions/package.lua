@@ -6,9 +6,6 @@ local L = vim.log.levels
 
 local M = {}
 
--- ------------------------------------------------------------
--- small helpers
--- ------------------------------------------------------------
 local function urlencode(str)
 	if not str then
 		return ""
@@ -39,27 +36,57 @@ local function read_json(path)
 	return data
 end
 
-local function write_json(path, data)
-	local ok, formatted = pcall(vim.json.encode, data)
-	if not ok or not formatted then
-		return false, "failed to encode JSON"
+local function read_lines(path)
+	local ok, lines = pcall(vim.fn.readfile, path)
+	if not ok or type(lines) ~= "table" then
+		return nil
 	end
+	return lines
+end
 
-	-- Pretty print with jq if available
-	if vim.fn.executable("jq") == 1 then
-		local esc = formatted:gsub("'", [['"'"']])
-		local jq_result = vim.fn.system("printf '%s' '" .. esc .. "' | jq .")
-		if vim.v.shell_error == 0 and jq_result ~= "" then
-			formatted = jq_result
-		end
-	end
-
-	local lines = vim.split(formatted, "\n", { plain = true })
-	local ok_write, err = pcall(vim.fn.writefile, lines, path)
-	if not ok_write then
+local function write_lines(path, lines)
+	local ok, err = pcall(vim.fn.writefile, lines, path)
+	if not ok then
 		return false, tostring(err)
 	end
 	return true
+end
+
+local function apply_buffer_change(path, change)
+	if not change then
+		return
+	end
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	local start0 = change.start0 or 0
+	local end0 = change.end0 or 0
+	local replacement = change.lines or {}
+
+	pcall(api.nvim_buf_set_lines, bufnr, start0, end0, false, replacement)
+
+	if saved_cursor then
+		local row = saved_cursor[1]
+		if start0 < row - 1 then
+			local removed = end0 - start0
+			local added = #replacement
+			local delta = added - removed
+			row = math.max(1, row + delta)
+		end
+		pcall(api.nvim_win_set_cursor, cur_win, { row, saved_cursor[2] })
+	end
+
+	vim.bo[bufnr].modified = false
 end
 
 local function get_installed_version_from_node_modules(name)
@@ -78,9 +105,6 @@ local function get_installed_version_from_node_modules(name)
 	return nil
 end
 
--- ------------------------------------------------------------
--- semver-ish sorting with prerelease support
--- ------------------------------------------------------------
 local function parse_semver(v)
 	if not v then
 		return nil
@@ -205,9 +229,6 @@ local function sort_versions_desc(versions)
 	end)
 end
 
--- ------------------------------------------------------------
--- HTTP fetch (vim.system)
--- ------------------------------------------------------------
 local function curl_get_json(url)
 	local res = vim.system({ "curl", "-fsS", "--max-time", "10", url }, { text = true }):wait()
 	if not res or res.code ~= 0 or not res.stdout or res.stdout == "" then
@@ -224,9 +245,6 @@ local function do_user_autocmd_package_updated()
 	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
--- ------------------------------------------------------------
--- public API
--- ------------------------------------------------------------
 function M.fetch_versions(name, _)
 	if not name or name == "" then
 		return nil
@@ -265,63 +283,306 @@ function M.fetch_versions(name, _)
 	return { versions = uniq, current = current }
 end
 
--- ------------------------------------------------------------
--- Buffer reload (safe)
--- ------------------------------------------------------------
-local function reload_manifest_buffer_if_safe(path)
-	local bufnr = vim.fn.bufnr(path)
-	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
-		return true
+local function find_section_index(lines, section_name)
+	local patt = '^%s*"' .. vim.pesc(section_name) .. '"%s*:%s*{'
+	for i, ln in ipairs(lines) do
+		if ln:match(patt) then
+			return i
+		end
+	end
+	return nil
+end
+
+local function find_section_end(lines, section_idx)
+	local depth = 0
+	local started = false
+	for i = section_idx, #lines do
+		local ln = lines[i]
+		local open_count = select(2, ln:gsub("{", ""))
+		local close_count = select(2, ln:gsub("}", ""))
+		if open_count > 0 then
+			started = true
+		end
+		depth = depth + open_count - close_count
+		if started and depth == 0 then
+			return i
+		end
+	end
+	return #lines
+end
+
+local function find_entry_indent(lines, section_idx, section_end)
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		if ln:match('^%s*".-"%s*:') then
+			return ln:match("^(%s*)") or "    "
+		end
+	end
+	local section_indent = lines[section_idx]:match("^(%s*)") or ""
+	return section_indent .. "    "
+end
+
+local function find_last_entry_index(lines, section_idx, section_end)
+	local last = nil
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		if ln:match('^%s*".-"%s*:') then
+			last = i
+		end
+	end
+	return last
+end
+
+local function ensure_trailing_comma(line)
+	if line:match(",%s*$") then
+		return line
+	end
+	return line:gsub("%s*$", ",")
+end
+
+local function remove_trailing_comma(line)
+	return line:gsub(",%s*$", "")
+end
+
+local function extract_version_from_line(line)
+	if not line then
+		return nil
+	end
+	local v = line:match(':%s*"(.-)"')
+	return v and vim.trim(v) or nil
+end
+
+local function find_package_line(lines, section_idx, section_end, pkg_name)
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		local m_name = ln:match('^%s*"(.-)"%s*:')
+		if m_name and tostring(m_name) == tostring(pkg_name) then
+			return i, ln
+		end
+	end
+	return nil, nil
+end
+
+local function replace_package_in_section(lines, section_idx, section_end, pkg_name, version_spec)
+	local i, ln = find_package_line(lines, section_idx, section_end, pkg_name)
+	if not i or not ln then
+		return nil, false, nil
 	end
 
-	if vim.bo[bufnr].modified then
-		utils.notify_safe(
-			("package.json changed on disk, but buffer has unsaved changes. Please save or reload manually: %s"):format(
-				path
-			),
-			L.WARN,
-			{}
-		)
-		return false
+	local indent = ln:match("^(%s*)") or ""
+	local has_comma = ln:match(",%s*$") ~= nil
+	local new_line = indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"'
+	if has_comma then
+		new_line = new_line .. ","
 	end
 
-	local wins = vim.fn.win_findbuf(bufnr) or {}
-	local views = {}
-	for _, win in ipairs(wins) do
-		if api.nvim_win_is_valid(win) then
-			pcall(api.nvim_set_current_win, win)
-			local ok, view = pcall(vim.fn.winsaveview)
-			if ok and view then
-				views[win] = view
+	local out = {}
+	for k = 1, i - 1 do
+		out[#out + 1] = lines[k]
+	end
+	out[#out + 1] = new_line
+	for k = i + 1, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local change = { start0 = i - 1, end0 = i, lines = { new_line } }
+	return out, true, change
+end
+
+local function insert_package_in_section(lines, section_idx, section_end, pkg_name, version_spec)
+	local indent = find_entry_indent(lines, section_idx, section_end)
+	local new_line = indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"'
+
+	local last_idx = find_last_entry_index(lines, section_idx, section_end)
+	if last_idx then
+		lines[last_idx] = ensure_trailing_comma(lines[last_idx])
+	end
+
+	local out = {}
+	for k = 1, section_end - 1 do
+		out[#out + 1] = lines[k]
+	end
+	out[#out + 1] = new_line
+	for k = section_end, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local change = { start0 = section_end - 1, end0 = section_end - 1, lines = { new_line } }
+	return out, true, change
+end
+
+local function remove_package_from_section(lines, section_idx, section_end, pkg_name)
+	local target_idx = nil
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		local m_name = ln:match('^%s*"(.-)"%s*:')
+		if m_name and tostring(m_name) == tostring(pkg_name) then
+			target_idx = i
+			break
+		end
+	end
+	if not target_idx then
+		return nil, nil
+	end
+
+	local out = {}
+	for k = 1, target_idx - 1 do
+		out[#out + 1] = lines[k]
+	end
+	for k = target_idx + 1, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local new_section_end = find_section_end(out, section_idx)
+	local prev_idx = find_last_entry_index(out, section_idx, new_section_end)
+	if prev_idx and prev_idx < new_section_end - 1 then
+		local next_idx = nil
+		for i = prev_idx + 1, new_section_end - 1 do
+			if out[i]:match('^%s*".-"%s*:') then
+				next_idx = i
+				break
+			end
+		end
+		if not next_idx then
+			out[prev_idx] = remove_trailing_comma(out[prev_idx])
+		end
+	end
+
+	local change = { start0 = target_idx - 1, end0 = target_idx, lines = {} }
+	return out, change
+end
+
+local function find_root_end(lines)
+	for i = #lines, 1, -1 do
+		if lines[i]:match("^%s*}%s*,?%s*$") then
+			return i
+		end
+	end
+	return #lines
+end
+
+local function find_top_level_indent(lines)
+	for _, ln in ipairs(lines) do
+		if ln:match('^%s*".-"%s*:') then
+			return ln:match("^(%s*)") or "    "
+		end
+	end
+	return "    "
+end
+
+local function find_last_top_level_entry(lines, root_end)
+	for i = root_end - 1, 1, -1 do
+		if lines[i]:match('^%s*".-"%s*:') then
+			return i
+		end
+	end
+	return nil
+end
+
+local function add_section_with_package(lines, section_name, pkg_name, version_spec)
+	local root_end = find_root_end(lines)
+	local indent = find_top_level_indent(lines)
+	local entry_indent = indent .. "    "
+
+	local prev_idx = find_last_top_level_entry(lines, root_end)
+	if prev_idx then
+		lines[prev_idx] = ensure_trailing_comma(lines[prev_idx])
+	end
+
+	local out = {}
+	for i = 1, root_end - 1 do
+		out[#out + 1] = lines[i]
+	end
+
+	out[#out + 1] = indent .. '"' .. section_name .. '": {'
+	out[#out + 1] = entry_indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"'
+	out[#out + 1] = indent .. "}"
+
+	for i = root_end, #lines do
+		out[#out + 1] = lines[i]
+	end
+
+	local section_idx = root_end
+	local section_end = root_end + 2
+	local change = {
+		start0 = section_idx - 1,
+		end0 = section_idx - 1,
+		lines = { indent .. '"' .. section_name .. '": {', entry_indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"', indent .. "}" },
+	}
+	return out, section_idx, section_end, change
+end
+
+local function apply_package_update(path, name, version, scope)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read package.json"
+	end
+
+	local version_spec = "^" .. tostring(version)
+	local section_idx = find_section_index(lines, scope)
+	local section_end = nil
+	local change = nil
+	local new_lines = nil
+
+	if not section_idx then
+		new_lines, section_idx, section_end, change = add_section_with_package(lines, scope, name, version_spec)
+	else
+		section_end = find_section_end(lines, section_idx)
+		local i, ln = find_package_line(lines, section_idx, section_end, name)
+		if i and ln then
+			local current_version = extract_version_from_line(ln)
+			if current_version and tostring(current_version) == tostring(version_spec) then
+				return false, "version unchanged"
+			end
+		end
+
+		local replaced = false
+		new_lines, replaced, change = replace_package_in_section(lines, section_idx, section_end, name, version_spec)
+		if not replaced then
+			new_lines, _, change = insert_package_in_section(lines, section_idx, section_end, name, version_spec)
+		end
+	end
+
+	local ok_write, werr = write_lines(path, new_lines)
+	if not ok_write then
+		return false, "failed to write package.json: " .. tostring(werr)
+	end
+
+	apply_buffer_change(path, change)
+	return true
+end
+
+local function apply_package_remove(path, name)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read package.json"
+	end
+
+	local scopes = const.SECTION_NAMES.package or { "dependencies", "devDependencies" }
+	local new_lines = nil
+	local change = nil
+
+	for _, scope in ipairs(scopes) do
+		local section_idx = find_section_index(lines, scope)
+		if section_idx then
+			local section_end = find_section_end(lines, section_idx)
+			new_lines, change = remove_package_from_section(lines, section_idx, section_end, name)
+			if new_lines then
+				break
 			end
 		end
 	end
 
-	local before_tick = api.nvim_buf_get_changedtick(bufnr)
-	pcall(function()
-		vim.cmd(("silent! checktime %d"):format(bufnr))
-	end)
-	local after_tick = api.nvim_buf_get_changedtick(bufnr)
-	local changed = after_tick ~= before_tick
-
-	if not changed and not vim.bo[bufnr].modified then
-		for _, win in ipairs(wins) do
-			if api.nvim_win_is_valid(win) then
-				pcall(api.nvim_set_current_win, win)
-				pcall(function()
-					vim.cmd("silent! edit")
-				end)
-			end
-		end
+	if not new_lines then
+		return false, "package not found"
 	end
 
-	for win, view in pairs(views) do
-		if api.nvim_win_is_valid(win) then
-			pcall(api.nvim_set_current_win, win)
-			pcall(vim.fn.winrestview, view)
-		end
+	local ok_write, werr = write_lines(path, new_lines)
+	if not ok_write then
+		return false, "failed to write package.json: " .. tostring(werr)
 	end
 
+	apply_buffer_change(path, change)
 	return true
 end
 
@@ -399,7 +660,7 @@ local function pm_remove_cmd(pm, name)
 	end
 end
 
-local function run_pm_change(path, argv, kind, package_name_for_recheck)
+local function run_pm_change(path, argv, kind, payload)
 	local cwd = vim.fn.fnamemodify(path, ":h")
 
 	set_updating_flag(true)
@@ -418,21 +679,21 @@ local function run_pm_change(path, argv, kind, package_name_for_recheck)
 				return
 			end
 
-			utils.notify_safe(("Done (%s). Reloading manifest..."):format(kind), L.INFO, {})
-
-			local reloaded = reload_manifest_buffer_if_safe(path)
-			if reloaded then
-				reparse_and_check_debounced(path, package_name_for_recheck)
+			if kind == "install" and payload and payload.name and payload.version and payload.scope then
+				apply_package_update(path, payload.name, payload.version, payload.scope)
+				reparse_and_check_debounced(path, payload.name)
+				pcall(function()
+					vim.g.lvim_deps_last_updated = payload.name .. "@" .. tostring(payload.version)
+					do_user_autocmd_package_updated()
+				end)
+			elseif kind == "remove" and payload and payload.name then
+				apply_package_remove(path, payload.name)
+				reparse_and_check_debounced(path, payload.name)
+				pcall(function()
+					vim.g.lvim_deps_last_updated = payload.name .. "@removed"
+					do_user_autocmd_package_updated()
+				end)
 			end
-
-			pcall(function()
-				if kind == "install" then
-					vim.g.lvim_deps_last_updated = package_name_for_recheck or ""
-				else
-					vim.g.lvim_deps_last_updated = (package_name_for_recheck or "") .. "@removed"
-				end
-				do_user_autocmd_package_updated()
-			end)
 		end)
 	end)
 end
@@ -475,27 +736,18 @@ function M.update(name, opts)
 
 		local pkg_spec = ("%s@%s"):format(name, tostring(version))
 		local argv = pm_install_cmd(pm, pkg_spec, scope)
-		run_pm_change(path, argv, "install", name)
+		run_pm_change(path, argv, "install", { name = name, version = version, scope = scope })
 		return { ok = true, msg = "started" }
 	end
 
-	local data = read_json(path)
-	if not data then
-		return { ok = false, msg = "unable to read package.json" }
+	local ok_apply, err = apply_package_update(path, name, version, scope)
+	if not ok_apply and err == "version unchanged" then
+		return { ok = true, msg = "unchanged" }
+	end
+	if not ok_apply then
+		return { ok = false, msg = err }
 	end
 
-	if not data[scope] then
-		data[scope] = {}
-	end
-
-	data[scope][name] = "^" .. version
-
-	local ok_write, werr = write_json(path, data)
-	if not ok_write then
-		return { ok = false, msg = "failed to write package.json: " .. tostring(werr) }
-	end
-
-	reload_manifest_buffer_if_safe(path)
 	reparse_and_check_debounced(path, name)
 
 	pcall(function()
@@ -531,40 +783,15 @@ function M.delete(name, opts)
 		end
 
 		local argv = pm_remove_cmd(pm, name)
-		run_pm_change(path, argv, "remove", name)
+		run_pm_change(path, argv, "remove", { name = name })
 		return { ok = true, msg = "started" }
 	end
 
-	local scope = opts.scope or "dependencies"
-	local valid_scopes = const.SECTION_NAMES.package or { "dependencies", "devDependencies" }
-	local scope_valid = false
-	for _, s in ipairs(valid_scopes) do
-		if scope == s then
-			scope_valid = true
-			break
-		end
-	end
-	if not scope_valid then
-		scope = "dependencies"
+	local ok_remove, err = apply_package_remove(path, name)
+	if not ok_remove then
+		return { ok = false, msg = err }
 	end
 
-	local data = read_json(path)
-	if not data then
-		return { ok = false, msg = "unable to read package.json" }
-	end
-
-	if not data[scope] or not data[scope][name] then
-		return { ok = false, msg = "package " .. name .. " not found in " .. scope }
-	end
-
-	data[scope][name] = nil
-
-	local ok_write, werr = write_json(path, data)
-	if not ok_write then
-		return { ok = false, msg = "failed to write package.json: " .. tostring(werr) }
-	end
-
-	reload_manifest_buffer_if_safe(path)
 	reparse_and_check_debounced(path, name)
 
 	pcall(function()

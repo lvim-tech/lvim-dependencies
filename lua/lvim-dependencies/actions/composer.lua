@@ -23,43 +23,164 @@ local function find_composer_json_path()
 	return found and found[1] or nil
 end
 
-local function read_json(path)
-	local ok, content = pcall(vim.fn.readfile, path)
-	if not ok or type(content) ~= "table" then
+local function read_lines(path)
+	local ok, lines = pcall(vim.fn.readfile, path)
+	if not ok or type(lines) ~= "table" then
 		return nil
 	end
-
-	local text = table.concat(content, "\n")
-	local ok_json, data = pcall(vim.json.decode, text)
-	if not ok_json or type(data) ~= "table" then
-		return nil
-	end
-
-	return data
+	return lines
 end
 
-local function write_json(path, data)
-	local ok, formatted = pcall(vim.json.encode, data)
-	if not ok or not formatted then
-		return false, "failed to encode JSON"
-	end
-
-	-- Pretty print with 4-space indent (Composer convention)
-	if vim.fn.executable("jq") == 1 then
-		local esc = formatted:gsub("'", [['"'"']])
-		local jq_result = vim.fn.system("printf '%s' '" .. esc .. "' | jq --indent 4 .")
-		if vim.v.shell_error == 0 and jq_result ~= "" then
-			formatted = jq_result
-		end
-	end
-
-	local lines = vim.split(formatted, "\n", { plain = true })
-	local ok_write, err = pcall(vim.fn.writefile, lines, path)
-	if not ok_write then
+local function write_lines(path, lines)
+	local ok, err = pcall(vim.fn.writefile, lines, path)
+	if not ok then
 		return false, tostring(err)
 	end
-
 	return true
+end
+
+local function apply_buffer_change(path, change)
+	if not change then
+		return
+	end
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	local start0 = change.start0 or 0
+	local end0 = change.end0 or 0
+	local replacement = change.lines or {}
+
+	pcall(api.nvim_buf_set_lines, bufnr, start0, end0, false, replacement)
+
+	if saved_cursor then
+		local row = saved_cursor[1]
+		if start0 < row - 1 then
+			local removed = end0 - start0
+			local added = #replacement
+			local delta = added - removed
+			row = math.max(1, row + delta)
+		end
+		pcall(api.nvim_win_set_cursor, cur_win, { row, saved_cursor[2] })
+	end
+
+	vim.bo[bufnr].modified = false
+end
+
+local function find_section_index(lines, section_name)
+	local patt = '^%s*"' .. vim.pesc(section_name) .. '"%s*:%s*{'
+	for i, ln in ipairs(lines) do
+		if ln:match(patt) then
+			return i
+		end
+	end
+	return nil
+end
+
+local function find_section_end(lines, section_idx)
+	local depth = 0
+	local started = false
+	for i = section_idx, #lines do
+		local ln = lines[i]
+		local open_count = select(2, ln:gsub("{", ""))
+		local close_count = select(2, ln:gsub("}", ""))
+		if open_count > 0 then
+			started = true
+		end
+		depth = depth + open_count - close_count
+		if started and depth == 0 then
+			return i
+		end
+	end
+	return #lines
+end
+
+local function find_entry_indent(lines, section_idx, section_end)
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		if ln:match('^%s*".-"%s*:') then
+			return ln:match("^(%s*)") or "    "
+		end
+	end
+	local section_indent = lines[section_idx]:match("^(%s*)") or ""
+	return section_indent .. "    "
+end
+
+local function find_last_entry_index(lines, section_idx, section_end)
+	local last = nil
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		if ln:match('^%s*".-"%s*:') then
+			last = i
+		end
+	end
+	return last
+end
+
+local function ensure_trailing_comma(line)
+	if line:match(",%s*$") then
+		return line
+	end
+	return line:gsub("%s*$", ",")
+end
+
+local function remove_trailing_comma(line)
+	return line:gsub(",%s*$", "")
+end
+
+local function extract_version_from_line(line)
+	if not line then
+		return nil
+	end
+	local v = line:match(':%s*"(.-)"')
+	return v and vim.trim(v) or nil
+end
+
+local function find_package_line(lines, section_idx, section_end, pkg_name)
+	for i = section_idx + 1, section_end - 1 do
+		local ln = lines[i]
+		local m_name = ln:match('^%s*"(.-)"%s*:')
+		if m_name and tostring(m_name) == tostring(pkg_name) then
+			return i, ln
+		end
+	end
+	return nil, nil
+end
+
+local function find_root_end(lines)
+	for i = #lines, 1, -1 do
+		if lines[i]:match("^%s*}%s*,?%s*$") then
+			return i
+		end
+	end
+	return #lines
+end
+
+local function find_top_level_indent(lines)
+	for _, ln in ipairs(lines) do
+		if ln:match('^%s*".-"%s*:') then
+			return ln:match("^(%s*)") or "    "
+		end
+	end
+	return "    "
+end
+
+local function find_last_top_level_entry(lines, root_end)
+	for i = root_end - 1, 1, -1 do
+		if lines[i]:match('^%s*".-"%s*:') then
+			return i
+		end
+	end
+	return nil
 end
 
 -- ------------------------------------------------------------
@@ -253,60 +374,166 @@ function M.fetch_versions(name, _)
 	return { versions = unique, current = current }
 end
 
--- ------------------------------------------------------------
--- Buffer refresh
--- ------------------------------------------------------------
-local function refresh_buffer(path, data)
-	local bufnr = vim.fn.bufnr(path)
-	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
-		return
+local function apply_composer_update(path, name, version, scope)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read composer.json"
 	end
 
-	local cur_buf = api.nvim_get_current_buf()
-	local cur_win = api.nvim_get_current_win()
-	local saved_cursor = nil
+	local version_spec = "^" .. tostring(version)
+	local section_idx = find_section_index(lines, scope)
 
-	if cur_buf == bufnr then
-		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	if not section_idx then
+		local root_end = find_root_end(lines)
+		local indent = find_top_level_indent(lines)
+		local entry_indent = indent .. "    "
+
+		local prev_idx = find_last_top_level_entry(lines, root_end)
+		if prev_idx then
+			lines[prev_idx] = ensure_trailing_comma(lines[prev_idx])
+		end
+
+		local out = {}
+		for i = 1, root_end - 1 do
+			out[#out + 1] = lines[i]
+		end
+
+		out[#out + 1] = indent .. '"' .. scope .. '": {'
+		out[#out + 1] = entry_indent .. '"' .. name .. '": "' .. version_spec .. '"'
+		out[#out + 1] = indent .. "}"
+
+		for i = root_end, #lines do
+			out[#out + 1] = lines[i]
+		end
+
+		local ok_write, werr = write_lines(path, out)
+		if not ok_write then
+			return false, "failed to write composer.json: " .. tostring(werr)
+		end
+
+		if prev_idx then
+			apply_buffer_change(path, { start0 = prev_idx - 1, end0 = prev_idx, lines = { lines[prev_idx] } })
+		end
+		apply_buffer_change(path, {
+			start0 = root_end - 1,
+			end0 = root_end - 1,
+			lines = { indent .. '"' .. scope .. '": {', entry_indent .. '"' .. name .. '": "' .. version_spec .. '"', indent .. "}" },
+		})
+		return true
 	end
 
-	local ok, json_str = pcall(vim.json.encode, data)
-	if not ok then
-		return
+	local section_end = find_section_end(lines, section_idx)
+	local i, ln = find_package_line(lines, section_idx, section_end, name)
+	if i and ln then
+		local current_version = extract_version_from_line(ln)
+		if current_version and tostring(current_version) == tostring(version_spec) then
+			return false, "version unchanged"
+		end
+
+		local indent = ln:match("^(%s*)") or ""
+		local has_comma = ln:match(",%s*$") ~= nil
+		local new_line = indent .. '"' .. name .. '": "' .. version_spec .. '"'
+		if has_comma then
+			new_line = new_line .. ","
+		end
+
+		lines[i] = new_line
+		local ok_write, werr = write_lines(path, lines)
+		if not ok_write then
+			return false, "failed to write composer.json: " .. tostring(werr)
+		end
+
+		apply_buffer_change(path, { start0 = i - 1, end0 = i, lines = { new_line } })
+		return true
 	end
 
-	local formatted = json_str
-	if vim.fn.executable("jq") == 1 then
-		local esc = formatted:gsub("'", [['"'"']])
-		local jq_result = vim.fn.system("printf '%s' '" .. esc .. "' | jq --indent 4 .")
-		if vim.v.shell_error == 0 and jq_result ~= "" then
-			formatted = jq_result
+	local indent = find_entry_indent(lines, section_idx, section_end)
+	local new_line = indent .. '"' .. name .. '": "' .. version_spec .. '"'
+
+	local last_idx = find_last_entry_index(lines, section_idx, section_end)
+	if last_idx then
+		lines[last_idx] = ensure_trailing_comma(lines[last_idx])
+	end
+
+	local out = {}
+	for k = 1, section_end - 1 do
+		out[#out + 1] = lines[k]
+	end
+	out[#out + 1] = new_line
+	for k = section_end, #lines do
+		out[#out + 1] = lines[k]
+	end
+
+	local ok_write, werr = write_lines(path, out)
+	if not ok_write then
+		return false, "failed to write composer.json: " .. tostring(werr)
+	end
+
+	if last_idx then
+		apply_buffer_change(path, { start0 = last_idx - 1, end0 = last_idx, lines = { lines[last_idx] } })
+	end
+	apply_buffer_change(path, { start0 = section_end - 1, end0 = section_end - 1, lines = { new_line } })
+
+	return true
+end
+
+local function apply_composer_remove(path, name)
+	local lines = read_lines(path)
+	if not lines then
+		return false, "unable to read composer.json"
+	end
+
+	local scopes = const.SECTION_NAMES.composer or { "require", "require-dev" }
+	for _, scope in ipairs(scopes) do
+		local section_idx = find_section_index(lines, scope)
+		if section_idx then
+			local section_end = find_section_end(lines, section_idx)
+			local target_idx = nil
+			for i = section_idx + 1, section_end - 1 do
+				local ln = lines[i]
+				local m_name = ln:match('^%s*"(.-)"%s*:')
+				if m_name and tostring(m_name) == tostring(name) then
+					target_idx = i
+					break
+				end
+			end
+
+			if target_idx then
+				local prev_idx = find_last_entry_index(lines, section_idx, target_idx)
+				local has_next = false
+				for i = target_idx + 1, section_end - 1 do
+					if lines[i]:match('^%s*".-"%s*:') then
+						has_next = true
+						break
+					end
+				end
+
+				local out = {}
+				for i, line in ipairs(lines) do
+					if i ~= target_idx then
+						out[#out + 1] = line
+					end
+				end
+
+				if prev_idx and not has_next then
+					out[prev_idx] = remove_trailing_comma(out[prev_idx])
+				end
+
+				local ok_write, werr = write_lines(path, out)
+				if not ok_write then
+					return false, "failed to write composer.json: " .. tostring(werr)
+				end
+
+				if prev_idx and not has_next then
+					apply_buffer_change(path, { start0 = prev_idx - 1, end0 = prev_idx, lines = { out[prev_idx] } })
+				end
+				apply_buffer_change(path, { start0 = target_idx - 1, end0 = target_idx, lines = {} })
+				return true
+			end
 		end
 	end
 
-	local lines = vim.split(formatted, "\n", { plain = true })
-	pcall(api.nvim_buf_set_lines, bufnr, 0, -1, false, lines)
-
-	if saved_cursor then
-		pcall(api.nvim_win_set_cursor, cur_win, saved_cursor)
-	end
-
-	vim.bo[bufnr].modified = false
-
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.get_updating) == "function" then
-		local is_updating = state.get_updating()
-		if is_updating then
-			return
-		end
-	end
-
-	pcall(function()
-		local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-		if ok_vt and type(vt.display) == "function" then
-			pcall(vt.display, bufnr)
-		end
-	end)
+	return false, "package not found"
 end
 
 local function trigger_package_updated()
@@ -342,10 +569,7 @@ local function run_composer_require(path, name, version, scope)
 			if res and res.code == 0 then
 				utils.notify_safe(("%s@%s installed"):format(name, tostring(version)), L.INFO, {})
 
-				local data = read_json(path)
-				if data then
-					refresh_buffer(path, data)
-				end
+				apply_composer_update(path, name, version, scope)
 
 				if name and version and scope then
 					local ok_st, st = pcall(require, "lvim-dependencies.state")
@@ -419,10 +643,7 @@ local function run_composer_remove(path, name)
 			if res and res.code == 0 then
 				utils.notify_safe(("%s removed"):format(name), L.INFO, {})
 
-				local data = read_json(path)
-				if data then
-					refresh_buffer(path, data)
-				end
+				apply_composer_remove(path, name)
 
 				local ok_st, st = pcall(require, "lvim-dependencies.state")
 				if ok_st and type(st.remove_installed_dependency) == "function" then
@@ -502,29 +723,19 @@ function M.update(name, opts)
 		return { ok = false, msg = "composer.json not found in project tree" }
 	end
 
-	local data = read_json(path)
-	if not data then
-		return { ok = false, msg = "unable to read composer.json" }
-	end
-
-	if not data[scope] then
-		data[scope] = {}
-	end
-
-	data[scope][name] = "^" .. version
-
 	if opts.from_ui then
 		utils.notify_safe(("updating %s to %s..."):format(name, tostring(version)), L.INFO, {})
 		run_composer_require(path, name, version, scope)
 		return { ok = true, msg = "started" }
 	end
 
-	local ok_write, werr = write_json(path, data)
-	if not ok_write then
-		return { ok = false, msg = "failed to write composer.json: " .. tostring(werr) }
+	local ok_apply, err = apply_composer_update(path, name, version, scope)
+	if not ok_apply and err == "version unchanged" then
+		return { ok = true, msg = "unchanged" }
 	end
-
-	refresh_buffer(path, data)
+	if not ok_apply then
+		return { ok = false, msg = err }
+	end
 
 	local ok_state, state = pcall(require, "lvim-dependencies.state")
 	if ok_state and type(state.add_installed_dependency) == "function" then
@@ -575,23 +786,10 @@ function M.delete(name, opts)
 		return { ok = true, msg = "started" }
 	end
 
-	local data = read_json(path)
-	if not data then
-		return { ok = false, msg = "unable to read composer.json" }
+	local ok_remove, err = apply_composer_remove(path, name)
+	if not ok_remove then
+		return { ok = false, msg = err }
 	end
-
-	if not data[scope] or not data[scope][name] then
-		return { ok = false, msg = "package " .. name .. " not found in " .. scope }
-	end
-
-	data[scope][name] = nil
-
-	local ok_write, werr = write_json(path, data)
-	if not ok_write then
-		return { ok = false, msg = "failed to write composer.json: " .. tostring(werr) }
-	end
-
-	refresh_buffer(path, data)
 
 	local ok_state, state = pcall(require, "lvim-dependencies.state")
 	if ok_state and type(state.remove_installed_dependency) == "function" then

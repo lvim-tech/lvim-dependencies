@@ -203,48 +203,6 @@ local function get_loading_parts()
 	return { { vt_cfg.prefix, hl.separator }, { vt_cfg.loading, hl.loading } }
 end
 
--- ------------------------------------------------------------
--- node_modules version cache (only used for visible packages)
--- ------------------------------------------------------------
-local node_modules_cache = {
-	-- [name] = { mtime=..., size=..., version="x.y.z" or nil }
-}
-
-local function get_node_modules_version(dep_name)
-	if not dep_name or dep_name == "" then
-		return nil
-	end
-
-	local cwd = fn.getcwd()
-	local pkg_json = cwd .. "/node_modules/" .. dep_name .. "/package.json"
-
-	local st = utils.fs_stat(pkg_json)
-	if not st then
-		node_modules_cache[dep_name] = nil
-		return nil
-	end
-
-	local mtime = (st.mtime and st.mtime.sec) or 0
-	local size = st.size or 0
-
-	local cached = node_modules_cache[dep_name]
-	if cached and cached.mtime == mtime and cached.size == size then
-		return cached.version
-	end
-
-	local content = utils.read_file(pkg_json)
-	if not content or content == "" then
-		node_modules_cache[dep_name] = { mtime = mtime, size = size, version = nil }
-		return nil
-	end
-
-	local ok, parsed = pcall(vim.fn.json_decode, content)
-	local ver = (ok and type(parsed) == "table" and parsed.version and tostring(parsed.version)) or nil
-
-	node_modules_cache[dep_name] = { mtime = mtime, size = size, version = ver }
-	return ver
-end
-
 local function declared_target_from(declared_raw, manifest_key)
 	declared_raw = declared_raw and vim.trim(tostring(declared_raw)) or ""
 	if declared_raw == "" then
@@ -255,7 +213,16 @@ local function declared_target_from(declared_raw, manifest_key)
 		return declared_raw
 	end
 
-	local is_exact = declared_raw:match("^%d+%.%d+%.%d+[%w%._%-]*$") ~= nil
+	if manifest_key == "composer" then
+		local cleaned = utils.clean_version(declared_raw) or declared_raw
+		local is_exact = cleaned:match("^%d+%.%d+%.%d+[%w%._%-%+]*$") ~= nil
+		if is_exact then
+			return cleaned
+		end
+		return utils.normalize_version_spec(declared_raw)
+	end
+
+	local is_exact = declared_raw:match("^%d+%.%d+%.%d+[%w%._%-%+]*$") ~= nil
 	if is_exact then
 		return declared_raw
 	end
@@ -263,33 +230,19 @@ local function declared_target_from(declared_raw, manifest_key)
 	return utils.normalize_version_spec(declared_raw)
 end
 
-local function build_badge(label)
+local function build_inline_badge(label)
 	label = label and tostring(label) or ""
-	return (" [%s]"):format(label)
+	return ("[%s] "):format(label)
 end
 
 -- ------------------------------------------------------------
 -- virtual text builder
 -- ------------------------------------------------------------
-local function build_virt_parts(manifest_key, dep_name, declared, has_lock)
+local function build_virt_parts(manifest_key, dep_name, declared, _)
 	local deps = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
 	local installed = deps.installed and deps.installed[dep_name]
 	local outdated = deps.outdated and deps.outdated[dep_name]
 	local invalid = deps.invalid and deps.invalid[dep_name]
-
-	if invalid then
-		local pieces = {}
-		pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
-
-		local diag = invalid.diagnostic or "ERR"
-		local icon = ""
-		if vt_cfg.show_status_icon and vt_cfg.icon_when_invalid then
-			icon = vt_cfg.icon_when_invalid
-		end
-
-		pieces[#pieces + 1] = { build_badge(icon .. diag), hl.invalid }
-		return pieces
-	end
 
 	local in_lock = nil
 	local cur = nil
@@ -301,172 +254,70 @@ local function build_virt_parts(manifest_key, dep_name, declared, has_lock)
 		in_lock = nil
 	end
 
-	if in_lock == false then
-		local pieces = {}
-		pieces[#pieces + 1] = { vt_cfg.prefix, hl.separator }
+	local declared_target = declared_target_from(declared, manifest_key)
 
-		local declared_norm
-		if manifest_key == "go" then
-			declared_norm = declared or ""
+	local cur_comp = cur
+	if manifest_key == "composer" and cur then
+		cur_comp = utils.clean_version(cur) or cur
+	end
+
+	local declared_comp = declared_target
+	if manifest_key == "composer" and declared_target then
+		declared_comp = utils.clean_version(declared_target) or declared_target
+	end
+
+	local real_label = nil
+	local real_hl = nil
+
+	if invalid then
+		real_label = "invalid"
+		real_hl = hl.invalid
+	elseif in_lock == false or not cur or cur == "" then
+		real_label = "not installed"
+		real_hl = hl.not_installed
+	elseif declared_comp and cur_comp and tostring(cur_comp) ~= tostring(declared_comp) then
+		real_label = tostring(cur_comp)
+		real_hl = hl.real
+	end
+
+	local status_value = nil
+	local status_hl = nil
+	if outdated and outdated.latest then
+		status_value = tostring(outdated.latest)
+		if outdated.up_to_date then
+			status_hl = hl.up_to_date
 		else
-			declared_norm = utils.normalize_version_spec(declared) or declared or ""
+			status_hl = hl.outdated
 		end
-		local shown = (declared_norm ~= "" and declared_norm or "unknown")
+	elseif cur and cur ~= "" then
+		status_value = tostring(cur_comp or cur)
+		status_hl = hl.up_to_date
+	end
 
-		if has_lock == false then
-			local icon = ""
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_not_installed then
-				icon = vt_cfg.icon_when_not_installed
-			end
-			pieces[#pieces + 1] = { icon .. shown, hl.not_installed }
-			pieces[#pieces + 1] = { build_badge("not installed"), hl.not_installed }
-			return pieces
-		end
+	if not real_label and not status_value then
+		return nil
+	end
 
+	local parts = {}
+
+	if real_label then
+		parts[#parts + 1] = { build_inline_badge(real_label), real_hl }
+	end
+
+	if status_value then
 		local icon = ""
-		if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint then
-			icon = vt_cfg.icon_when_constraint
+		if vt_cfg.show_status_icon then
+			if status_hl == hl.up_to_date then
+				icon = vt_cfg.icon_when_up_to_date or ""
+			elseif status_hl == hl.outdated then
+				icon = vt_cfg.icon_when_outdated or ""
+			end
 		end
-
-		pieces[#pieces + 1] = { icon .. shown, hl.constraint }
-		pieces[#pieces + 1] = { build_badge("constraint"), hl.constraint }
-
-		return pieces
+		parts[#parts + 1] = { vt_cfg.prefix, hl.separator }
+		parts[#parts + 1] = { icon .. status_value, status_hl }
 	end
 
-	-- ------------------------------------------------------------
-	-- Resolved version hint config (works across ecosystems)
-	-- ------------------------------------------------------------
-	local resolved_ver = nil
-	local lock_ver = cur and tostring(cur) or nil
-	local show_resolved = false
-	local mode = vt_cfg.resolved_version or vt_cfg.node_version or "mismatch"
-
-	if mode ~= "never" then
-		if manifest_key == "package" then
-			resolved_ver = get_node_modules_version(dep_name)
-		else
-			if in_lock == true then
-				resolved_ver = lock_ver
-			else
-				resolved_ver = nil
-			end
-		end
-	end
-
-	if resolved_ver and resolved_ver ~= "" and mode ~= "never" then
-		local resolved_norm = vim.trim(tostring(resolved_ver))
-		local lock_norm = lock_ver and vim.trim(tostring(lock_ver)) or ""
-		local declared_target = declared_target_from(declared, manifest_key)
-
-		if mode == "always" then
-			show_resolved = true
-		elseif mode == "mismatch" then
-			if lock_norm ~= "" and resolved_norm ~= lock_norm then
-				show_resolved = true
-			end
-			if
-				not show_resolved
-				and declared_target
-				and declared_target ~= ""
-				and lock_norm ~= ""
-				and lock_norm ~= declared_target
-			then
-				show_resolved = true
-			end
-		elseif mode == "mismatch_or_difflock" then
-			local mismatch = (lock_norm ~= "" and resolved_norm ~= lock_norm)
-			local difflock = not not (
-				declared_target
-				and declared_target ~= ""
-				and lock_norm ~= ""
-				and lock_norm ~= declared_target
-			)
-			show_resolved = (mismatch or difflock) and true or false
-		end
-	end
-
-	local function append_resolved_segment(pieces_tbl, main_ver)
-		if show_resolved and resolved_ver and resolved_ver ~= "" then
-			if main_ver and tostring(main_ver) == tostring(resolved_ver) then
-				return pieces_tbl
-			end
-
-			local icon = ""
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_resolved then
-				icon = vt_cfg.icon_when_resolved
-			end
-			pieces_tbl[#pieces_tbl + 1] =
-				{ " " .. icon .. tostring(resolved_ver) .. build_badge("resolved"), hl.resolved }
-		end
-		return pieces_tbl
-	end
-
-	local latest = (outdated and outdated.latest) and tostring(outdated.latest) or nil
-	if latest then
-		local latest_s = tostring(latest)
-		local is_up_to_date = (cur ~= nil and cur == latest_s)
-
-		if outdated and outdated.constraint_newer then
-			local icon_con = ""
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_constraint then
-				icon_con = vt_cfg.icon_when_constraint
-			end
-
-			local declared_target = declared_target_from(declared, manifest_key)
-			if declared_target and resolved_ver and tostring(declared_target) == tostring(resolved_ver) then
-				show_resolved = false
-			end
-
-			if resolved_ver and cur and tostring(resolved_ver) == tostring(cur) then
-				show_resolved = false
-			end
-
-			local parts = {
-				{ vt_cfg.prefix, hl.separator },
-				{ icon_con .. latest_s, hl.constraint },
-				{ build_badge("constraint"), hl.constraint },
-			}
-
-			return append_resolved_segment(parts, latest_s)
-		end
-
-		if is_up_to_date then
-			local parts
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-				parts = {
-					{ vt_cfg.prefix, hl.separator },
-					{ vt_cfg.icon_when_up_to_date .. " " .. latest_s, hl.up_to_date },
-				}
-			else
-				parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.up_to_date } }
-			end
-			return append_resolved_segment(parts, latest_s)
-		else
-			local parts
-			if vt_cfg.show_status_icon and vt_cfg.icon_when_outdated then
-				parts = {
-					{ vt_cfg.prefix, hl.separator },
-					{ vt_cfg.icon_when_outdated .. " " .. latest_s, hl.outdated },
-				}
-			else
-				parts = { { vt_cfg.prefix, hl.separator }, { latest_s, hl.outdated } }
-			end
-			return append_resolved_segment(parts, latest_s)
-		end
-	end
-
-	if cur then
-		local parts
-		if vt_cfg.show_status_icon and vt_cfg.icon_when_up_to_date then
-			parts = { { vt_cfg.prefix, hl.separator }, { vt_cfg.icon_when_up_to_date .. " " .. cur, hl.up_to_date } }
-		else
-			parts = { { vt_cfg.prefix, hl.separator }, { cur, hl.up_to_date } }
-		end
-		return append_resolved_segment(parts, cur)
-	end
-
-	return nil
+	return parts
 end
 
 local function do_display(bufnr, manifest_key)
@@ -505,9 +356,6 @@ local function do_display(bufnr, manifest_key)
 	local outdated_tbl = deps_tbl.outdated or {}
 	local invalid_tbl = deps_tbl.invalid or {}
 
-	local lock_path = utils.find_lock_for_manifest(bufnr, manifest_key)
-	local has_lock = lock_path ~= nil
-
 	local is_loading = state.buffers and state.buffers[bufnr] and state.buffers[bufnr].is_loading
 	local loading_parts = is_loading and get_loading_parts() or nil
 
@@ -525,12 +373,12 @@ local function do_display(bufnr, manifest_key)
 				local virt_parts
 				if is_loading then
 					if outdated_tbl[dep_name] or invalid_tbl[dep_name] then
-						virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, has_lock)
+						virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, false)
 					else
 						virt_parts = loading_parts
 					end
 				else
-					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, has_lock)
+					virt_parts = build_virt_parts(manifest_key, dep_name, declared_version, false)
 				end
 
 				if virt_parts and #virt_parts > 0 then
@@ -593,15 +441,10 @@ M.clear = function(bufnr)
 	end
 end
 
-M.clear_node_modules_cache = function()
-	node_modules_cache = {}
-end
-
 pcall(function()
 	api.nvim_create_autocmd({ "BufWritePost", "FileChangedShellPost" }, {
 		pattern = const.LOCK_FILE_PATTERNS,
 		callback = function()
-			M.clear_node_modules_cache()
 			utils.clear_file_cache()
 		end,
 	})

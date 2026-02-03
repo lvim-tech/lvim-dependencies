@@ -22,6 +22,34 @@ local lock_cache = {
 	-- [lock_path] = { mtime=..., size=..., versions=table }
 }
 
+local function to_version(str)
+	if not str then
+		return { 0, 0, 0 }
+	end
+	local s = tostring(str)
+	local cv = utils.clean_version(s)
+	if cv and cv ~= "" then
+		s = cv
+	end
+	s = s:gsub("^%s*[vV]", ""):gsub("%+.*$", ""):gsub("%-.*$", "")
+	local parts = vim.split(s, ".", { plain = true })
+	return { tonumber(parts[1]) or 0, tonumber(parts[2]) or 0, tonumber(parts[3]) or 0 }
+end
+
+local function compare_versions(a, b)
+	local na = to_version(a)
+	local nb = to_version(b)
+	for i = 1, 3 do
+		local va, vb = na[i] or 0, nb[i] or 0
+		if va > vb then
+			return 1
+		elseif va < vb then
+			return -1
+		end
+	end
+	return 0
+end
+
 -- ------------------------------------------------------------
 -- Lock parsing (go.sum)
 -- ------------------------------------------------------------
@@ -40,8 +68,9 @@ local function parse_lock_file_from_content(content)
 			if not versions[name] then
 				versions[name] = clean_ver
 			else
-				-- prefer non-go.mod entries over go.mod ones
-				if tostring(versions[name]):match("/go%.mod$") and clean_ver then
+				local existing = versions[name]
+				local cmp = compare_versions(clean_ver, existing)
+				if cmp == 1 then
 					versions[name] = clean_ver
 				end
 			end

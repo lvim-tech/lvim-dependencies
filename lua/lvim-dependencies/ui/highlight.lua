@@ -71,8 +71,8 @@ function M.init()
 		fg = config.ui.highlight.colors.not_installed,
 		default = true,
 	})
-	define_hl_if_missing(config.ui.highlight.groups.resolved, {
-		fg = config.ui.highlight.colors.resolved,
+	define_hl_if_missing(config.ui.highlight.groups.real, {
+		fg = config.ui.highlight.colors.real,
 		default = true,
 	})
 	define_hl_if_missing(config.ui.highlight.groups.constraint, {
