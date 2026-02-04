@@ -3,6 +3,9 @@
 A powerful Neovim plugin for managing project dependencies across multiple package managers.
 View outdated packages, update to specific versions, and manage dependencies directly from your manifest files.
 
+<img width="2011" height="1374" alt="screenshot_2026-02-04_23-40-40" src="https://github.com/user-attachments/assets/39e84f11-ce75-4b11-ae82-00dda23aeffa" />
+
+
 ## Features
 
 - **Multiple package managers**: Support for npm, Cargo, Go modules, Composer, and pub (Dart/Flutter)
