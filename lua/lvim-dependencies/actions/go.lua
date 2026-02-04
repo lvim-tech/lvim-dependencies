@@ -532,6 +532,11 @@ local function clear_all_caches()
 	if ok_utils and type(u.clear_file_cache) == "function" then
 		u.clear_file_cache()
 	end
+
+	local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.go")
+	if ok_parser and type(parser.clear_lock_cache) == "function" then
+		parser.clear_lock_cache()
+	end
 end
 
 local function set_updating_flag(v)

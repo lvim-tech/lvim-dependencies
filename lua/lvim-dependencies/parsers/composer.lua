@@ -18,6 +18,10 @@ local M = {}
 
 local lock_cache = {}
 
+M.clear_lock_cache = function()
+	lock_cache = {}
+end
+
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil

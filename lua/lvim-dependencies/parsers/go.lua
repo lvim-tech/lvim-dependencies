@@ -17,6 +17,10 @@ local M = {}
 
 local lock_cache = {}
 
+M.clear_lock_cache = function()
+	lock_cache = {}
+end
+
 local function to_version(str)
 	if not str then
 		return { 0, 0, 0 }

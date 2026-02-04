@@ -18,6 +18,10 @@ local M = {}
 
 local lock_cache = {}
 
+M.clear_lock_cache = function()
+	lock_cache = {}
+end
+
 local function trim_quotes(v)
 	v = tostring(v or "")
 	v = v:gsub("^%s*", ""):gsub("%s*$", "")

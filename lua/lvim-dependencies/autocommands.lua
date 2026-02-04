@@ -53,6 +53,55 @@ local function clear_cooldown(bufnr)
 	state.buffers[bufnr].last_update_completed_at = nil
 end
 
+local function clear_parser_caches(manifest_key)
+	-- Clear utils file cache
+	local ok_utils, u = pcall(require, "lvim-dependencies.utils")
+	if ok_utils and type(u.clear_file_cache) == "function" then
+		u.clear_file_cache()
+	end
+
+	-- Clear parser-specific lock cache
+	local parser_modules = {
+		package = "lvim-dependencies.parsers.package",
+		crates = "lvim-dependencies.parsers.cargo",
+		pubspec = "lvim-dependencies.parsers.pubspec",
+		composer = "lvim-dependencies.parsers.composer",
+		go = "lvim-dependencies.parsers.go",
+	}
+
+	local parser_module = parser_modules[manifest_key]
+	if parser_module then
+		local ok_parser, parser = pcall(require, parser_module)
+		if ok_parser and type(parser.clear_lock_cache) == "function" then
+			parser.clear_lock_cache()
+		end
+	end
+end
+
+local function clear_buffer_parse_cache(bufnr, manifest_key)
+	state.buffers = state.buffers or {}
+	state.buffers[bufnr] = state.buffers[bufnr] or {}
+
+	-- Clear manifest-specific parsed cache
+	local cache_keys = {
+		package = { "last_package_hash", "last_package_parsed" },
+		crates = { "last_crates_hash", "last_crates_parsed" },
+		pubspec = { "last_pubspec_hash", "last_pubspec_parsed" },
+		composer = { "last_composer_hash", "last_composer_parsed" },
+		go = { "last_go_hash", "last_go_parsed" },
+	}
+
+	local keys = cache_keys[manifest_key]
+	if keys then
+		for _, key in ipairs(keys) do
+			state.buffers[bufnr][key] = nil
+		end
+	end
+
+	state.buffers[bufnr].last_changedtick = nil
+	state.buffers[bufnr].parse_scheduled = false
+end
+
 local function call_manifest_checker(entry, bufnr)
 	pcall(function()
 		checker.check_manifest_outdated(bufnr, entry.key)
@@ -98,8 +147,15 @@ local function handle_buffer_parse_and_check(bufnr, force_fresh)
 		return
 	end
 
-	-- If force_fresh, clear the cache first
+	-- If force_fresh, clear ALL caches
 	if force_fresh then
+		-- Clear parser lock cache (reads lock file fresh)
+		clear_parser_caches(manifest_key)
+
+		-- Clear buffer parse cache (forces re-parse)
+		clear_buffer_parse_cache(bufnr, manifest_key)
+
+		-- Clear check_manifests cache
 		pcall(function()
 			checker.clear_buffer_cache(bufnr, manifest_key)
 		end)
@@ -171,7 +227,6 @@ local function on_buf_enter(args)
 	end
 
 	-- Skip full check if we just finished an update (cooldown period)
-	-- Do NOT trigger any check or display - just setup commands
 	if is_in_update_cooldown(bufnr) then
 		local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
 		local entry = parsers[filename]
@@ -200,14 +255,25 @@ local function on_buf_write(args)
 		return
 	end
 
-	-- If in cooldown, clear it and do a FRESH check (user explicitly saved)
+	-- Get manifest key for this buffer
+	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+	local entry = parsers[filename]
+	local manifest_key = entry and entry.key or nil
+
+	-- If in cooldown, clear it - user explicitly saved so they want fresh data
 	local was_in_cooldown = is_in_update_cooldown(bufnr)
 	if was_in_cooldown then
 		clear_cooldown(bufnr)
 	end
 
-	-- After write, do a full check with fresh data if we were in cooldown
-	schedule_handle(bufnr, 200, true, was_in_cooldown)
+	-- ALWAYS do fresh check on save - clear all caches
+	if manifest_key then
+		clear_parser_caches(manifest_key)
+		clear_buffer_parse_cache(bufnr, manifest_key)
+	end
+
+	-- After write, do a full check with fresh data
+	schedule_handle(bufnr, 200, true, true)
 end
 
 local function on_buf_read(args)
@@ -221,13 +287,24 @@ local function on_buf_read(args)
 		return
 	end
 
+	-- Get manifest key for this buffer
+	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+	local entry = parsers[filename]
+	local manifest_key = entry and entry.key or nil
+
 	-- If in cooldown and user does :e, clear cooldown and do fresh check
 	local was_in_cooldown = is_in_update_cooldown(bufnr)
 	if was_in_cooldown then
 		clear_cooldown(bufnr)
-		-- Do a full fresh check
-		schedule_handle(bufnr, 100, true, true)
 	end
+
+	-- Clear caches and do fresh check
+	if manifest_key then
+		clear_parser_caches(manifest_key)
+		clear_buffer_parse_cache(bufnr, manifest_key)
+	end
+
+	schedule_handle(bufnr, 100, true, true)
 end
 
 local function on_win_scrolled(args)
@@ -255,7 +332,6 @@ M.init = function()
 		callback = on_buf_write,
 	})
 
-	-- Handle :e (reload)
 	api.nvim_create_autocmd("BufReadPost", {
 		group = group,
 		pattern = const.MANIFEST_PATTERNS,
