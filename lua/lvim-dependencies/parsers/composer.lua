@@ -16,16 +16,8 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
--- ------------------------------------------------------------
--- Lock parse cache (per lock_path + mtime + size)
--- ------------------------------------------------------------
-local lock_cache = {
-	-- [lock_path] = { mtime=..., size=..., versions=table }
-}
+local lock_cache = {}
 
--- ------------------------------------------------------------
--- Lock parsing
--- ------------------------------------------------------------
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
@@ -78,9 +70,6 @@ local function get_lock_versions(lock_path)
 	return versions
 end
 
--- ------------------------------------------------------------
--- Composer parsing helpers
--- ------------------------------------------------------------
 local function is_platform_dependency(name)
 	if not name or name == "" then
 		return true
@@ -244,9 +233,31 @@ local function apply_lock_versions(parsed, lock_versions)
 	end
 end
 
--- ------------------------------------------------------------
--- Parse + state update
--- ------------------------------------------------------------
+local function is_update_loading(bufnr)
+	return state.buffers
+		and state.buffers[bufnr]
+		and state.buffers[bufnr].is_loading == true
+		and state.buffers[bufnr].pending_dep ~= nil
+end
+
+local function is_checking_single_package(bufnr)
+	return state.buffers and state.buffers[bufnr] and state.buffers[bufnr].checking_single_package ~= nil
+end
+
+local function guarded_display(bufnr, manifest_key)
+	if is_update_loading(bufnr) then
+		return
+	end
+	vt.display(bufnr, manifest_key)
+end
+
+local function guarded_check_outdated(bufnr, manifest_key)
+	if is_update_loading(bufnr) then
+		return
+	end
+	checker.check_manifest_outdated(bufnr, manifest_key)
+end
+
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	if not api.nvim_buf_is_valid(bufnr) then
 		return
@@ -288,7 +299,6 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		state.ensure_manifest("composer")
 		state.clear_manifest("composer")
 
-		-- UNIVERSAL INSTALLED SHAPE
 		local bulk = {}
 		for name, info in pairs(installed_dependencies) do
 			local scope = info._source or "require"
@@ -316,14 +326,13 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		state.buffers[bufnr].last_composer_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
-		vt.display(bufnr, "composer")
-		checker.check_manifest_outdated(bufnr, "composer")
+		if not is_checking_single_package(bufnr) then
+			guarded_display(bufnr, "composer")
+			guarded_check_outdated(bufnr, "composer")
+		end
 	end)
 end
 
--- ------------------------------------------------------------
--- Public API
--- ------------------------------------------------------------
 M.parse_buffer = function(bufnr)
 	bufnr = bufnr or fn.bufnr()
 	if bufnr == -1 then
@@ -333,11 +342,15 @@ M.parse_buffer = function(bufnr)
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 
+	if is_checking_single_package(bufnr) then
+		return state.buffers[bufnr].last_composer_parsed
+	end
+
 	local buf_changedtick = api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
 		if state.buffers[bufnr].last_composer_parsed then
 			defer_fn(function()
-				vt.display(bufnr, "composer")
+				guarded_display(bufnr, "composer")
 			end, 10)
 			return state.buffers[bufnr].last_composer_parsed
 		end
@@ -351,7 +364,7 @@ M.parse_buffer = function(bufnr)
 		state.buffers[bufnr].last_changedtick = buf_changedtick
 		if state.buffers[bufnr].last_composer_parsed then
 			defer_fn(function()
-				vt.display(bufnr, "composer")
+				guarded_display(bufnr, "composer")
 			end, 10)
 			return state.buffers[bufnr].last_composer_parsed
 		end
@@ -365,6 +378,11 @@ M.parse_buffer = function(bufnr)
 
 	defer_fn(function()
 		if not api.nvim_buf_is_valid(bufnr) then
+			state.buffers[bufnr].parse_scheduled = false
+			return
+		end
+
+		if is_checking_single_package(bufnr) then
 			state.buffers[bufnr].parse_scheduled = false
 			return
 		end

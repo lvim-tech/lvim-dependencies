@@ -31,28 +31,6 @@ for filename, key in pairs(const.MANIFEST_KEYS) do
 	parsers[filename] = { parser = parser_map[key], key = key }
 end
 
--- Cooldown period after update completes (ms)
-local UPDATE_COOLDOWN_MS = 5000
-
-local function is_in_update_cooldown(bufnr)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-
-	local last_update = state.buffers[bufnr].last_update_completed_at
-	if not last_update then
-		return false
-	end
-
-	local now = vim.loop.now()
-	return (now - last_update) < UPDATE_COOLDOWN_MS
-end
-
-local function clear_cooldown(bufnr)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-	state.buffers[bufnr].last_update_completed_at = nil
-end
-
 local function call_manifest_checker(entry, bufnr)
 	pcall(function()
 		checker.check_manifest_outdated(bufnr, entry.key)
@@ -81,7 +59,7 @@ local function parse_and_render(bufnr)
 	state.update_last_run(bufnr)
 end
 
-local function handle_buffer_parse_and_check(bufnr, force_fresh)
+local function handle_buffer_parse_and_check(bufnr)
 	bufnr = bufnr or api.nvim_get_current_buf()
 	if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
 		return
@@ -98,20 +76,13 @@ local function handle_buffer_parse_and_check(bufnr, force_fresh)
 		return
 	end
 
-	-- If force_fresh, clear the cache first
-	if force_fresh then
-		pcall(function()
-			checker.clear_buffer_cache(bufnr, manifest_key)
-		end)
-	end
-
 	entry.parser.parse_buffer(bufnr)
 	call_manifest_checker(entry, bufnr)
 	virtual_text.display(bufnr, manifest_key, { force_full = true })
 	state.update_last_run(bufnr)
 end
 
-local function schedule_handle(bufnr, delay, full_check, force_fresh)
+local function schedule_handle(bufnr, delay, full_check)
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 	if state.buffers[bufnr].check_scheduled then
@@ -121,7 +92,7 @@ local function schedule_handle(bufnr, delay, full_check, force_fresh)
 	defer_fn(function()
 		state.buffers[bufnr].check_scheduled = false
 		if full_check then
-			handle_buffer_parse_and_check(bufnr, force_fresh)
+			handle_buffer_parse_and_check(bufnr)
 		else
 			parse_and_render(bufnr)
 		end
@@ -162,25 +133,8 @@ end
 local function on_buf_enter(args)
 	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
 
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
-
-	-- Skip full check if we just finished an update (cooldown period)
-	-- Do NOT trigger any check or display - just setup commands
-	if is_in_update_cooldown(bufnr) then
-		local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-		local entry = parsers[filename]
-		commands.create_buf_commands_for(bufnr, entry and entry.key or nil)
-		return
-	end
-
 	-- Full parse+check on enter (debounced)
-	schedule_handle(bufnr, 50, true, false)
+	schedule_handle(bufnr, 50, true)
 
 	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
 	local entry = parsers[filename]
@@ -191,43 +145,9 @@ end
 
 local function on_buf_write(args)
 	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
-
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
-
-	-- If in cooldown, clear it and do a FRESH check (user explicitly saved)
-	local was_in_cooldown = is_in_update_cooldown(bufnr)
-	if was_in_cooldown then
-		clear_cooldown(bufnr)
-	end
-
-	-- After write, do a full check with fresh data if we were in cooldown
-	schedule_handle(bufnr, 200, true, was_in_cooldown)
-end
-
-local function on_buf_read(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
-
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
-
-	-- If in cooldown and user does :e, clear cooldown and do fresh check
-	local was_in_cooldown = is_in_update_cooldown(bufnr)
-	if was_in_cooldown then
-		clear_cooldown(bufnr)
-		-- Do a full fresh check
-		schedule_handle(bufnr, 100, true, true)
-	end
+	-- IMPORTANT: after write we MUST do a full check, otherwise state tables can be empty
+	-- and virtual text will render nothing.
+	schedule_handle(bufnr, 200, true)
 end
 
 local function on_win_scrolled(args)
@@ -253,13 +173,6 @@ M.init = function()
 		group = group,
 		pattern = const.MANIFEST_PATTERNS,
 		callback = on_buf_write,
-	})
-
-	-- Handle :e (reload)
-	api.nvim_create_autocmd("BufReadPost", {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_buf_read,
 	})
 
 	api.nvim_create_autocmd({ "WinScrolled" }, {

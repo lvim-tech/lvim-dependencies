@@ -75,7 +75,7 @@ local M = {
 				real = "#ff7e22",
 				constraint = "#ff7e22",
 				separator = "#3a784f",
-				loading = "#3a4178",
+				loading = "#cccccc",
 			},
 		},
 		virtual_text = {
@@ -92,6 +92,7 @@ local M = {
 			width = "auto",
 			height = "auto",
 			max_height = 0.8,
+            current = "➤",
 		},
 	},
 	keymaps = {

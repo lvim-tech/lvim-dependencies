@@ -2,6 +2,7 @@ local api = vim.api
 
 local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
+local state = require("lvim-dependencies.state")
 local L = vim.log.levels
 
 local M = {}
@@ -45,9 +46,12 @@ local function read_lines(path)
 end
 
 local function write_lines(path, lines)
-	local ok, err = pcall(vim.fn.writefile, lines, path)
+	local ok, res = pcall(vim.fn.writefile, lines, path)
 	if not ok then
-		return false, tostring(err)
+		return false, tostring(res)
+	end
+	if res ~= 0 then
+		return false, "writefile failed (code=" .. tostring(res) .. ")"
 	end
 	return true
 end
@@ -84,6 +88,29 @@ local function apply_buffer_change(path, change)
 			row = math.max(1, row + delta)
 		end
 		pcall(api.nvim_win_set_cursor, cur_win, { row, saved_cursor[2] })
+	end
+
+	vim.bo[bufnr].modified = false
+end
+
+local function force_refresh_buffer(path, fresh_lines)
+	local bufnr = vim.fn.bufnr(path)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return
+	end
+
+	local cur_buf = api.nvim_get_current_buf()
+	local cur_win = api.nvim_get_current_win()
+	local saved_cursor = nil
+
+	if cur_buf == bufnr then
+		saved_cursor = api.nvim_win_get_cursor(cur_win)
+	end
+
+	pcall(api.nvim_buf_set_lines, bufnr, 0, -1, false, fresh_lines)
+
+	if saved_cursor then
+		pcall(api.nvim_win_set_cursor, cur_win, saved_cursor)
 	end
 
 	vim.bo[bufnr].modified = false
@@ -241,8 +268,53 @@ local function curl_get_json(url)
 	return parsed
 end
 
-local function do_user_autocmd_package_updated()
+local function trigger_package_updated()
 	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
+end
+
+local function clear_all_caches()
+	local ok_utils, u = pcall(require, "lvim-dependencies.utils")
+	if ok_utils and type(u.clear_file_cache) == "function" then
+		u.clear_file_cache()
+	end
+
+	local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
+	if ok_parser and type(parser.clear_lock_cache) == "function" then
+		parser.clear_lock_cache()
+	end
+end
+
+local function ensure_deps_namespace()
+	state.namespace = state.namespace or {}
+	state.namespace.id = state.namespace.id or api.nvim_create_namespace("lvim_dependencies")
+	return tonumber(state.namespace.id) or 0
+end
+
+local function set_pending_anchor(bufnr, lnum1)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+		return nil
+	end
+	if type(lnum1) ~= "number" or lnum1 < 1 then
+		return nil
+	end
+	local ns = ensure_deps_namespace()
+	local id = api.nvim_buf_set_extmark(bufnr, ns, lnum1 - 1, 0, {
+		right_gravity = false,
+	})
+	return id
+end
+
+local function clear_pending_anchor(bufnr)
+	if not (bufnr and bufnr ~= -1) then
+		return
+	end
+	local rec = state.buffers and state.buffers[bufnr]
+	if not rec or not rec.pending_anchor_id then
+		return
+	end
+	local ns = ensure_deps_namespace()
+	pcall(api.nvim_buf_del_extmark, bufnr, ns, rec.pending_anchor_id)
+	rec.pending_anchor_id = nil
 end
 
 function M.fetch_versions(name, _)
@@ -344,14 +416,6 @@ local function remove_trailing_comma(line)
 	return line:gsub(",%s*$", "")
 end
 
-local function extract_version_from_line(line)
-	if not line then
-		return nil
-	end
-	local v = line:match(':%s*"(.-)"')
-	return v and vim.trim(v) or nil
-end
-
 local function find_package_line(lines, section_idx, section_end, pkg_name)
 	for i = section_idx + 1, section_end - 1 do
 		local ln = lines[i]
@@ -361,6 +425,28 @@ local function find_package_line(lines, section_idx, section_end, pkg_name)
 		end
 	end
 	return nil, nil
+end
+
+local function find_package_lnum_in_section(buf_lines, scope, pkg_name)
+	if type(buf_lines) ~= "table" or not scope or scope == "" or not pkg_name or pkg_name == "" then
+		return nil
+	end
+
+	local section_idx = find_section_index(buf_lines, scope)
+	if not section_idx then
+		return nil
+	end
+	local section_end = find_section_end(buf_lines, section_idx)
+
+	for i = section_idx + 1, section_end - 1 do
+		local ln = buf_lines[i]
+		local m = ln and ln:match('^%s*"(.-)"%s*:')
+		if m == pkg_name then
+			return i
+		end
+	end
+
+	return nil
 end
 
 local function replace_package_in_section(lines, section_idx, section_end, pkg_name, version_spec)
@@ -507,114 +593,61 @@ local function add_section_with_package(lines, section_name, pkg_name, version_s
 	local change = {
 		start0 = section_idx - 1,
 		end0 = section_idx - 1,
-		lines = { indent .. '"' .. section_name .. '": {', entry_indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"', indent .. "}" },
+		lines = {
+			indent .. '"' .. section_name .. '": {',
+			entry_indent .. '"' .. pkg_name .. '": "' .. version_spec .. '"',
+			indent .. "}",
+		},
 	}
 	return out, section_idx, section_end, change
 end
 
-local function apply_package_update(path, name, version, scope)
-	local lines = read_lines(path)
-	if not lines then
-		return false, "unable to read package.json"
-	end
-
-	local version_spec = "^" .. tostring(version)
-	local section_idx = find_section_index(lines, scope)
-	local section_end = nil
-	local change = nil
-	local new_lines = nil
-
-	if not section_idx then
-		new_lines, section_idx, section_end, change = add_section_with_package(lines, scope, name, version_spec)
-	else
-		section_end = find_section_end(lines, section_idx)
-		local i, ln = find_package_line(lines, section_idx, section_end, name)
-		if i and ln then
-			local current_version = extract_version_from_line(ln)
-			if current_version and tostring(current_version) == tostring(version_spec) then
-				return false, "version unchanged"
-			end
-		end
-
-		local replaced = false
-		new_lines, replaced, change = replace_package_in_section(lines, section_idx, section_end, name, version_spec)
-		if not replaced then
-			new_lines, _, change = insert_package_in_section(lines, section_idx, section_end, name, version_spec)
-		end
-	end
-
-	local ok_write, werr = write_lines(path, new_lines)
-	if not ok_write then
-		return false, "failed to write package.json: " .. tostring(werr)
-	end
-
-	apply_buffer_change(path, change)
-	return true
-end
-
-local function apply_package_remove(path, name)
-	local lines = read_lines(path)
-	if not lines then
-		return false, "unable to read package.json"
-	end
-
-	local scopes = const.SECTION_NAMES.package or { "dependencies", "devDependencies" }
-	local new_lines = nil
-	local change = nil
-
-	for _, scope in ipairs(scopes) do
-		local section_idx = find_section_index(lines, scope)
-		if section_idx then
-			local section_end = find_section_end(lines, section_idx)
-			new_lines, change = remove_package_from_section(lines, section_idx, section_end, name)
-			if new_lines then
-				break
-			end
-		end
-	end
-
-	if not new_lines then
-		return false, "package not found"
-	end
-
-	local ok_write, werr = write_lines(path, new_lines)
-	if not ok_write then
-		return false, "failed to write package.json: " .. tostring(werr)
-	end
-
-	apply_buffer_change(path, change)
-	return true
-end
-
-local function reparse_and_check_debounced(path, updated_package_name)
-	local bufnr = vim.fn.bufnr(path)
+local function apply_single_line_version_edit(bufnr, lnum1, dep_name, new_version)
 	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
-		return
+		return false
+	end
+	if type(lnum1) ~= "number" or lnum1 < 1 then
+		return false
+	end
+	if not dep_name or dep_name == "" then
+		return false
+	end
+	if not new_version or new_version == "" then
+		return false
 	end
 
-	vim.defer_fn(function()
-		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.package")
-		if ok_parser and type(parser.parse_buffer) == "function" then
-			pcall(parser.parse_buffer, bufnr)
-		end
-	end, 250)
-
-	vim.defer_fn(function()
-		local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-		if ok_chk and type(chk.invalidate_package_cache) == "function" and updated_package_name then
-			pcall(chk.invalidate_package_cache, bufnr, "package", updated_package_name)
-		end
-		if ok_chk and type(chk.check_manifest_outdated) == "function" then
-			pcall(chk.check_manifest_outdated, bufnr, "package")
-		end
-	end, 1200)
-end
-
-local function set_updating_flag(v)
-	local ok_state, st = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(st.set_updating) == "function" then
-		pcall(st.set_updating, v)
+	local line = api.nvim_buf_get_lines(bufnr, lnum1 - 1, lnum1, false)[1]
+	if not line then
+		return false
 	end
+
+	local m = line:match('^%s*"(.-)"%s*:')
+	if m ~= dep_name then
+		return false
+	end
+
+	local colon_pos = line:find(":", 1, true)
+	if not colon_pos then
+		return false
+	end
+
+	local first_quote = line:find('"', colon_pos + 1, true)
+	if not first_quote then
+		return false
+	end
+
+	local second_quote = line:find('"', first_quote + 1, true)
+	if not second_quote then
+		return false
+	end
+
+	local start0 = first_quote
+	local end0 = second_quote - 1
+
+	local version_spec = "^" .. tostring(new_version)
+	pcall(api.nvim_buf_set_text, bufnr, lnum1 - 1, start0, lnum1 - 1, end0, { version_spec })
+	vim.bo[bufnr].modified = false
+	return true
 end
 
 local function get_preferred_pm()
@@ -631,68 +664,220 @@ local function get_preferred_pm()
 end
 
 local function pm_install_cmd(pm, pkg_spec, scope)
-	if scope == "devDependencies" then
-		if pm == "yarn" then
-			return { "yarn", "add", "--dev", pkg_spec }
-		elseif pm == "pnpm" then
+	local is_dev = (scope == "devDependencies")
+	if pm == "pnpm" then
+		if is_dev then
 			return { "pnpm", "add", "-D", pkg_spec }
-		else
+		end
+		return { "pnpm", "add", pkg_spec }
+	elseif pm == "yarn" then
+		if is_dev then
+			return { "yarn", "add", "-D", pkg_spec }
+		end
+		return { "yarn", "add", pkg_spec }
+	else
+		if is_dev then
 			return { "npm", "install", "--save-dev", pkg_spec }
 		end
-	end
-
-	if pm == "yarn" then
-		return { "yarn", "add", pkg_spec }
-	elseif pm == "pnpm" then
-		return { "pnpm", "add", pkg_spec }
-	else
 		return { "npm", "install", "--save", pkg_spec }
 	end
 end
 
-local function pm_remove_cmd(pm, name)
-	if pm == "yarn" then
-		return { "yarn", "remove", name }
-	elseif pm == "pnpm" then
-		return { "pnpm", "remove", name }
-	else
-		return { "npm", "uninstall", name }
+local function run_pm_install(path, name, version, scope, on_success_msg, opts)
+	opts = opts or {}
+	local pending_lines = opts.pending_lines
+	local change = opts.change
+	local original_lines = opts.original_lines
+	local pending_lnum = opts.pending_lnum
+
+	local pm = get_preferred_pm()
+	if not pm then
+		utils.notify_safe("package: npm/yarn/pnpm not found", L.ERROR, {})
+		return
 	end
-end
 
-local function run_pm_change(path, argv, kind, payload)
 	local cwd = vim.fn.fnamemodify(path, ":h")
+	local pkg_spec = ("%s@%s"):format(name, tostring(version))
+	local cmd = pm_install_cmd(pm, pkg_spec, scope)
 
-	set_updating_flag(true)
-	utils.notify_safe(("Running %s..."):format(table.concat(argv, " ")), L.INFO, {})
+	local ok_state, st = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(st.set_updating) == "function" then
+		pcall(st.set_updating, true)
+	end
 
-	vim.system(argv, { cwd = cwd, text = true }, function(res)
+	if pending_lines then
+		local ok_write, werr = write_lines(path, pending_lines)
+		if not ok_write then
+			utils.notify_safe("package: failed to write package.json: " .. tostring(werr), L.ERROR, {})
+			local ok_s, s2 = pcall(require, "lvim-dependencies.state")
+			if ok_s and type(s2.set_updating) == "function" then
+				pcall(s2.set_updating, false)
+			end
+			return
+		end
+	end
+
+	vim.system(cmd, { cwd = cwd, text = true }, function(res)
 		vim.schedule(function()
-			set_updating_flag(false)
+			local bufnr = vim.fn.bufnr(path)
 
-			if not res or res.code ~= 0 then
-				local msg = (res and res.stderr) or ""
-				if msg == "" then
-					msg = ("%s exited with code %s"):format(kind, tostring(res and res.code or "unknown"))
+			if res and res.code == 0 then
+				-- SUCCESS
+				clear_all_caches()
+
+				local applied = false
+				if bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) and type(pending_lnum) == "number" then
+					applied = apply_single_line_version_edit(bufnr, pending_lnum, name, version)
 				end
-				utils.notify_safe(msg, L.ERROR, {})
+
+				if not applied and pending_lines then
+					if change then
+						apply_buffer_change(path, change)
+					else
+						force_refresh_buffer(path, pending_lines)
+					end
+				end
+
+				utils.notify_safe(
+					on_success_msg or ("package: %s@%s installed"):format(name, tostring(version)),
+					L.INFO,
+					{}
+				)
+
+				clear_all_caches()
+
+				-- Update installed version in state
+				local ok_st, st2 = pcall(require, "lvim-dependencies.state")
+				if ok_st and name and version then
+					local deps = st2.get_dependencies("package")
+					if deps then
+						deps.installed = deps.installed or {}
+						deps.installed[name] = { current = version, in_lock = true }
+						if type(st2.set_installed) == "function" then
+							st2.set_installed("package", deps.installed)
+						end
+					end
+
+					if type(st2.add_installed_dependency) == "function" then
+						pcall(st2.add_installed_dependency, "package", name, version, scope)
+					end
+				end
+
+				local ok_s, s2 = pcall(require, "lvim-dependencies.state")
+				if ok_s and type(s2.set_updating) == "function" then
+					pcall(s2.set_updating, false)
+				end
+
+				if bufnr and bufnr ~= -1 then
+					state.buffers = state.buffers or {}
+					state.buffers[bufnr] = state.buffers[bufnr] or {}
+					state.buffers[bufnr].last_package_hash = nil
+					state.buffers[bufnr].last_changedtick = nil
+					state.buffers[bufnr].last_package_parsed = nil
+				end
+
+				-- Start fresh outdated check
+				vim.defer_fn(function()
+					clear_all_caches()
+
+					-- Clear is_loading so check_manifest_outdated runs, but set checking flag
+					if bufnr and bufnr ~= -1 then
+						state.buffers = state.buffers or {}
+						state.buffers[bufnr] = state.buffers[bufnr] or {}
+						state.buffers[bufnr].is_loading = false
+						state.buffers[bufnr].pending_dep = nil
+						state.buffers[bufnr].checking_single_package = name
+					end
+
+					local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+					if ok_chk and type(chk.invalidate_package_cache) == "function" then
+						pcall(chk.invalidate_package_cache, bufnr, "package", name)
+					end
+					if ok_chk and type(chk.check_manifest_outdated) == "function" then
+						pcall(chk.check_manifest_outdated, bufnr, "package")
+					end
+				end, 300)
+
+				-- Poll until outdated data is ready
+				local poll_count = 0
+				local max_polls = 30
+				local function poll_for_outdated()
+					poll_count = poll_count + 1
+
+					local deps = state.get_dependencies("package")
+					local outdated = deps and deps.outdated
+					local pkg_outdated = outdated and outdated[name]
+					local has_fresh_data = pkg_outdated and pkg_outdated.latest ~= nil
+
+					if has_fresh_data or poll_count >= max_polls then
+						if bufnr and bufnr ~= -1 then
+							state.buffers = state.buffers or {}
+							state.buffers[bufnr] = state.buffers[bufnr] or {}
+							clear_pending_anchor(bufnr)
+
+							state.buffers[bufnr].is_loading = false
+							state.buffers[bufnr].pending_dep = nil
+							state.buffers[bufnr].pending_lnum = nil
+							state.buffers[bufnr].pending_scope = nil
+							state.buffers[bufnr].checking_single_package = nil
+
+							-- Mark when update completed for cooldown
+							state.buffers[bufnr].last_update_completed_at = vim.loop.now()
+						end
+
+						local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+						if ok_vt and type(vt.display) == "function" then
+							vt.display(bufnr, "package", { force_full = true })
+						end
+					else
+						vim.defer_fn(poll_for_outdated, 200)
+					end
+				end
+
+				vim.defer_fn(poll_for_outdated, 500)
+
+				pcall(function()
+					vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
+					trigger_package_updated()
+				end)
 				return
 			end
 
-			if kind == "install" and payload and payload.name and payload.version and payload.scope then
-				apply_package_update(path, payload.name, payload.version, payload.scope)
-				reparse_and_check_debounced(path, payload.name)
-				pcall(function()
-					vim.g.lvim_deps_last_updated = payload.name .. "@" .. tostring(payload.version)
-					do_user_autocmd_package_updated()
-				end)
-			elseif kind == "remove" and payload and payload.name then
-				apply_package_remove(path, payload.name)
-				reparse_and_check_debounced(path, payload.name)
-				pcall(function()
-					vim.g.lvim_deps_last_updated = payload.name .. "@removed"
-					do_user_autocmd_package_updated()
-				end)
+			-- FAIL: rollback
+			if original_lines then
+				write_lines(path, original_lines)
+			end
+
+			if original_lines and bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
+				force_refresh_buffer(path, original_lines)
+			end
+
+			local ok_s, s2 = pcall(require, "lvim-dependencies.state")
+			if ok_s and type(s2.set_updating) == "function" then
+				pcall(s2.set_updating, false)
+			end
+
+			local msg = (res and res.stderr) or ""
+			if msg == "" then
+				msg = table.concat(cmd, " ") .. " exited with code " .. tostring(res and res.code or "unknown")
+			end
+			utils.notify_safe(("package: install failed. Error: %s"):format(msg), L.ERROR, {})
+
+			if bufnr and bufnr ~= -1 then
+				state.buffers = state.buffers or {}
+				state.buffers[bufnr] = state.buffers[bufnr] or {}
+				clear_pending_anchor(bufnr)
+
+				state.buffers[bufnr].is_loading = false
+				state.buffers[bufnr].pending_dep = nil
+				state.buffers[bufnr].pending_lnum = nil
+				state.buffers[bufnr].pending_scope = nil
+				state.buffers[bufnr].checking_single_package = nil
+			end
+
+			local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+			if ok_vt and type(vt.display) == "function" then
+				vt.display(bufnr, "package", { force_full = true })
 			end
 		end)
 	end)
@@ -703,7 +888,6 @@ function M.update(name, opts)
 		return { ok = false, msg = "package name required" }
 	end
 	opts = opts or {}
-
 	local version = opts.version
 	if not version or version == "" then
 		return { ok = false, msg = "version is required" }
@@ -722,94 +906,213 @@ function M.update(name, opts)
 		scope = "dependencies"
 	end
 
-	local path = find_package_json_path()
+	local bufname = api.nvim_buf_get_name(0)
+	local path = nil
+	if bufname ~= "" and bufname:match("package%.json$") then
+		path = bufname
+	else
+		path = find_package_json_path()
+	end
 	if not path then
 		return { ok = false, msg = "package.json not found in project tree" }
 	end
 
+	local disk_lines = read_lines(path)
+	if not disk_lines then
+		return { ok = false, msg = "unable to read package.json from disk" }
+	end
+	local original_lines = vim.deepcopy(disk_lines)
+
+	local version_spec = "^" .. tostring(version)
+	local section_idx = find_section_index(disk_lines, scope)
+	local section_end = nil
+	local change = nil
+	local new_lines = nil
+
+	if not section_idx then
+		new_lines, section_idx, section_end, change = add_section_with_package(disk_lines, scope, name, version_spec)
+	else
+		section_end = find_section_end(disk_lines, section_idx)
+		local replaced = false
+		new_lines, replaced, change =
+			replace_package_in_section(disk_lines, section_idx, section_end, name, version_spec)
+		if not replaced then
+			new_lines, _, change = insert_package_in_section(disk_lines, section_idx, section_end, name, version_spec)
+		end
+	end
+
 	if opts.from_ui then
-		local pm = get_preferred_pm()
-		if not pm then
-			utils.notify_safe("npm/yarn/pnpm not found", L.ERROR, {})
-			return { ok = false, msg = "pm not found" }
+		local bufnr = vim.fn.bufnr(path)
+
+		local pending_lnum = nil
+		if bufnr and bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
+			local buf_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+			pending_lnum = find_package_lnum_in_section(buf_lines, scope, name)
 		end
 
-		local pkg_spec = ("%s@%s"):format(name, tostring(version))
-		local argv = pm_install_cmd(pm, pkg_spec, scope)
-		run_pm_change(path, argv, "install", { name = name, version = version, scope = scope })
+		if bufnr and bufnr ~= -1 then
+			state.buffers = state.buffers or {}
+			state.buffers[bufnr] = state.buffers[bufnr] or {}
+
+			state.buffers[bufnr].is_loading = true
+			state.buffers[bufnr].pending_dep = name
+			state.buffers[bufnr].pending_lnum = pending_lnum
+			state.buffers[bufnr].pending_scope = scope
+
+			clear_pending_anchor(bufnr)
+			if pending_lnum then
+				state.buffers[bufnr].pending_anchor_id = set_pending_anchor(bufnr, pending_lnum)
+			end
+
+			-- Update version in buffer first
+			if pending_lnum then
+				apply_single_line_version_edit(bufnr, pending_lnum, name, version)
+			end
+
+			-- Clear ONLY the extmark on this specific line, not all
+			local ns = ensure_deps_namespace()
+			if pending_lnum then
+				local marks = api.nvim_buf_get_extmarks(
+					bufnr,
+					ns,
+					{ pending_lnum - 1, 0 },
+					{ pending_lnum - 1, -1 },
+					{}
+				)
+				for _, mark in ipairs(marks) do
+					pcall(api.nvim_buf_del_extmark, bufnr, ns, mark[1])
+				end
+
+				api.nvim_buf_set_extmark(bufnr, ns, pending_lnum - 1, 0, {
+					virt_text = { { "Loading...", "LvimDepsLoading" } },
+					virt_text_pos = "eol",
+					priority = 1000,
+				})
+			end
+
+			vim.cmd("redraw")
+		end
+
+		utils.notify_safe(("package: installing %s@%s..."):format(name, tostring(version)), L.INFO, {})
+
+		run_pm_install(path, name, version, scope, nil, {
+			pending_lines = new_lines,
+			change = change,
+			original_lines = original_lines,
+			pending_lnum = pending_lnum,
+		})
 		return { ok = true, msg = "started" }
 	end
 
-	local ok_apply, err = apply_package_update(path, name, version, scope)
-	if not ok_apply and err == "version unchanged" then
-		return { ok = true, msg = "unchanged" }
-	end
-	if not ok_apply then
-		return { ok = false, msg = err }
+	local okw, werr = write_lines(path, new_lines)
+	if not okw then
+		return { ok = false, msg = "failed to write package.json: " .. tostring(werr) }
 	end
 
-	reparse_and_check_debounced(path, name)
+	apply_buffer_change(path, change)
+	force_refresh_buffer(path, new_lines)
+
+	local ok_state, st = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(st.add_installed_dependency) == "function" then
+		pcall(st.add_installed_dependency, "package", name, version, scope)
+	end
 
 	pcall(function()
 		vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-		do_user_autocmd_package_updated()
+		trigger_package_updated()
 	end)
 
-	utils.notify_safe(("%s -> %s"):format(name, tostring(version)), L.INFO, {})
+	utils.notify_safe(("package: %s -> %s"):format(name, tostring(version)), L.INFO, {})
 
 	return { ok = true, msg = "written" }
 end
 
-function M.add(_, _)
-	return { ok = true }
-end
+function M.remove(name, opts)
+	opts = opts or {}
 
-function M.delete(name, opts)
 	if not name or name == "" then
 		return { ok = false, msg = "package name required" }
 	end
-	opts = opts or {}
 
-	local path = find_package_json_path()
+	local bufname = api.nvim_buf_get_name(0)
+	local path = nil
+	if bufname ~= "" and bufname:match("package%.json$") then
+		path = bufname
+	else
+		path = find_package_json_path()
+	end
 	if not path then
 		return { ok = false, msg = "package.json not found in project tree" }
 	end
 
-	if opts.from_ui then
-		local pm = get_preferred_pm()
-		if not pm then
-			utils.notify_safe("npm/yarn/pnpm not found", L.ERROR, {})
-			return { ok = false, msg = "pm not found" }
+	local lines = read_lines(path)
+	if not lines then
+		return { ok = false, msg = "unable to read package.json from disk" }
+	end
+
+	local scope = opts.scope
+	local all_sections = const.SECTION_NAMES.package or { "dependencies", "devDependencies" }
+	local found_section = nil
+	local section_idx, section_end
+
+	if scope then
+		section_idx = find_section_index(lines, scope)
+		if section_idx then
+			section_end = find_section_end(lines, section_idx)
+			local i, _ = find_package_line(lines, section_idx, section_end, name)
+			if i then
+				found_section = scope
+			end
 		end
-
-		local argv = pm_remove_cmd(pm, name)
-		run_pm_change(path, argv, "remove", { name = name })
-		return { ok = true, msg = "started" }
 	end
 
-	local ok_remove, err = apply_package_remove(path, name)
-	if not ok_remove then
-		return { ok = false, msg = err }
+	if not found_section then
+		for _, sec in ipairs(all_sections) do
+			section_idx = find_section_index(lines, sec)
+			if section_idx then
+				section_end = find_section_end(lines, section_idx)
+				local i, _ = find_package_line(lines, section_idx, section_end, name)
+				if i then
+					found_section = sec
+					break
+				end
+			end
+		end
 	end
 
-	reparse_and_check_debounced(path, name)
+	if not found_section then
+		return { ok = false, msg = ("package '%s' not found in any section"):format(name) }
+	end
 
-	pcall(function()
-		vim.g.lvim_deps_last_updated = name .. "@removed"
-		do_user_autocmd_package_updated()
-	end)
+	local new_lines, change = remove_package_from_section(lines, section_idx, section_end, name)
+	if not new_lines then
+		return { ok = false, msg = ("failed to remove '%s'"):format(name) }
+	end
 
-	utils.notify_safe(("%s removed"):format(name), L.INFO, {})
+	local okw, werr = write_lines(path, new_lines)
+	if not okw then
+		return { ok = false, msg = "failed to write package.json: " .. tostring(werr) }
+	end
+
+	apply_buffer_change(path, change)
+	force_refresh_buffer(path, new_lines)
+
+	local ok_state, st = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(st.remove_installed_dependency) == "function" then
+		pcall(st.remove_installed_dependency, "package", name)
+	end
+
+	-- Mark when update completed for cooldown
+	local bufnr = vim.fn.bufnr(path)
+	if bufnr and bufnr ~= -1 then
+		state.buffers = state.buffers or {}
+		state.buffers[bufnr] = state.buffers[bufnr] or {}
+		state.buffers[bufnr].last_update_completed_at = vim.loop.now()
+	end
+
+	utils.notify_safe(("package: removed %s from %s"):format(name, found_section), L.INFO, {})
 
 	return { ok = true, msg = "removed" }
-end
-
-function M.install(_)
-	return { ok = true }
-end
-
-function M.check_outdated(_)
-	return { ok = true }
 end
 
 return M

@@ -16,12 +16,7 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
--- ------------------------------------------------------------
--- Lock parse cache (per lock_path + mtime + size)
--- ------------------------------------------------------------
-local lock_cache = {
-	-- [lock_path] = { mtime=..., size=..., versions=table }
-}
+local lock_cache = {}
 
 local function trim_quotes(v)
 	v = tostring(v or "")
@@ -62,15 +57,10 @@ end
 -- PNPM: parse top-level deps from importers (correct source)
 -- ------------------------------------------------------------
 local function strip_inline_comment(s)
-	-- pnpm-lock.yaml normally doesn't have comments, but be safe
 	return (s:gsub("%s+#.*$", ""))
 end
 
 local function parse_yaml_scalar_value(s)
-	-- Handles:
-	-- lodash: 4.17.23
-	-- lodash:
-	--   version: 4.17.23
 	s = strip_inline_comment(s or "")
 	s = s:match("^%s*(.-)%s*$")
 	if s == "" then
@@ -81,38 +71,31 @@ local function parse_yaml_scalar_value(s)
 	return s
 end
 
--- From a pnpm version field like:
--- "4.17.23" or "4.17.23(@types/node@20.0.0)" or "link:../x"
 local function pnpm_extract_version_field(v)
 	v = parse_yaml_scalar_value(v)
 	if not v or v == "" then
 		return nil
 	end
 
-	-- ignore non-registry installs
 	if v:match("^link:") or v:match("^file:") or v:match("^workspace:") or v:match("^patch:") then
 		return nil
 	end
 
-	-- remove parenthesized suffix
 	v = v:gsub("%(.*$", "")
 	v = v:gsub("^/+", "")
 	return normalize_semverish(v)
 end
 
 local function parse_pnpm_importers_top_level_versions(content)
-	-- Returns name->version for top-level deps, or nil if cannot parse.
 	if not content or content == "" then
 		return nil
 	end
-	-- quick check
 	if not (content:match("\nimporters:%s*\n") or content:match("^importers:%s*$")) then
 		return nil
 	end
 
 	local lines = split(content, "\n")
 
-	-- Find importers:
 	local importers_start = nil
 	for i, line in ipairs(lines) do
 		if line:match("^importers:%s*$") then
@@ -124,27 +107,23 @@ local function parse_pnpm_importers_top_level_versions(content)
 		return nil
 	end
 
-	-- Identify the importer block we want: prefer "." else first importer key.
 	local importer_key = nil
 	local importer_line = nil
 
 	for i = importers_start + 1, #lines do
 		local line = lines[i]
 		if line:match("^[^%s]") then
-			-- left importers section
 			break
 		end
 		if line:match("^%s%s[^%s].-:%s*$") then
 			local k = line:match("^%s%s([^:]+):%s*$")
 			k = parse_yaml_scalar_value(k)
 			if k then
-				-- prefer "."
 				if k == "." then
 					importer_key = k
 					importer_line = i
 					break
 				end
-				-- otherwise remember first
 				if not importer_key then
 					importer_key = k
 					importer_line = i
@@ -157,44 +136,36 @@ local function parse_pnpm_importers_top_level_versions(content)
 		return nil
 	end
 
-	-- Now parse under this importer for dependency sections
 	local versions = {}
-	local current_section = nil -- "dependencies" | "devDependencies" | "optionalDependencies" | ...
+	local current_section = nil
 	local dep_name = nil
 
 	for i = importer_line + 1, #lines do
 		local line = lines[i]
 
-		-- stop if we reached next importer (2 spaces indent key) or end of importers
 		if line:match("^%s%s[^%s].-:%s*$") then
-			-- next importer starts
 			break
 		end
 		if line:match("^[^%s]") then
-			-- left importers section
 			break
 		end
 
-		-- detect sections at 4 spaces: "    dependencies:"
 		local sec = line:match("^%s%s%s%s([%w%-]+):%s*$")
 		if sec then
 			current_section = sec
 			dep_name = nil
 		end
 
-		-- We only care about dep sections
 		if
 			current_section == "dependencies"
 			or current_section == "devDependencies"
 			or current_section == "optionalDependencies"
 		then
-			-- dep key at 6 spaces: "      lodash:"
 			local dn = line:match("^%s%s%s%s%s%s([^%s:]+):%s*$")
 			if dn then
 				dep_name = parse_yaml_scalar_value(dn)
 			end
 
-			-- inline form: "      lodash: 4.17.23"
 			local dn_inline, v_inline = line:match("^%s%s%s%s%s%s([^%s:]+):%s*(.+)%s*$")
 			if dn_inline and v_inline and not line:match("^%s%s%s%s%s%s[^%s:]+:%s*$") then
 				local name = parse_yaml_scalar_value(dn_inline)
@@ -205,7 +176,6 @@ local function parse_pnpm_importers_top_level_versions(content)
 				dep_name = nil
 			end
 
-			-- nested version field: 8 spaces: "        version: 4.17.23"
 			if dep_name then
 				local k, v = line:match("^%s%s%s%s%s%s%s%s([%w%-]+):%s*(.-)%s*$")
 				if k == "version" then
@@ -224,9 +194,6 @@ local function parse_pnpm_importers_top_level_versions(content)
 	return versions
 end
 
--- ------------------------------------------------------------
--- PNPM fallback: scan snapshots/packages keys (NOT reliable for top-level)
--- ------------------------------------------------------------
 local function parse_pnpm_snapshots_packages_fast(content)
 	local versions = {}
 	local lines = split(content or "", "\n")
@@ -257,26 +224,19 @@ local function parse_pnpm_snapshots_packages_fast(content)
 	return versions
 end
 
--- ------------------------------------------------------------
--- Lock parse dispatcher (pnpm/yarn/npm)
--- ------------------------------------------------------------
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return {}
 	end
 
-	-- pnpm-lock.yaml detection
 	if content:match("^lockfileVersion:") or content:match("\nlockfileVersion:") then
-		-- Correct: prefer importers-derived top-level versions
 		local from_importers = parse_pnpm_importers_top_level_versions(content)
 		if from_importers and type(from_importers) == "table" and next(from_importers) then
 			return from_importers
 		end
-		-- fallback (less correct)
 		return parse_pnpm_snapshots_packages_fast(content)
 	end
 
-	-- JSON lock (package-lock.json / npm-shrinkwrap.json)
 	local ok, parsed = pcall(decoder.parse_json, content)
 	if not ok or type(parsed) ~= "table" then
 		return {}
@@ -284,7 +244,6 @@ local function parse_lock_file_from_content(content)
 
 	local versions = {}
 
-	-- npm v7+ has packages table
 	if parsed.packages and type(parsed.packages) == "table" then
 		for pkg_path, info in pairs(parsed.packages) do
 			if type(info) == "table" and info.version then
@@ -296,7 +255,6 @@ local function parse_lock_file_from_content(content)
 		end
 	end
 
-	-- npm v5/v6 dependencies
 	if parsed.dependencies and type(parsed.dependencies) == "table" then
 		for name, info in pairs(parsed.dependencies) do
 			if info and type(info) == "table" and info.version then
@@ -329,9 +287,6 @@ local function get_lock_versions(lock_path)
 	return versions
 end
 
--- ------------------------------------------------------------
--- package.json parsing
--- ------------------------------------------------------------
 local function parse_package_fallback_lines(lines)
 	if not lines or type(lines) ~= "table" then
 		return {}, {}
@@ -533,27 +488,28 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		end
 
 		state.ensure_manifest("package")
+
+		-- IMPORTANT: Preserve outdated data before clearing!
+		local old_outdated = state.get_dependencies("package").outdated or {}
+
 		state.clear_manifest("package")
 
-		-- ------------------------------------------------------------
-		-- UNIVERSAL INSTALLED SHAPE:
-		-- Always set installed entries as table: {current, raw, in_lock, scopes}
-		-- We do NOT rely on state.add_installed_dependency (it can create string entries).
-		-- ------------------------------------------------------------
 		local bulk = {}
 		for name, info in pairs(installed_dependencies) do
 			local scope = map_source_to_scope(info._source or "dependencies")
 			bulk[name] = {
 				current = info.current,
 				raw = info.raw,
-				in_lock = info.in_lock == true, -- normalize to boolean
+				in_lock = info.in_lock == true,
 				scopes = { [scope] = true },
 			}
 		end
 		state.set_installed("package", bulk)
 
 		state.set_invalid("package", invalid_dependencies)
-		state.set_outdated("package", state.get_dependencies("package").outdated or {})
+
+		-- IMPORTANT: Restore old outdated data so virtual text renders correctly
+		state.set_outdated("package", old_outdated)
 
 		state.update_buffer_lines(bufnr, buffer_lines)
 		state.update_last_run(bufnr)
@@ -633,6 +589,10 @@ M.parse_buffer = function(bufnr)
 		end
 
 		local lock_path = utils.find_lock_for_manifest(bufnr, "package")
+		if lock_path then
+			utils.clear_file_cache()
+			lock_cache[lock_path] = nil
+		end
 		local lock_versions = lock_path and get_lock_versions(lock_path) or nil
 
 		local function apply_lock(tbl)

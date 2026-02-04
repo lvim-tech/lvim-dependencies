@@ -16,12 +16,7 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
--- ------------------------------------------------------------
--- Lock parse cache (per lock_path + mtime + size)
--- ------------------------------------------------------------
-local lock_cache = {
-	-- [lock_path] = { mtime=..., size=..., versions=table }
-}
+local lock_cache = {}
 
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
@@ -305,6 +300,10 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		end
 
 		state.ensure_manifest("pubspec")
+
+		-- IMPORTANT: Preserve outdated data before clearing!
+		local old_outdated = state.get_dependencies("pubspec").outdated or {}
+
 		state.clear_manifest("pubspec")
 
 		-- ------------------------------------------------------------
@@ -325,7 +324,10 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		state.set_installed("pubspec", bulk)
 
 		state.set_invalid("pubspec", invalid_dependencies)
-		state.set_outdated("pubspec", state.get_dependencies("pubspec").outdated or {})
+
+		-- IMPORTANT: Restore old outdated data so virtual text renders correctly
+		-- The checker will update this asynchronously
+		state.set_outdated("pubspec", old_outdated)
 
 		state.update_buffer_lines(bufnr, buffer_lines)
 		state.update_last_run(bufnr)
@@ -408,6 +410,10 @@ M.parse_buffer = function(bufnr)
 
 		-- apply lock versions (cached)
 		local lock_path = utils.find_lock_for_manifest(bufnr, "pubspec")
+		if lock_path then
+			utils.clear_file_cache()
+			lock_cache[lock_path] = nil
+		end
 		local lock_versions = lock_path and get_lock_versions(lock_path) or nil
 
 		local function apply_lock(tbl)

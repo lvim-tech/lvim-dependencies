@@ -2,7 +2,10 @@ local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
 local validator = require("lvim-dependencies.validator")
 local confirm = require("lvim-dependencies.ui.confirm")
+local config = require("lvim-dependencies.config")
 local L = vim.log.levels
+
+local current_icon = config.ui.floating.current or "➤"
 
 local M = {}
 
@@ -177,7 +180,7 @@ M.update = function(manifest, name, version, scope)
 
 			for _, v in ipairs(versions) do
 				local vs = tostring(v)
-				local label = (show_current and tostring(current) == vs) and ("● " .. vs) or ("  " .. vs)
+				local label = (show_current and tostring(current) == vs) and (current_icon .. " " .. vs) or ("  " .. vs)
 				table.insert(lines, label)
 				index_map[#lines] = vs
 				if show_current and tostring(current) == vs then
@@ -217,8 +220,19 @@ M.update = function(manifest, name, version, scope)
 					end
 				end
 
+				if not selected_version and type(selected) == "string" and versions then
+					for _, v in ipairs(versions) do
+						local vs = tostring(v)
+						if selected:find(vs, 1, true) then
+							selected_version = vs
+							break
+						end
+					end
+				end
+
 				if not selected_version then
-					selected_version = version
+					utils.notify_safe(("could not resolve selected version for %s"):format(name), L.ERROR, {})
+					return
 				end
 
 				do_update(selected_version)

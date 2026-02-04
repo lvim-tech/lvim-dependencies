@@ -15,12 +15,7 @@ local checker = require("lvim-dependencies.actions.check_manifests")
 
 local M = {}
 
--- ------------------------------------------------------------
--- Lock parse cache (per lock_path + mtime + size)
--- ------------------------------------------------------------
-local lock_cache = {
-	-- [lock_path] = { mtime=..., size=..., versions=table }
-}
+local lock_cache = {}
 
 local function to_version(str)
 	if not str then
@@ -50,9 +45,6 @@ local function compare_versions(a, b)
 	return 0
 end
 
--- ------------------------------------------------------------
--- Lock parsing (go.sum)
--- ------------------------------------------------------------
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
@@ -104,9 +96,6 @@ local function get_lock_versions(lock_path)
 	return versions
 end
 
--- ------------------------------------------------------------
--- go.mod parsing
--- ------------------------------------------------------------
 local function strip_comments_and_trim(s)
 	if not s then
 		return nil
@@ -176,9 +165,31 @@ local function parse_with_decoder(content, lines)
 	return { require = parse_go_fallback_lines(lines or split(content, "\n")) }
 end
 
--- ------------------------------------------------------------
--- Parse + state update
--- ------------------------------------------------------------
+local function is_update_loading(bufnr)
+	return state.buffers
+		and state.buffers[bufnr]
+		and state.buffers[bufnr].is_loading == true
+		and state.buffers[bufnr].pending_dep ~= nil
+end
+
+local function is_checking_single_package(bufnr)
+	return state.buffers and state.buffers[bufnr] and state.buffers[bufnr].checking_single_package ~= nil
+end
+
+local function guarded_display(bufnr, manifest_key)
+	if is_update_loading(bufnr) then
+		return
+	end
+	vt.display(bufnr, manifest_key)
+end
+
+local function guarded_check_outdated(bufnr, manifest_key)
+	if is_update_loading(bufnr) then
+		return
+	end
+	checker.check_manifest_outdated(bufnr, manifest_key)
+end
+
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	if not api.nvim_buf_is_valid(bufnr) then
 		return
@@ -214,7 +225,6 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		state.ensure_manifest("go")
 		state.clear_manifest("go")
 
-		-- UNIVERSAL INSTALLED SHAPE
 		local bulk = {}
 		for name, info in pairs(installed_dependencies) do
 			local scope = info._source or "require"
@@ -241,8 +251,11 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 		state.buffers[bufnr].last_go_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
 
-		vt.display(bufnr, "go")
-		checker.check_manifest_outdated(bufnr, "go")
+		-- Don't display or check if we're in the middle of a single package update
+		if not is_checking_single_package(bufnr) then
+			guarded_display(bufnr, "go")
+			guarded_check_outdated(bufnr, "go")
+		end
 	end)
 end
 
@@ -255,11 +268,16 @@ M.parse_buffer = function(bufnr)
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 
+	-- Skip full parse if we're checking a single package (after update)
+	if is_checking_single_package(bufnr) then
+		return state.buffers[bufnr].last_go_parsed
+	end
+
 	local buf_changedtick = api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
 		if state.buffers[bufnr].last_go_parsed then
 			defer_fn(function()
-				vt.display(bufnr, "go")
+				guarded_display(bufnr, "go")
 			end, 10)
 			return state.buffers[bufnr].last_go_parsed
 		end
@@ -273,7 +291,7 @@ M.parse_buffer = function(bufnr)
 		state.buffers[bufnr].last_changedtick = buf_changedtick
 		if state.buffers[bufnr].last_go_parsed then
 			defer_fn(function()
-				vt.display(bufnr, "go")
+				guarded_display(bufnr, "go")
 			end, 10)
 			return state.buffers[bufnr].last_go_parsed
 		end
@@ -287,6 +305,12 @@ M.parse_buffer = function(bufnr)
 
 	defer_fn(function()
 		if not api.nvim_buf_is_valid(bufnr) then
+			state.buffers[bufnr].parse_scheduled = false
+			return
+		end
+
+		-- Skip if checking single package
+		if is_checking_single_package(bufnr) then
 			state.buffers[bufnr].parse_scheduled = false
 			return
 		end

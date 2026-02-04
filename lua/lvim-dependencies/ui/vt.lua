@@ -55,7 +55,7 @@ local function get_declared_version_from_line(line, manifest_key)
 		if not v then
 			return nil
 		end
-		v = v:gsub('[",]$', "")
+		v = v:gsub('[\",]$', "")
 		return vim.trim(v)
 	elseif manifest_key == "go" then
 		local v = line:match("^%s*[^%s]+%s+([v%d%.%-%+%w]+)")
@@ -218,26 +218,9 @@ local function get_loading_parts()
 	return { { get_loading_text(), hl.loading } }
 end
 
-local function find_dep_line(lines, dep_name, manifest_key)
+local function find_dep_line(lines, dep_name)
 	for idx, ln in ipairs(lines) do
-		local m = nil
-		if manifest_key == "package" or manifest_key == "composer" then
-			-- JSON format: "dep_name": "version"
-			m = ln:match('^%s*"([^"]+)"%s*:')
-		elseif manifest_key == "crates" then
-			-- TOML format: dep_name = "version" or dep_name = { version = "..." }
-			m = ln:match("^%s*([%w_%-]+)%s*=")
-		elseif manifest_key == "go" then
-			-- Go format: github.com/user/repo v1.2.3
-			m = ln:match("^%s*([^%s]+)%s+v")
-			if not m then
-				-- Also check require block format
-				m = ln:match("^%s+([^%s]+)%s+v")
-			end
-		else
-			-- YAML format (pubspec): dep_name: version
-			m = ln:match("^%s*([%w_%-%.]+)%s*:")
-		end
+		local m = ln:match("^%s*([%w_%-%.]+)%s*:")
 		if m == dep_name then
 			return idx
 		end
@@ -380,13 +363,13 @@ local function build_virt_parts(manifest_key, dep_name, declared, _)
 	return parts
 end
 
-local function overlay_loading(bufnr, ns, lines, pending_dep, pending_lnum, manifest_key)
+local function overlay_loading(bufnr, ns, lines, pending_dep, pending_lnum)
 	local dep_idx = get_anchor_lnum(bufnr)
 	if not dep_idx then
 		if type(pending_lnum) == "number" and pending_lnum >= 1 and pending_lnum <= #lines then
 			dep_idx = pending_lnum
 		else
-			dep_idx = find_dep_line(lines, pending_dep, manifest_key)
+			dep_idx = find_dep_line(lines, pending_dep)
 		end
 	end
 
@@ -424,6 +407,8 @@ local function do_display(bufnr, manifest_key, opts)
 	local ns = tonumber(ensure_namespace()) or 0
 	local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
 
+	-- IMPORTANT FIX: w0/w$ can be nil when called from BufWritePost / timers without an active window.
+	-- Fallback to full buffer range to avoid rendering nothing.
 	local w0 = fn.line("w0")
 	local wend = fn.line("w$")
 	if type(w0) ~= "number" or type(wend) ~= "number" or w0 < 1 or wend < 1 then
@@ -442,14 +427,14 @@ local function do_display(bufnr, manifest_key, opts)
 	local pending_lnum = state.buffers[bufnr].pending_lnum
 	local loading_deps = state.buffers[bufnr].loading_deps
 
-	-- IMPORTANT: If loading, ALWAYS show overlay and return - ignore force_full
-	if is_loading and pending_dep then
-		overlay_loading(bufnr, ns, lines, pending_dep, pending_lnum, manifest_key)
+	-- If loading and not forced: only overlay (fast path)
+	if is_loading and pending_dep and not opts.force_full then
+		overlay_loading(bufnr, ns, lines, pending_dep, pending_lnum)
 		state.set_virtual_text_displayed(bufnr, true)
 		return
 	end
 
-	-- Full render (only when NOT loading)
+	-- Full render
 	api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
 
 	local deps_tbl = state.get_dependencies(manifest_key) or { installed = {}, outdated = {}, invalid = {} }
@@ -488,6 +473,11 @@ local function do_display(bufnr, manifest_key, opts)
 		end
 	end
 
+	-- If we're in loading, still show Loading... as overlay on top of the full render.
+	if is_loading and pending_dep then
+		overlay_loading(bufnr, ns, lines, pending_dep, pending_lnum)
+	end
+
 	state.set_virtual_text_displayed(bufnr, true)
 end
 
@@ -500,12 +490,6 @@ M.display = function(bufnr, manifest_key, opts)
 
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
-
-	-- If loading, display immediately without defer to show Loading... overlay
-	if state.buffers[bufnr].is_loading and state.buffers[bufnr].pending_dep then
-		do_display(bufnr, manifest_key, opts)
-		return
-	end
 
 	if state.buffers[bufnr].display_scheduled then
 		state.buffers[bufnr].display_requested_manifest = manifest_key

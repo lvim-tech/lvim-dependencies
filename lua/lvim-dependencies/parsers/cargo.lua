@@ -11,12 +11,10 @@ local state = require("lvim-dependencies.state")
 local utils = require("lvim-dependencies.utils")
 local clean_version = utils.clean_version
 
-local vt = require("lvim-dependencies.ui.virtual_text")
-local checker = require("lvim-dependencies.actions.check_manifests")
-
 local M = {}
 
--- Try to parse Cargo.lock or similar: prefer TOML, then JSON, otherwise fallback
+local lock_cache = {}
+
 local function parse_lock_file_from_content(content)
 	if not content or content == "" then
 		return nil
@@ -36,7 +34,9 @@ local function parse_lock_file_from_content(content)
 	if parsed and type(parsed) == "table" then
 		local versions = {}
 		local function collect(tbl)
-			if type(tbl) ~= "table" then return end
+			if type(tbl) ~= "table" then
+				return
+			end
 			for _, pkg in ipairs(tbl) do
 				if type(pkg) == "table" and pkg.name and pkg.version then
 					versions[pkg.name] = tostring(pkg.version)
@@ -50,7 +50,6 @@ local function parse_lock_file_from_content(content)
 		end
 	end
 
-	-- fallback: scan for [[package]] blocks or top-level name/version pairs
 	local versions = {}
 	local lines = split(content, "\n")
 	local in_pkg = false
@@ -88,10 +87,35 @@ local function parse_lock_file_from_content(content)
 	return nil
 end
 
+local function get_lock_versions(lock_path)
+	if not lock_path then
+		return nil
+	end
+
+	local content, mtime, size = utils.read_file_cached(lock_path)
+	if content == nil then
+		lock_cache[lock_path] = nil
+		return nil
+	end
+
+	local cached = lock_cache[lock_path]
+	if cached and cached.mtime == mtime and cached.size == size and type(cached.versions) == "table" then
+		return cached.versions
+	end
+
+	local versions = parse_lock_file_from_content(content)
+	lock_cache[lock_path] = { mtime = mtime, size = size, versions = versions }
+	return versions
+end
+
 local function strip_comments_and_trim(s)
-	if not s then return nil end
+	if not s then
+		return nil
+	end
 	local t = s:gsub("//.*$", ""):gsub("/%*.-%*/", ""):gsub(",%s*$", ""):match("^%s*(.-)%s*$")
-	if t == "" then return nil end
+	if t == "" then
+		return nil
+	end
 	return t
 end
 
@@ -112,16 +136,12 @@ local function parse_crates_fallback_lines(lines)
 				if line:match("^%[") then
 					break
 				end
-				-- name = "version" or name = { version = "..." , ... }
 				local name, rhs = line:match("^%s*([%w%-%_]+)%s*=%s*(.+)$")
 				if name and rhs then
-					-- remove trailing comma if present
 					rhs = rhs:gsub(",%s*$", ""):match("^%s*(.-)%s*$")
-					-- table form
-					local ver = rhs:match('version%s*=%s*[\'"]?(.-)[\'"]?$')
+					local ver = rhs:match("version%s*=%s*['\"]?(.-)['\"]?$")
 					if not ver then
-						-- plain string form "1.2.3" or '1.2.3'
-						ver = rhs:match('^[\'"]?(.-)[\'"]$')
+						ver = rhs:match("^['\"]?(.-)['\"]$")
 					end
 					if ver then
 						tbl[name] = ver
@@ -161,7 +181,6 @@ local function parse_crates_fallback_lines(lines)
 end
 
 local function parse_with_decoder(content, lines)
-	-- prefer TOML parsing for Cargo manifests
 	local ok, parsed = pcall(decoder.parse_toml, content)
 	if ok and type(parsed) == "table" then
 		local deps = {}
@@ -190,7 +209,9 @@ local function parse_with_decoder(content, lines)
 end
 
 local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
-	if not api.nvim_buf_is_valid(bufnr) then return end
+	if not api.nvim_buf_is_valid(bufnr) then
+		return
+	end
 	parsed_tables = parsed_tables or {}
 
 	local deps = parsed_tables.dependencies or {}
@@ -207,6 +228,7 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 			installed_dependencies[name] = {
 				current = info.current,
 				raw = info.raw,
+				in_lock = info.in_lock,
 				_source = source,
 			}
 		end
@@ -216,29 +238,34 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 	add(dev_deps, "dev_dependencies")
 
 	schedule(function()
-		if not api.nvim_buf_is_valid(bufnr) then return end
+		if not api.nvim_buf_is_valid(bufnr) then
+			return
+		end
 
 		if state.save_buffer then
 			state.save_buffer(bufnr, "crates", api.nvim_buf_get_name(bufnr), buffer_lines)
 		end
 
-		if state.set_installed then
-			state.set_installed("crates", installed_dependencies)
-		elseif state.set_dependencies and type(state.set_dependencies) == "function" then
-			local result = {
-				lines = buffer_lines,
-				installed = installed_dependencies,
-				outdated = {},
-				invalid = invalid_dependencies,
+		state.ensure_manifest("crates")
+		state.clear_manifest("crates")
+
+		local bulk = {}
+		for name, info in pairs(installed_dependencies) do
+			local scope = info._source or "dependencies"
+			bulk[name] = {
+				current = info.current,
+				raw = info.raw,
+				in_lock = info.in_lock == true,
+				scopes = { [scope] = true },
 			}
-			state.set_dependencies("crates", result)
 		end
+		state.set_installed("crates", bulk)
 
-		if state.set_invalid then state.set_invalid("crates", invalid_dependencies) end
-		if state.set_outdated then state.set_outdated("crates", state.get_dependencies("crates").outdated or {}) end
+		state.set_invalid("crates", invalid_dependencies)
+		state.set_outdated("crates", state.get_dependencies("crates").outdated or {})
 
-		if state.update_buffer_lines then state.update_buffer_lines(bufnr, buffer_lines) end
-		if state.update_last_run then state.update_last_run(bufnr) end
+		state.update_buffer_lines(bufnr, buffer_lines)
+		state.update_last_run(bufnr)
 
 		state.buffers = state.buffers or {}
 		state.buffers[bufnr] = state.buffers[bufnr] or {}
@@ -247,15 +274,21 @@ local function do_parse_and_update(bufnr, parsed_tables, buffer_lines, content)
 
 		state.buffers[bufnr].last_crates_hash = fn.sha256(content)
 		state.buffers[bufnr].last_changedtick = api.nvim_buf_get_changedtick(bufnr)
-
-		vt.display(bufnr, "crates")
-		checker.check_manifest_outdated(bufnr, "crates")
 	end)
 end
 
 M.parse_buffer = function(bufnr)
 	bufnr = bufnr or fn.bufnr()
-	if bufnr == -1 then return nil end
+	if bufnr == -1 then
+		return nil
+	end
+
+	if state.get_updating and type(state.get_updating) == "function" then
+		local is_updating = state.get_updating()
+		if is_updating then
+			return nil
+		end
+	end
 
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
@@ -263,7 +296,6 @@ M.parse_buffer = function(bufnr)
 	local buf_changedtick = api.nvim_buf_get_changedtick(bufnr)
 	if state.buffers[bufnr].last_changedtick and state.buffers[bufnr].last_changedtick == buf_changedtick then
 		if state.buffers[bufnr].last_crates_parsed then
-			defer_fn(function() vt.display(bufnr, "crates") end, 10)
 			return state.buffers[bufnr].last_crates_parsed
 		end
 	end
@@ -275,7 +307,6 @@ M.parse_buffer = function(bufnr)
 	if state.buffers[bufnr].last_crates_hash and state.buffers[bufnr].last_crates_hash == current_hash then
 		state.buffers[bufnr].last_changedtick = buf_changedtick
 		if state.buffers[bufnr].last_crates_parsed then
-			defer_fn(function() vt.display(bufnr, "crates") end, 10)
 			return state.buffers[bufnr].last_crates_parsed
 		end
 	end
@@ -296,48 +327,36 @@ M.parse_buffer = function(bufnr)
 		local fresh_content = table_concat(fresh_lines, "\n")
 
 		local ok_decode, parsed = pcall(parse_with_decoder, fresh_content, fresh_lines)
-		if ok_decode and parsed then
-			local lock_path = utils.find_lock_for_manifest(bufnr, "crates")
-			local lock_versions = nil
-			if lock_path then
-				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content)
-			end
-
-			if lock_versions and type(lock_versions) == "table" then
-				for name, info in pairs(parsed.dependencies or {}) do
-					if lock_versions[name] then info.current = lock_versions[name] end
-				end
-				for name, info in pairs(parsed.devDependencies or {}) do
-					if lock_versions[name] then info.current = lock_versions[name] end
-				end
-			end
-
-			do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
-		else
+		if not (ok_decode and parsed) then
 			local fb_deps, fb_dev = parse_crates_fallback_lines(fresh_lines)
-			local conv = { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
-
-			local lock_path = utils.find_lock_for_manifest(bufnr, "crates")
-			local lock_versions = nil
-			if lock_path then
-				local lock_content = utils.read_file(lock_path)
-				lock_versions = parse_lock_file_from_content(lock_content)
-			end
-			if lock_versions and type(lock_versions) == "table" then
-				for name in pairs(conv.dependencies or {}) do
-					if lock_versions[name] then conv.dependencies[name].current = lock_versions[name] end
-				end
-				for name in pairs(conv.devDependencies or {}) do
-					if lock_versions[name] then conv.devDependencies[name].current = lock_versions[name] end
-				end
-			end
-
-			do_parse_and_update(bufnr, conv, fresh_lines, fresh_content)
+			parsed = { dependencies = fb_deps or {}, devDependencies = fb_dev or {} }
 		end
+
+		local lock_path = utils.find_lock_for_manifest(bufnr, "crates")
+		local lock_versions = lock_path and get_lock_versions(lock_path) or nil
+
+		local function apply_lock(tbl)
+			for name, info in pairs(tbl or {}) do
+				if lock_versions and lock_versions[name] then
+					info.current = lock_versions[name]
+					info.in_lock = true
+				else
+					info.in_lock = false
+				end
+			end
+		end
+
+		apply_lock(parsed.dependencies)
+		apply_lock(parsed.devDependencies)
+
+		do_parse_and_update(bufnr, parsed, fresh_lines, fresh_content)
 	end, 20)
 
 	return state.buffers[bufnr].last_crates_parsed
+end
+
+M.clear_lock_cache = function()
+	lock_cache = {}
 end
 
 M.parse_lock_file_content = parse_lock_file_from_content

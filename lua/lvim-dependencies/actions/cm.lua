@@ -21,6 +21,9 @@ local schedule = vim.schedule
 local tbl_isempty = vim.tbl_isempty
 local list_slice = vim.list_slice
 
+-- -------------------------
+-- utilities
+-- -------------------------
 local function is_packagist_candidate(name)
 	return type(name) == "string" and name:find("/", 1, true) ~= nil
 end
@@ -121,6 +124,9 @@ local function parse_pubdev_latest_slow(body)
 	return nil
 end
 
+-- -------------------------
+-- host / negative caches
+-- -------------------------
 local host_failures = {}
 local negative_cache = {}
 
@@ -180,19 +186,14 @@ local function backoff_delay(attempt)
 	return base * mult + jitter
 end
 
+-- -------------------------
+-- update-loading guard
+-- -------------------------
 local function is_update_loading(bufnr)
 	return state.buffers
 		and state.buffers[bufnr]
 		and state.buffers[bufnr].is_loading == true
 		and state.buffers[bufnr].pending_dep ~= nil
-end
-
-local function is_checking_single_package(bufnr)
-	return state.buffers and state.buffers[bufnr] and state.buffers[bufnr].checking_single_package ~= nil
-end
-
-local function get_single_package_name(bufnr)
-	return state.buffers and state.buffers[bufnr] and state.buffers[bufnr].checking_single_package
 end
 
 local function guarded_display(bufnr, manifest_key)
@@ -202,6 +203,9 @@ local function guarded_display(bufnr, manifest_key)
 	ui.display(bufnr, manifest_key)
 end
 
+-- -------------------------
+-- perform request with retries
+-- -------------------------
 local function perform_request_with_retries(url, name, manifest_key, parser_fn, on_success, on_error)
 	local host = host_from_url(url)
 
@@ -314,6 +318,9 @@ local function perform_request_with_retries(url, name, manifest_key, parser_fn, 
 	try_once()
 end
 
+-- -------------------------
+-- parsers
+-- -------------------------
 local function parser_pub(body)
 	local m = extract_latest_from_pub_body(body)
 	if m and m ~= "" then
@@ -379,6 +386,9 @@ local function parser_go(body)
 	return nil
 end
 
+-- -------------------------
+-- fetchers
+-- -------------------------
 local function url_encode_npm(name)
 	return (name and name:gsub("@", "%%40"):gsub("/", "%%2F")) or ""
 end
@@ -443,6 +453,9 @@ local FETCHERS = {
 	go = fetch_go_async,
 }
 
+-- -------------------------
+-- publish/cache helpers
+-- -------------------------
 local function stop_watchdog(w)
 	if not w then
 		return
@@ -477,22 +490,7 @@ local function schedule_publish(bufnr, manifest_key)
 
 		local deps_state = state.get_dependencies(manifest_key)
 		local installed_table = deps_state.installed or {}
-
-		-- Check if we're updating a single package
-		local single_pkg = get_single_package_name(bufnr)
-
-		-- Start with existing outdated data if checking single package
-		local existing_outdated = deps_state.outdated or {}
 		local final = {}
-
-		-- If checking single package, preserve existing outdated data for OTHER packages
-		if single_pkg then
-			for k, v in pairs(existing_outdated) do
-				if k ~= single_pkg then
-					final[k] = v
-				end
-			end
-		end
 
 		for name, info in pairs(cache.data or {}) do
 			local inst = installed_table[name]
@@ -530,11 +528,7 @@ local function schedule_publish(bufnr, manifest_key)
 		schedule(function()
 			state.set_outdated(manifest_key, final)
 			cache.last_fetched_at = now_ms()
-
-			-- Only do full display if NOT checking single package
-			if not is_checking_single_package(bufnr) then
-				guarded_display(bufnr, manifest_key)
-			end
+			guarded_display(bufnr, manifest_key)
 		end)
 	end, config.network.publish_debounce_ms)
 end
@@ -593,6 +587,9 @@ local function try_cli_commands_async(cmds, cwd, scalar_deps, on_success, on_fai
 	try_next()
 end
 
+-- -------------------------
+-- main check function
+-- -------------------------
 function M.check_manifest_outdated(bufnr, manifest_key)
 	bufnr = bufnr or api.nvim_get_current_buf()
 	if bufnr == -1 then
@@ -654,12 +651,12 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 
 	local cwd = utils.get_buffer_dir(bufnr) or fn.getcwd()
 
+	-- Per-package loading flags for initial/outdated checks
 	state.buffers = state.buffers or {}
 	state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	-- Check if we're fetching for a single package after update
+	-- If checking single package after update, only set loading for that one
 	local single_pkg = state.buffers[bufnr].checking_single_package
-
 	if single_pkg then
 		state.buffers[bufnr].loading_deps = state.buffers[bufnr].loading_deps or {}
 		state.buffers[bufnr].loading_deps[single_pkg] = true
@@ -670,23 +667,18 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 	end
 
-	-- Don't display if checking single package
-	if not single_pkg then
-		schedule(function()
-			guarded_display(bufnr, manifest_key)
-		end)
-	end
+	schedule(function()
+		guarded_display(bufnr, manifest_key)
+	end)
 
 	versions_cache[manifest_key] = versions_cache[manifest_key] or {}
 	versions_cache[manifest_key][bufnr] = versions_cache[manifest_key][bufnr]
 		or { last_changed = 0, data = {}, pending = {}, publish_timer = nil, watchdog = nil, last_fetched_at = nil }
 	local cache = versions_cache[manifest_key][bufnr]
 
-	-- Skip cache check if we're checking a single package - we want fresh data
 	local now = now_ms()
 	if
-		not single_pkg
-		and cache.last_fetched_at
+		cache.last_fetched_at
 		and config.performance.cache_ttl_ms
 		and config.performance.cache_ttl_ms > 0
 		and (now - cache.last_fetched_at) < config.performance.cache_ttl_ms
@@ -717,9 +709,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 
 						schedule(function()
 							state.set_outdated(manifest_key, {})
-							if not is_checking_single_package(bufnr) then
-								guarded_display(bufnr, manifest_key)
-							end
+							guarded_display(bufnr, manifest_key)
 						end)
 
 						pcall(function()
@@ -757,35 +747,12 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 	end
 
-	-- Build list of packages to fetch
 	local names_to_fetch = {}
-
-	-- If checking single package, ONLY fetch that one
-	if single_pkg then
-		if scalar_deps[single_pkg] then
-			names_to_fetch[#names_to_fetch + 1] = single_pkg
-		end
-	else
-		for name in pairs(scalar_deps) do
-			names_to_fetch[#names_to_fetch + 1] = name
-		end
+	for name in pairs(scalar_deps) do
+		names_to_fetch[#names_to_fetch + 1] = name
 	end
 
 	local n = #names_to_fetch
-
-	-- Early exit if nothing to fetch
-	if n == 0 then
-		schedule(function()
-			if state.buffers and state.buffers[bufnr] then
-				state.buffers[bufnr].loading_deps = {}
-			end
-			if not single_pkg then
-				guarded_display(bufnr, manifest_key)
-			end
-		end)
-		return
-	end
-
 	local concurrency = math.min(
 		config.performance.max_concurrency,
 		math.max(1, math.floor(n / 6) + 1, config.performance.base_concurrency)
@@ -807,9 +774,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 		end
 		schedule(function()
 			state.set_outdated(manifest_key, {})
-			if not is_checking_single_package(bufnr) then
-				guarded_display(bufnr, manifest_key)
-			end
+			guarded_display(bufnr, manifest_key)
 		end)
 		return
 	end
@@ -833,9 +798,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 			end
 			schedule(function()
 				state.set_outdated(manifest_key, {})
-				if not is_checking_single_package(bufnr) then
-					guarded_display(bufnr, manifest_key)
-				end
+				guarded_display(bufnr, manifest_key)
 			end)
 			return
 		end
@@ -878,9 +841,7 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 			end
 			schedule(function()
 				state.set_outdated(manifest_key, {})
-				if not is_checking_single_package(bufnr) then
-					guarded_display(bufnr, manifest_key)
-				end
+				guarded_display(bufnr, manifest_key)
 			end)
 		end)
 
@@ -939,12 +900,9 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				end
 				add_pending_result(bufnr, name, latest, manifest_key)
 
-				-- Don't display during single package check
-				if not is_checking_single_package(bufnr) then
-					schedule(function()
-						guarded_display(bufnr, manifest_key)
-					end)
-				end
+				schedule(function()
+					guarded_display(bufnr, manifest_key)
+				end)
 
 				try_next()
 				finish_phase_if_done()
@@ -964,12 +922,9 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 				end
 				add_pending_result(bufnr, name, nil, manifest_key)
 
-				-- Don't display during single package check
-				if not is_checking_single_package(bufnr) then
-					schedule(function()
-						guarded_display(bufnr, manifest_key)
-					end)
-				end
+				schedule(function()
+					guarded_display(bufnr, manifest_key)
+				end)
 
 				try_next()
 				finish_phase_if_done()
@@ -982,6 +937,9 @@ function M.check_manifest_outdated(bufnr, manifest_key)
 	try_next()
 end
 
+-- -------------------------
+-- cache clear
+-- -------------------------
 function M.clear_cache(bufnr, manifest_key)
 	if manifest_key then
 		local entry = versions_cache[manifest_key]
@@ -1009,6 +967,9 @@ function M.clear_cache(bufnr, manifest_key)
 	end
 end
 
+-- -------------------------
+-- invalidate cache for specific package (works for all package managers)
+-- -------------------------
 function M.invalidate_package_cache(bufnr, manifest_key, package_name)
 	if not bufnr or not manifest_key or not package_name then
 		return
@@ -1026,8 +987,7 @@ function M.invalidate_package_cache(bufnr, manifest_key, package_name)
 			cache.pending[package_name] = nil
 		end
 
-		-- Don't clear last_fetched_at globally - only for single package
-		-- cache.last_fetched_at = nil
+		cache.last_fetched_at = nil
 	end
 
 	clear_negative_cache(manifest_key, package_name)
@@ -1051,6 +1011,9 @@ function M.invalidate_package_cache(bufnr, manifest_key, package_name)
 	end
 end
 
+-- -------------------------
+-- invalidate cache for multiple packages
+-- -------------------------
 function M.invalidate_packages_cache(bufnr, manifest_key, package_names)
 	if not package_names or type(package_names) ~= "table" then
 		return
@@ -1061,6 +1024,9 @@ function M.invalidate_packages_cache(bufnr, manifest_key, package_names)
 	end
 end
 
+-- -------------------------
+-- full cache clear for buffer (forces complete refresh)
+-- -------------------------
 function M.clear_buffer_cache(bufnr, manifest_key)
 	if not bufnr or not manifest_key then
 		return

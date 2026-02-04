@@ -18,7 +18,6 @@ local M = {
 	is_updating = false, -- Flag to prevent parsing during package updates
 }
 
--- Initialize dependencies structure from const
 local function init_dependencies()
 	for _, manifest_key in pairs(const.MANIFEST_KEYS) do
 		if not M.dependencies[manifest_key] then
@@ -32,10 +31,8 @@ local function init_dependencies()
 	end
 end
 
--- Initialize on load
 init_dependencies()
 
--- Helper: ensure a manifest container exists and returns it
 local function ensure_manifest_table(manifest_key)
 	if not manifest_key then
 		return nil
@@ -48,7 +45,6 @@ local function ensure_manifest_table(manifest_key)
 	return deps
 end
 
--- namespace helpers
 function M.namespace.create()
 	M.namespace = M.namespace or {}
 	if not M.namespace.id then
@@ -65,7 +61,6 @@ function M.get_manifest_key_from_filename(filename)
 	return const.MANIFEST_KEYS[filename]
 end
 
--- Update flag helpers
 function M.set_updating(value)
 	M.is_updating = value
 end
@@ -74,7 +69,6 @@ function M.get_updating()
 	return M.is_updating
 end
 
--- buffer helpers (safe, no-throw)
 function M.save_buffer(bufnr, manifest_key, path, lines)
 	bufnr = bufnr or fn.bufnr()
 	M.buffers[bufnr] = M.buffers[bufnr] or {}
@@ -149,6 +143,7 @@ function M.set_dependencies(manifest_key, tbl)
 	end
 end
 
+-- overwrite current_version when provided
 function M.add_installed_dependency(manifest_key, name, current_version, scope)
 	if not manifest_key or not name then
 		return
@@ -164,16 +159,12 @@ function M.add_installed_dependency(manifest_key, name, current_version, scope)
 
 	local entry = installed[name]
 
-	if not entry then
+	if not entry or type(entry) ~= "table" then
 		entry = { current = current_version or nil, scopes = {} }
 		installed[name] = entry
 	else
-		if type(entry) ~= "table" then
-			entry = { current = entry, scopes = {} }
-			installed[name] = entry
-		end
-		if current_version and (not entry.current or entry.current == "") then
-			entry.current = current_version
+		if current_version and current_version ~= "" then
+			entry.current = current_version -- force update
 		end
 	end
 

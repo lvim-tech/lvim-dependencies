@@ -2,6 +2,7 @@ local api = vim.api
 
 local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
+local state = require("lvim-dependencies.state")
 local L = vim.log.levels
 
 local M = {}
@@ -303,9 +304,9 @@ function M.fetch_versions(name, _)
 	end
 
 	local current = nil
-	local ok_state, state = pcall(require, "lvim-dependencies.state")
-	if ok_state and type(state.get_installed_version) == "function" then
-		current = state.get_installed_version("go", name)
+	local ok_state, st = pcall(require, "lvim-dependencies.state")
+	if ok_state and type(st.get_installed_version) == "function" then
+		current = st.get_installed_version("go", name)
 	end
 
 	local targets = {}
@@ -378,27 +379,48 @@ function M.fetch_versions(name, _)
 	return { versions = versions, current = current }
 end
 
-local function find_require_block(lines)
-	local start_idx, end_idx = nil, nil
-	local in_require = false
+local function find_all_require_blocks(lines)
+	local blocks = {}
+	local i = 1
 
-	for i, line in ipairs(lines) do
-		if line:match("^require%s+") and not line:match("^require%s*%(") then
-			return nil, nil
+	while i <= #lines do
+		local line = lines[i]
+
+		-- Single line require: require module/name v1.2.3
+		if line:match("^require%s+[^(]") then
+			blocks[#blocks + 1] = { start_idx = i, end_idx = i, single = true }
 		end
 
+		-- Block require: require (
 		if line:match("^require%s*%(") then
-			start_idx = i
-			in_require = true
+			local start_idx = i
+			local end_idx = nil
+
+			for j = i + 1, #lines do
+				if lines[j]:match("^%)") then
+					end_idx = j
+					break
+				end
+			end
+
+			if end_idx then
+				blocks[#blocks + 1] = { start_idx = start_idx, end_idx = end_idx, single = false }
+				i = end_idx
+			end
 		end
 
-		if in_require and line:match("^%)") then
-			end_idx = i
-			break
-		end
+		i = i + 1
 	end
 
-	return start_idx, end_idx
+	return blocks
+end
+
+local function find_require_block(lines)
+	local blocks = find_all_require_blocks(lines)
+	if #blocks > 0 and not blocks[1].single then
+		return blocks[1].start_idx, blocks[1].end_idx
+	end
+	return nil, nil
 end
 
 local function find_module_in_require(lines, start_idx, end_idx, module_name)
@@ -417,38 +439,99 @@ local function find_module_in_require(lines, start_idx, end_idx, module_name)
 	return nil, nil
 end
 
+local function find_module_in_all_require_blocks(lines, module_name)
+	local blocks = find_all_require_blocks(lines)
+
+	for _, block in ipairs(blocks) do
+		if block.single then
+			-- Single line require
+			local line = lines[block.start_idx]
+			local mod, ver = line:match("^require%s+([^%s]+)%s+([^%s]+)")
+			if mod and (mod == module_name or strip_major_path(mod) == strip_major_path(module_name)) then
+				return block.start_idx, ver, mod
+			end
+		else
+			-- Block require
+			for i = block.start_idx + 1, block.end_idx - 1 do
+				local line = lines[i]
+				local mod, ver = line:match("^%s*([^%s]+)%s+([^%s]+)")
+				if mod and (mod == module_name or strip_major_path(mod) == strip_major_path(module_name)) then
+					return i, ver, mod
+				end
+			end
+		end
+	end
+
+	return nil, nil, nil
+end
+
 local function find_module_in_require_any(lines, start_idx, end_idx, names)
+	-- First try the specific block
 	for _, n in ipairs(names) do
 		local idx, ver = find_module_in_require(lines, start_idx, end_idx, n)
 		if idx then
 			return idx, ver, n
 		end
 	end
+
+	-- Then search all blocks
+	for _, n in ipairs(names) do
+		local idx, ver, found_name = find_module_in_all_require_blocks(lines, n)
+		if idx then
+			return idx, ver, found_name or n
+		end
+	end
+
 	return nil, nil, nil
 end
 
-local function reparse_and_check_debounced(path, updated_module_name)
-	local bufnr = vim.fn.bufnr(path)
-	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
-		return
+local function find_package_lnum_in_require(buf_lines, pkg_name)
+	if type(buf_lines) ~= "table" or not pkg_name or pkg_name == "" then
+		return nil
 	end
 
-	vim.defer_fn(function()
-		local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.go")
-		if ok_parser and type(parser.parse_buffer) == "function" then
-			pcall(parser.parse_buffer, bufnr)
-		end
-	end, 250)
+	local idx, _, _ = find_module_in_all_require_blocks(buf_lines, pkg_name)
+	return idx
+end
 
-	vim.defer_fn(function()
-		local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-		if ok_chk and type(chk.invalidate_package_cache) == "function" and updated_module_name then
-			pcall(chk.invalidate_package_cache, bufnr, "go", updated_module_name)
-		end
-		if ok_chk and type(chk.check_manifest_outdated) == "function" then
-			pcall(chk.check_manifest_outdated, bufnr, "go")
-		end
-	end, 1200)
+local function ensure_deps_namespace()
+	state.namespace = state.namespace or {}
+	state.namespace.id = state.namespace.id or api.nvim_create_namespace("lvim_dependencies")
+	return tonumber(state.namespace.id) or 0
+end
+
+local function set_pending_anchor(bufnr, lnum1)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+		return nil
+	end
+	if type(lnum1) ~= "number" or lnum1 < 1 then
+		return nil
+	end
+	local ns = ensure_deps_namespace()
+	local id = api.nvim_buf_set_extmark(bufnr, ns, lnum1 - 1, 0, {
+		right_gravity = false,
+	})
+	return id
+end
+
+local function clear_pending_anchor(bufnr)
+	if not (bufnr and bufnr ~= -1) then
+		return
+	end
+	local rec = state.buffers and state.buffers[bufnr]
+	if not rec or not rec.pending_anchor_id then
+		return
+	end
+	local ns = ensure_deps_namespace()
+	pcall(api.nvim_buf_del_extmark, bufnr, ns, rec.pending_anchor_id)
+	rec.pending_anchor_id = nil
+end
+
+local function clear_all_caches()
+	local ok_utils, u = pcall(require, "lvim-dependencies.utils")
+	if ok_utils and type(u.clear_file_cache) == "function" then
+		u.clear_file_cache()
+	end
 end
 
 local function set_updating_flag(v)
@@ -535,6 +618,70 @@ local function apply_go_remove(path, name)
 	return true, found_name or name
 end
 
+local function apply_single_line_version_edit(bufnr, lnum1, dep_name, new_version)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+		return false
+	end
+	if type(lnum1) ~= "number" or lnum1 < 1 then
+		return false
+	end
+	if not dep_name or dep_name == "" then
+		return false
+	end
+	if not new_version or new_version == "" then
+		return false
+	end
+
+	local line = api.nvim_buf_get_lines(bufnr, lnum1 - 1, lnum1, false)[1]
+	if not line then
+		return false
+	end
+
+	-- go.mod format: \tmodule/name v1.2.3 or \tmodule/name v1.2.3 // indirect
+	local mod_name = line:match("^%s*([^%s]+)%s+")
+	if not mod_name then
+		return false
+	end
+
+	-- Check if this is the right module
+	local base_mod = strip_major_path(mod_name)
+	local base_dep = strip_major_path(dep_name)
+	if mod_name ~= dep_name and base_mod ~= base_dep and mod_name ~= base_dep and base_mod ~= dep_name then
+		return false
+	end
+
+	-- Find version position
+	local space_pos = line:find("%s+v")
+	if not space_pos then
+		space_pos = line:find("%s+%d")
+	end
+	if not space_pos then
+		return false
+	end
+
+	local ver_start = space_pos
+	while ver_start <= #line and line:sub(ver_start, ver_start):match("%s") do
+		ver_start = ver_start + 1
+	end
+
+	-- Find end of version (before // comment or end of line)
+	local ver_end = ver_start
+	while ver_end <= #line do
+		local ch = line:sub(ver_end, ver_end)
+		if ch:match("%s") or ch == "/" then
+			break
+		end
+		ver_end = ver_end + 1
+	end
+	ver_end = ver_end - 1
+
+	local version_to_set = normalize_version(new_version)
+
+	pcall(api.nvim_buf_set_text, bufnr, lnum1 - 1, ver_start - 1, lnum1 - 1, ver_end, { version_to_set })
+	vim.bo[bufnr].modified = false
+	return true
+end
+
 local function run_go_get(path, name, version, original_name)
 	local cwd = vim.fn.fnamemodify(path, ":h")
 
@@ -582,6 +729,8 @@ local function run_go_get(path, name, version, original_name)
 
 	vim.system(cmd, { cwd = cwd, text = true }, function(res)
 		vim.schedule(function()
+			local bufnr = vim.fn.bufnr(path)
+
 			if not res or res.code ~= 0 then
 				set_updating_flag(false)
 
@@ -590,6 +739,24 @@ local function run_go_get(path, name, version, original_name)
 					msg = "go get exited with code " .. tostring(res and res.code or "unknown")
 				end
 				utils.notify_safe(("go get failed: %s"):format(msg), L.ERROR, {})
+
+				-- Clear loading on failure
+				if bufnr and bufnr ~= -1 then
+					state.buffers = state.buffers or {}
+					state.buffers[bufnr] = state.buffers[bufnr] or {}
+					clear_pending_anchor(bufnr)
+
+					state.buffers[bufnr].is_loading = false
+					state.buffers[bufnr].pending_dep = nil
+					state.buffers[bufnr].pending_lnum = nil
+					state.buffers[bufnr].pending_scope = nil
+					state.buffers[bufnr].checking_single_package = nil
+				end
+
+				local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+				if ok_vt and type(vt.display) == "function" then
+					vt.display(bufnr, "go", { force_full = true })
+				end
 				return
 			end
 
@@ -605,11 +772,113 @@ local function run_go_get(path, name, version, original_name)
 							msg = "go mod tidy exited with code " .. tostring(res2 and res2.code or "unknown")
 						end
 						utils.notify_safe(("go mod tidy failed: %s"):format(msg), L.ERROR, {})
+
+						-- Clear loading on failure
+						if bufnr and bufnr ~= -1 then
+							state.buffers = state.buffers or {}
+							state.buffers[bufnr] = state.buffers[bufnr] or {}
+							clear_pending_anchor(bufnr)
+
+							state.buffers[bufnr].is_loading = false
+							state.buffers[bufnr].pending_dep = nil
+							state.buffers[bufnr].pending_lnum = nil
+							state.buffers[bufnr].pending_scope = nil
+							state.buffers[bufnr].checking_single_package = nil
+						end
+
+						local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+						if ok_vt and type(vt.display) == "function" then
+							vt.display(bufnr, "go", { force_full = true })
+						end
 						return
 					end
 
-					apply_go_update(path, module_name, version, original_name)
-					reparse_and_check_debounced(path, module_name)
+					clear_all_caches()
+
+					-- Update installed version in state
+					local ok_st, st2 = pcall(require, "lvim-dependencies.state")
+					if ok_st and module_name and version then
+						local deps = st2.get_dependencies("go")
+						if deps then
+							deps.installed = deps.installed or {}
+							deps.installed[module_name] = { current = version, in_lock = true }
+							if type(st2.set_installed) == "function" then
+								st2.set_installed("go", deps.installed)
+							end
+						end
+
+						if type(st2.add_installed_dependency) == "function" then
+							pcall(st2.add_installed_dependency, "go", module_name, version, "require")
+						end
+					end
+
+					if bufnr and bufnr ~= -1 then
+						state.buffers = state.buffers or {}
+						state.buffers[bufnr] = state.buffers[bufnr] or {}
+						state.buffers[bufnr].last_go_hash = nil
+						state.buffers[bufnr].last_changedtick = nil
+						state.buffers[bufnr].last_go_parsed = nil
+					end
+
+					-- Start fresh outdated check
+					vim.defer_fn(function()
+						clear_all_caches()
+
+						-- Clear is_loading so check_manifest_outdated runs, but set checking flag
+						if bufnr and bufnr ~= -1 then
+							state.buffers = state.buffers or {}
+							state.buffers[bufnr] = state.buffers[bufnr] or {}
+							state.buffers[bufnr].is_loading = false
+							state.buffers[bufnr].pending_dep = nil
+							state.buffers[bufnr].checking_single_package = module_name
+						end
+
+						local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+						if ok_chk and type(chk.invalidate_package_cache) == "function" then
+							pcall(chk.invalidate_package_cache, bufnr, "go", module_name)
+						end
+						if ok_chk and type(chk.check_manifest_outdated) == "function" then
+							pcall(chk.check_manifest_outdated, bufnr, "go")
+						end
+					end, 300)
+
+					-- Poll until outdated data is ready
+					local poll_count = 0
+					local max_polls = 30
+					local function poll_for_outdated()
+						poll_count = poll_count + 1
+
+						local deps = state.get_dependencies("go")
+						local outdated = deps and deps.outdated
+						local pkg_outdated = outdated and outdated[module_name]
+						local has_fresh_data = pkg_outdated and pkg_outdated.latest ~= nil
+
+						if has_fresh_data or poll_count >= max_polls then
+							if bufnr and bufnr ~= -1 then
+								state.buffers = state.buffers or {}
+								state.buffers[bufnr] = state.buffers[bufnr] or {}
+								clear_pending_anchor(bufnr)
+
+								state.buffers[bufnr].is_loading = false
+								state.buffers[bufnr].pending_dep = nil
+								state.buffers[bufnr].pending_lnum = nil
+								state.buffers[bufnr].pending_scope = nil
+								state.buffers[bufnr].checking_single_package = nil
+
+								-- Mark when update completed for cooldown
+								state.buffers[bufnr].last_update_completed_at = vim.loop.now()
+							end
+
+							local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+							if ok_vt and type(vt.display) == "function" then
+								vt.display(bufnr, "go", { force_full = true })
+							end
+						else
+							vim.defer_fn(poll_for_outdated, 200)
+						end
+					end
+
+					vim.defer_fn(poll_for_outdated, 500)
 
 					pcall(function()
 						vim.g.lvim_deps_last_updated = module_name .. "@" .. tostring(version)
@@ -640,6 +909,8 @@ local function run_go_remove(path, name)
 		vim.schedule(function()
 			set_updating_flag(false)
 
+			local bufnr = vim.fn.bufnr(path)
+
 			if not res or res.code ~= 0 then
 				local msg = (res and res.stderr) or ""
 				if msg == "" then
@@ -651,7 +922,28 @@ local function run_go_remove(path, name)
 
 			utils.notify_safe(("%s removed"):format(found_name or name), L.INFO, {})
 
-			reparse_and_check_debounced(path, found_name or name)
+			clear_all_caches()
+
+			if bufnr and bufnr ~= -1 then
+				state.buffers = state.buffers or {}
+				state.buffers[bufnr] = state.buffers[bufnr] or {}
+				state.buffers[bufnr].last_go_hash = nil
+				state.buffers[bufnr].last_changedtick = nil
+				state.buffers[bufnr].last_go_parsed = nil
+
+				-- Mark when update completed for cooldown
+				state.buffers[bufnr].last_update_completed_at = vim.loop.now()
+			end
+
+			vim.defer_fn(function()
+				local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+				if ok_chk and type(chk.invalidate_package_cache) == "function" then
+					pcall(chk.invalidate_package_cache, bufnr, "go", found_name or name)
+				end
+				if ok_chk and type(chk.check_manifest_outdated) == "function" then
+					pcall(chk.check_manifest_outdated, bufnr, "go")
+				end
+			end, 300)
 
 			pcall(function()
 				vim.g.lvim_deps_last_updated = (found_name or name) .. "@removed"
@@ -685,6 +977,64 @@ function M.update(name, opts)
 	end
 
 	if opts.from_ui then
+		local bufnr = vim.fn.bufnr(path)
+
+		local pending_lnum = nil
+		if bufnr and bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
+			local buf_lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+			pending_lnum = find_package_lnum_in_require(buf_lines, name)
+			if not pending_lnum then
+				pending_lnum = find_package_lnum_in_require(buf_lines, original_name)
+			end
+		end
+
+		if bufnr and bufnr ~= -1 then
+			state.buffers = state.buffers or {}
+			state.buffers[bufnr] = state.buffers[bufnr] or {}
+
+			state.buffers[bufnr].is_loading = true
+			state.buffers[bufnr].pending_dep = name
+			state.buffers[bufnr].pending_lnum = pending_lnum
+			state.buffers[bufnr].pending_scope = "require"
+
+			clear_pending_anchor(bufnr)
+			if pending_lnum then
+				state.buffers[bufnr].pending_anchor_id = set_pending_anchor(bufnr, pending_lnum)
+			end
+
+			-- 1. Update version in buffer
+			if pending_lnum then
+				local applied = apply_single_line_version_edit(bufnr, pending_lnum, name, version)
+				if not applied then
+					apply_single_line_version_edit(bufnr, pending_lnum, original_name, version)
+				end
+			end
+
+			-- 2. Clear extmark on this line and show Loading...
+			local ns = ensure_deps_namespace()
+			if pending_lnum then
+				local marks = api.nvim_buf_get_extmarks(
+					bufnr,
+					ns,
+					{ pending_lnum - 1, 0 },
+					{ pending_lnum - 1, -1 },
+					{}
+				)
+				for _, mark in ipairs(marks) do
+					pcall(api.nvim_buf_del_extmark, bufnr, ns, mark[1])
+				end
+
+				api.nvim_buf_set_extmark(bufnr, ns, pending_lnum - 1, 0, {
+					virt_text = { { "Loading...", "LvimDepsLoading" } },
+					virt_text_pos = "eol",
+					priority = 1000,
+				})
+			end
+
+			-- 3. Force redraw
+			vim.cmd("redraw")
+		end
+
 		utils.notify_safe(("updating %s to %s..."):format(name, tostring(version)), L.INFO, {})
 		run_go_get(path, name, version, original_name)
 		return { ok = true, msg = "started" }
@@ -698,14 +1048,25 @@ function M.update(name, opts)
 		return { ok = false, msg = err }
 	end
 
-	reparse_and_check_debounced(path, resolve_update_module_name(name, version))
+	local module_name = resolve_update_module_name(name, version)
+
+	vim.defer_fn(function()
+		local bufnr = vim.fn.bufnr(path)
+		local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+		if ok_chk and type(chk.invalidate_package_cache) == "function" then
+			pcall(chk.invalidate_package_cache, bufnr, "go", module_name)
+		end
+		if ok_chk and type(chk.check_manifest_outdated) == "function" then
+			pcall(chk.check_manifest_outdated, bufnr, "go")
+		end
+	end, 300)
 
 	pcall(function()
-		vim.g.lvim_deps_last_updated = resolve_update_module_name(name, version) .. "@" .. tostring(version)
+		vim.g.lvim_deps_last_updated = module_name .. "@" .. tostring(version)
 		trigger_package_updated()
 	end)
 
-	utils.notify_safe(("%s -> %s"):format(resolve_update_module_name(name, version), tostring(version)), L.INFO, {})
+	utils.notify_safe(("%s -> %s"):format(module_name, tostring(version)), L.INFO, {})
 
 	return { ok = true, msg = "written" }
 end
@@ -736,7 +1097,16 @@ function M.delete(name, opts)
 		return { ok = false, msg = "module " .. name .. " not found in require block" }
 	end
 
-	reparse_and_check_debounced(path, found_name or name)
+	vim.defer_fn(function()
+		local bufnr = vim.fn.bufnr(path)
+		local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+		if ok_chk and type(chk.invalidate_package_cache) == "function" then
+			pcall(chk.invalidate_package_cache, bufnr, "go", found_name or name)
+		end
+		if ok_chk and type(chk.check_manifest_outdated) == "function" then
+			pcall(chk.check_manifest_outdated, bufnr, "go")
+		end
+	end, 300)
 
 	pcall(function()
 		vim.g.lvim_deps_last_updated = (found_name or name) .. "@removed"

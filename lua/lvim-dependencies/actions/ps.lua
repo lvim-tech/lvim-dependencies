@@ -227,53 +227,54 @@ local function remove_package_from_section(lines, section_idx, section_end, pkg_
 	return out, change
 end
 
-local function apply_single_line_version_edit(bufnr, lnum1, dep_name, new_version)
-	if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
-		return false
+local function version_parts(v)
+	if not v then
+		return nil
 	end
-	if type(lnum1) ~= "number" or lnum1 < 1 then
-		return false
+	v = tostring(v)
+	v = v:gsub("[\"',]", ""):gsub("^%s*", ""):gsub("%s*$", "")
+	v = v:gsub("^[%s%~%^><=]+", "")
+	local main = v:match("^(%d+%.%d+%.%d+)") or v:match("^(%d+%.%d+)") or v:match("^(%d+)")
+	if not main then
+		return nil
 	end
-	if not dep_name or dep_name == "" then
-		return false
+	local major, minor, patch = main:match("^(%d+)%.(%d+)%.(%d+)")
+	if major and minor and patch then
+		return { tonumber(major), tonumber(minor), tonumber(patch) }
 	end
-	if not new_version or new_version == "" then
-		return false
+	local maj_min = main:match("^(%d+)%.(%d+)")
+	if maj_min then
+		local ma, mi = maj_min:match("^(%d+)%.(%d+)")
+		return { tonumber(ma), tonumber(mi), 0 }
 	end
+	local single = main:match("^(%d+)")
+	if single then
+		return { tonumber(single), 0, 0 }
+	end
+	return nil
+end
 
-	local line = api.nvim_buf_get_lines(bufnr, lnum1 - 1, lnum1, false)[1]
-	if not line then
-		return false
+local function compare_version_parts(a, b)
+	if not a and not b then
+		return 0
 	end
-
-	local m = line:match("^%s*([%w_%-%.]+)%s*:")
-	if m ~= dep_name then
-		return false
+	if not a then
+		return -1
 	end
-
-	local colon = line:find(":", 1, true)
-	if not colon then
-		return false
+	if not b then
+		return 1
 	end
-	local start_col = colon
-	while start_col < #line and line:sub(start_col + 1, start_col + 1):match("%s") do
-		start_col = start_col + 1
+	for i = 1, 3 do
+		local ai = a[i] or 0
+		local bi = b[i] or 0
+		if ai > bi then
+			return 1
+		end
+		if ai < bi then
+			return -1
+		end
 	end
-	start_col = start_col + 1
-
-	local hash = line:find("#", start_col, true)
-	local end_col = hash and (hash - 1) or #line
-
-	while end_col > start_col and line:sub(end_col, end_col):match("%s") do
-		end_col = end_col - 1
-	end
-
-	local start0 = start_col - 1
-	local end0 = end_col
-
-	pcall(api.nvim_buf_set_text, bufnr, lnum1 - 1, start0, lnum1 - 1, end0, { tostring(new_version) })
-	vim.bo[bufnr].modified = false
-	return true
+	return 0
 end
 
 function M.fetch_versions(name, _)
@@ -323,7 +324,13 @@ function M.fetch_versions(name, _)
 	end
 
 	table.sort(uniq, function(a, b)
-		return a > b
+		local pa = version_parts(a)
+		local pb = version_parts(b)
+		local cmp = compare_version_parts(pa, pb)
+		if cmp == 0 then
+			return a > b
+		end
+		return cmp == 1
 	end)
 
 	return { versions = uniq, current = current }
@@ -333,6 +340,52 @@ local function trigger_package_updated()
 	api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
+local function refresh_outdated_and_redraw(path, name)
+	local buf = vim.fn.bufnr(path)
+	if not buf or buf == -1 or not api.nvim_buf_is_loaded(buf) then
+		return
+	end
+
+	local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
+	if ok_chk and type(chk.invalidate_package_cache) == "function" then
+		pcall(chk.invalidate_package_cache, buf, "pubspec", name)
+	end
+	if ok_chk and type(chk.check_manifest_outdated) == "function" then
+		pcall(chk.check_manifest_outdated, buf, "pubspec")
+	end
+
+	pcall(function()
+		local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+		if ok_vt and type(vt.display) == "function" then
+			vt.display(buf, "pubspec")
+		end
+	end)
+end
+
+-- NEW: clear only extmarks in a small line range around the edited dep line
+local function clear_deps_virtual_text_range(bufnr, lnum1)
+	if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+		return
+	end
+	if type(lnum1) ~= "number" or lnum1 < 1 then
+		return
+	end
+
+	state.namespace = state.namespace or {}
+	state.namespace.id = state.namespace.id or api.nvim_create_namespace("lvim_dependencies")
+	local ns = tonumber(state.namespace.id) or 0
+
+	local start0 = math.max(0, lnum1 - 2) -- (lnum1-1) in 0-based
+	local end0 = math.min(api.nvim_buf_line_count(bufnr), lnum1 + 1) -- clear also next line
+
+	local marks = api.nvim_buf_get_extmarks(bufnr, ns, { start0, 0 }, { end0, 0 }, { details = false })
+	for _, m in ipairs(marks) do
+		local id = m[1]
+		pcall(api.nvim_buf_del_extmark, bufnr, ns, id)
+	end
+end
+
+-- Anchor extmark helpers (stable line tracking)
 local function ensure_deps_namespace()
 	state.namespace = state.namespace or {}
 	state.namespace.id = state.namespace.id or api.nvim_create_namespace("lvim_dependencies")
@@ -433,28 +486,44 @@ local function parse_pubspec_state(path)
 	end
 end
 
-local function clear_all_caches()
-	local ok_utils, u = pcall(require, "lvim-dependencies.utils")
-	if ok_utils and type(u.clear_file_cache) == "function" then
-		u.clear_file_cache()
-	end
-
-	local ok_parser, parser = pcall(require, "lvim-dependencies.parsers.pubspec")
-	if ok_parser and type(parser.clear_lock_cache) == "function" then
-		parser.clear_lock_cache()
-	end
-end
-
+-- Transactional update:
+-- - buffer stays unchanged until success
+-- - disk pubspec.yaml temporarily updated so lock is correct
+-- - on fail: rollback + recovery pub get
 local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 	opts = opts or {}
 	local pending_lines = opts.pending_lines
 	local change = opts.change
 	local original_lines = opts.original_lines
-	local pending_lnum = opts.pending_lnum
+	local pending_lnum = opts.pending_lnum -- NEW: pass exact lnum from update()
+
+	local function finish_loading(no_redraw)
+		local bufnr = vim.fn.bufnr(path)
+		if bufnr and bufnr ~= -1 then
+			state.buffers = state.buffers or {}
+			state.buffers[bufnr] = state.buffers[bufnr] or {}
+			clear_pending_anchor(bufnr)
+
+			state.buffers[bufnr].is_loading = false
+			state.buffers[bufnr].pending_dep = nil
+			state.buffers[bufnr].pending_lnum = nil
+			state.buffers[bufnr].pending_scope = nil
+
+			if not no_redraw then
+				pcall(function()
+					local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+					if ok_vt and type(vt.display) == "function" then
+						vt.display(bufnr, "pubspec")
+					end
+				end)
+			end
+		end
+	end
 
 	local cmd = choose_pub_get_cmd(path)
 	if not cmd then
 		utils.notify_safe("pubspec: neither flutter nor dart CLI available", L.ERROR, {})
+		finish_loading()
 		return
 	end
 
@@ -465,6 +534,7 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 		pcall(st.set_updating, true)
 	end
 
+	-- Temporary disk write for lock correctness
 	if pending_lines then
 		local ok_write, werr = write_lines(path, pending_lines)
 		if not ok_write then
@@ -473,24 +543,22 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 			if ok_s and type(s2.set_updating) == "function" then
 				pcall(s2.set_updating, false)
 			end
+			finish_loading()
 			return
 		end
 	end
 
 	vim.system(cmd, { cwd = cwd, text = true }, function(res)
 		vim.schedule(function()
-			local bufnr = vim.fn.bufnr(path)
-
 			if res and res.code == 0 then
-				-- SUCCESS
-				clear_all_caches()
-
-				local applied = false
+				-- SUCCESS: clear only marks around the edited dep line to avoid "falling"
+				local bufnr = vim.fn.bufnr(path)
 				if bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) and type(pending_lnum) == "number" then
-					applied = apply_single_line_version_edit(bufnr, pending_lnum, name, version)
+					clear_deps_virtual_text_range(bufnr, pending_lnum)
 				end
 
-				if not applied and pending_lines then
+				-- update buffer only now
+				if pending_lines then
 					if change then
 						apply_buffer_change(path, change)
 					else
@@ -504,21 +572,11 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 					{}
 				)
 
-				clear_all_caches()
+				parse_pubspec_state(path)
 
-				-- Update installed version in state
-				local ok_st, st2 = pcall(require, "lvim-dependencies.state")
-				if ok_st and name and version then
-					local deps = st2.get_dependencies("pubspec")
-					if deps then
-						deps.installed = deps.installed or {}
-						deps.installed[name] = { current = version, in_lock = true }
-						if type(st2.set_installed) == "function" then
-							st2.set_installed("pubspec", deps.installed)
-						end
-					end
-
-					if type(st2.add_installed_dependency) == "function" then
+				if name and version and scope then
+					local ok_st, st2 = pcall(require, "lvim-dependencies.state")
+					if ok_st and type(st2.add_installed_dependency) == "function" then
 						pcall(st2.add_installed_dependency, "pubspec", name, version, scope)
 					end
 				end
@@ -528,73 +586,11 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 					pcall(s2.set_updating, false)
 				end
 
-				if bufnr and bufnr ~= -1 then
-					state.buffers = state.buffers or {}
-					state.buffers[bufnr] = state.buffers[bufnr] or {}
-					state.buffers[bufnr].last_pubspec_hash = nil
-					state.buffers[bufnr].last_changedtick = nil
-					state.buffers[bufnr].last_pubspec_parsed = nil
-				end
+				finish_loading(true)
 
-				-- Start fresh outdated check
 				vim.defer_fn(function()
-					clear_all_caches()
-
-					-- Clear is_loading so check_manifest_outdated runs, but set checking flag
-					if bufnr and bufnr ~= -1 then
-						state.buffers = state.buffers or {}
-						state.buffers[bufnr] = state.buffers[bufnr] or {}
-						state.buffers[bufnr].is_loading = false
-						state.buffers[bufnr].pending_dep = nil
-						state.buffers[bufnr].checking_single_package = name
-					end
-
-					local ok_chk, chk = pcall(require, "lvim-dependencies.actions.check_manifests")
-					if ok_chk and type(chk.invalidate_package_cache) == "function" then
-						pcall(chk.invalidate_package_cache, bufnr, "pubspec", name)
-					end
-					if ok_chk and type(chk.check_manifest_outdated) == "function" then
-						pcall(chk.check_manifest_outdated, bufnr, "pubspec")
-					end
-				end, 300)
-
-				-- Poll until outdated data is ready
-				local poll_count = 0
-				local max_polls = 30
-				local function poll_for_outdated()
-					poll_count = poll_count + 1
-
-					local deps = state.get_dependencies("pubspec")
-					local outdated = deps and deps.outdated
-					local pkg_outdated = outdated and outdated[name]
-					local has_fresh_data = pkg_outdated and pkg_outdated.latest ~= nil
-
-					if has_fresh_data or poll_count >= max_polls then
-						if bufnr and bufnr ~= -1 then
-							state.buffers = state.buffers or {}
-							state.buffers[bufnr] = state.buffers[bufnr] or {}
-							clear_pending_anchor(bufnr)
-
-							state.buffers[bufnr].is_loading = false
-							state.buffers[bufnr].pending_dep = nil
-							state.buffers[bufnr].pending_lnum = nil
-							state.buffers[bufnr].pending_scope = nil
-							state.buffers[bufnr].checking_single_package = nil
-
-							-- Mark when update completed for cooldown
-							state.buffers[bufnr].last_update_completed_at = vim.loop.now()
-						end
-
-						local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-						if ok_vt and type(vt.display) == "function" then
-							vt.display(bufnr, "pubspec", { force_full = true })
-						end
-					else
-						vim.defer_fn(poll_for_outdated, 200)
-					end
-				end
-
-				vim.defer_fn(poll_for_outdated, 500)
+					refresh_outdated_and_redraw(path, name)
+				end, 400)
 
 				pcall(function()
 					vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
@@ -603,17 +599,22 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 				return
 			end
 
-			-- FAIL: rollback
+			-- FAIL: rollback disk pubspec.yaml
 			if original_lines then
 				write_lines(path, original_lines)
 			end
 
+			-- rollback buffer defensively; clear only local range if possible
+			local bufnr = vim.fn.bufnr(path)
 			if original_lines and bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
+				if type(pending_lnum) == "number" then
+					clear_deps_virtual_text_range(bufnr, pending_lnum)
+				end
 				force_refresh_buffer(path, original_lines)
 			end
 
+			-- ALWAYS recovery pub get
 			run_recovery_pub_get(cmd, cwd, function(_, _)
-				clear_all_caches()
 				parse_pubspec_state(path)
 			end)
 
@@ -627,24 +628,7 @@ local function run_pub_get(path, name, version, scope, on_success_msg, opts)
 				msg = "pub get exited with code " .. tostring(res and res.code or "unknown")
 			end
 			utils.notify_safe(("pubspec: pub get failed. Error: %s"):format(msg), L.ERROR, {})
-
-			-- Clear loading on failure
-			if bufnr and bufnr ~= -1 then
-				state.buffers = state.buffers or {}
-				state.buffers[bufnr] = state.buffers[bufnr] or {}
-				clear_pending_anchor(bufnr)
-
-				state.buffers[bufnr].is_loading = false
-				state.buffers[bufnr].pending_dep = nil
-				state.buffers[bufnr].pending_lnum = nil
-				state.buffers[bufnr].pending_scope = nil
-				state.buffers[bufnr].checking_single_package = nil
-			end
-
-			local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
-			if ok_vt and type(vt.display) == "function" then
-				vt.display(bufnr, "pubspec", { force_full = true })
-			end
+			finish_loading()
 		end)
 	end)
 end
@@ -664,11 +648,7 @@ local function run_pub_remove(path, name)
 
 	vim.system(cmd, { cwd = cwd, text = true }, function(res)
 		vim.schedule(function()
-			local bufnr = vim.fn.bufnr(path)
-
 			if res and res.code == 0 then
-				clear_all_caches()
-
 				utils.notify_safe(("pubspec: %s removed"):format(name), L.INFO, {})
 
 				local path_lines = read_lines(path)
@@ -681,19 +661,7 @@ local function run_pub_remove(path, name)
 					pcall(st2.remove_installed_dependency, "pubspec", name)
 				end
 
-				if bufnr and bufnr ~= -1 then
-					state.buffers = state.buffers or {}
-					state.buffers[bufnr] = state.buffers[bufnr] or {}
-					state.buffers[bufnr].last_pubspec_hash = nil
-					state.buffers[bufnr].last_changedtick = nil
-					state.buffers[bufnr].last_pubspec_parsed = nil
-
-					-- Mark when update completed for cooldown
-					state.buffers[bufnr].last_update_completed_at = vim.loop.now()
-				end
-
 				vim.defer_fn(function()
-					clear_all_caches()
 					parse_pubspec_state(path)
 
 					local buf = vim.fn.bufnr(path)
@@ -773,7 +741,7 @@ function M.update(name, opts)
 	if not disk_lines then
 		return { ok = false, msg = "unable to read pubspec.yaml from disk" }
 	end
-	local original_lines = vim.deepcopy(disk_lines)
+	local original_lines = disk_lines
 
 	local section_idx = find_section_index(disk_lines, scope)
 	if not section_idx then
@@ -822,33 +790,12 @@ function M.update(name, opts)
 				state.buffers[bufnr].pending_anchor_id = set_pending_anchor(bufnr, pending_lnum)
 			end
 
-			-- Update version in buffer first
-			if pending_lnum then
-				apply_single_line_version_edit(bufnr, pending_lnum, name, version)
-			end
-
-			-- Clear ONLY the extmark on this specific line, not all
-			local ns = ensure_deps_namespace()
-			if pending_lnum then
-				local marks = api.nvim_buf_get_extmarks(
-					bufnr,
-					ns,
-					{ pending_lnum - 1, 0 },
-					{ pending_lnum - 1, -1 },
-					{}
-				)
-				for _, mark in ipairs(marks) do
-					pcall(api.nvim_buf_del_extmark, bufnr, ns, mark[1])
+			pcall(function()
+				local ok_vt, vt = pcall(require, "lvim-dependencies.ui.virtual_text")
+				if ok_vt and type(vt.display) == "function" then
+					vt.display(bufnr, "pubspec")
 				end
-
-				api.nvim_buf_set_extmark(bufnr, ns, pending_lnum - 1, 0, {
-					virt_text = { { "Loading...", "LvimDepsLoading" } },
-					virt_text_pos = "eol",
-					priority = 1000,
-				})
-			end
-
-			vim.cmd("redraw")
+			end)
 		end
 
 		utils.notify_safe(("pubspec: installing %s %s..."):format(name, tostring(version)), L.INFO, {})
@@ -877,7 +824,7 @@ function M.update(name, opts)
 
 	pcall(function()
 		vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
-		api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
+		trigger_package_updated()
 	end)
 
 	utils.notify_safe(("pubspec: %s -> %s"):format(name, tostring(version)), L.INFO, {})
