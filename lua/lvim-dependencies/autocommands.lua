@@ -21,334 +21,334 @@ local M = {}
 -- Build parsers map from const
 local parsers = {}
 for filename, key in pairs(const.MANIFEST_KEYS) do
-	local parser_map = {
-		package = package_parser,
-		crates = cargo_parser,
-		pubspec = pubspec_parser,
-		composer = composer_parser,
-		go = go_parser,
-	}
-	parsers[filename] = { parser = parser_map[key], key = key }
+    local parser_map = {
+        package = package_parser,
+        crates = cargo_parser,
+        pubspec = pubspec_parser,
+        composer = composer_parser,
+        go = go_parser,
+    }
+    parsers[filename] = { parser = parser_map[key], key = key }
 end
 
 -- Cooldown period after update completes (ms)
 local UPDATE_COOLDOWN_MS = 5000
 
 local function is_in_update_cooldown(bufnr)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	local last_update = state.buffers[bufnr].last_update_completed_at
-	if not last_update then
-		return false
-	end
+    local last_update = state.buffers[bufnr].last_update_completed_at
+    if not last_update then
+        return false
+    end
 
-	local now = vim.loop.now()
-	return (now - last_update) < UPDATE_COOLDOWN_MS
+    local now = vim.loop.now()
+    return (now - last_update) < UPDATE_COOLDOWN_MS
 end
 
 local function clear_cooldown(bufnr)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-	state.buffers[bufnr].last_update_completed_at = nil
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers[bufnr].last_update_completed_at = nil
 end
 
 local function clear_parser_caches(manifest_key)
-	-- Clear utils file cache
-	local ok_utils, u = pcall(require, "lvim-dependencies.utils")
-	if ok_utils and type(u.clear_file_cache) == "function" then
-		u.clear_file_cache()
-	end
+    -- Clear utils file cache
+    local ok_utils, u = pcall(require, "lvim-dependencies.utils")
+    if ok_utils and type(u.clear_file_cache) == "function" then
+        u.clear_file_cache()
+    end
 
-	-- Clear parser-specific lock cache
-	local parser_modules = {
-		package = "lvim-dependencies.parsers.package",
-		crates = "lvim-dependencies.parsers.cargo",
-		pubspec = "lvim-dependencies.parsers.pubspec",
-		composer = "lvim-dependencies.parsers.composer",
-		go = "lvim-dependencies.parsers.go",
-	}
+    -- Clear parser-specific lock cache
+    local parser_modules = {
+        package = "lvim-dependencies.parsers.package",
+        crates = "lvim-dependencies.parsers.cargo",
+        pubspec = "lvim-dependencies.parsers.pubspec",
+        composer = "lvim-dependencies.parsers.composer",
+        go = "lvim-dependencies.parsers.go",
+    }
 
-	local parser_module = parser_modules[manifest_key]
-	if parser_module then
-		local ok_parser, parser = pcall(require, parser_module)
-		if ok_parser and type(parser.clear_lock_cache) == "function" then
-			parser.clear_lock_cache()
-		end
-	end
+    local parser_module = parser_modules[manifest_key]
+    if parser_module then
+        local ok_parser, parser = pcall(require, parser_module)
+        if ok_parser and type(parser.clear_lock_cache) == "function" then
+            parser.clear_lock_cache()
+        end
+    end
 end
 
 local function clear_buffer_parse_cache(bufnr, manifest_key)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	-- Clear manifest-specific parsed cache
-	local cache_keys = {
-		package = { "last_package_hash", "last_package_parsed" },
-		crates = { "last_crates_hash", "last_crates_parsed" },
-		pubspec = { "last_pubspec_hash", "last_pubspec_parsed" },
-		composer = { "last_composer_hash", "last_composer_parsed" },
-		go = { "last_go_hash", "last_go_parsed" },
-	}
+    -- Clear manifest-specific parsed cache
+    local cache_keys = {
+        package = { "last_package_hash", "last_package_parsed" },
+        crates = { "last_crates_hash", "last_crates_parsed" },
+        pubspec = { "last_pubspec_hash", "last_pubspec_parsed" },
+        composer = { "last_composer_hash", "last_composer_parsed" },
+        go = { "last_go_hash", "last_go_parsed" },
+    }
 
-	local keys = cache_keys[manifest_key]
-	if keys then
-		for _, key in ipairs(keys) do
-			state.buffers[bufnr][key] = nil
-		end
-	end
+    local keys = cache_keys[manifest_key]
+    if keys then
+        for _, key in ipairs(keys) do
+            state.buffers[bufnr][key] = nil
+        end
+    end
 
-	state.buffers[bufnr].last_changedtick = nil
-	state.buffers[bufnr].parse_scheduled = false
+    state.buffers[bufnr].last_changedtick = nil
+    state.buffers[bufnr].parse_scheduled = false
 end
 
 local function call_manifest_checker(entry, bufnr)
-	pcall(function()
-		checker.check_manifest_outdated(bufnr, entry.key)
-	end)
+    pcall(function()
+        checker.check_manifest_outdated(bufnr, entry.key)
+    end)
 end
 
 local function parse_and_render(bufnr)
-	bufnr = bufnr or api.nvim_get_current_buf()
-	if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
-		return
-	end
+    bufnr = bufnr or api.nvim_get_current_buf()
+    if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+        return
+    end
 
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local entry = parsers[filename]
-	if not entry then
-		return
-	end
+    local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+    local entry = parsers[filename]
+    if not entry then
+        return
+    end
 
-	local manifest_key = entry.key
-	if config[manifest_key] and config[manifest_key].enabled == false then
-		return
-	end
+    local manifest_key = entry.key
+    if config[manifest_key] and config[manifest_key].enabled == false then
+        return
+    end
 
-	entry.parser.parse_buffer(bufnr)
-	virtual_text.display(bufnr, manifest_key, { force_full = true })
-	state.update_last_run(bufnr)
+    entry.parser.parse_buffer(bufnr)
+    virtual_text.display(bufnr, manifest_key, { force_full = true })
+    state.update_last_run(bufnr)
 end
 
 local function handle_buffer_parse_and_check(bufnr, force_fresh)
-	bufnr = bufnr or api.nvim_get_current_buf()
-	if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
-		return
-	end
+    bufnr = bufnr or api.nvim_get_current_buf()
+    if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+        return
+    end
 
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local entry = parsers[filename]
-	if not entry then
-		return
-	end
+    local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+    local entry = parsers[filename]
+    if not entry then
+        return
+    end
 
-	local manifest_key = entry.key
-	if config[manifest_key] and config[manifest_key].enabled == false then
-		return
-	end
+    local manifest_key = entry.key
+    if config[manifest_key] and config[manifest_key].enabled == false then
+        return
+    end
 
-	-- If force_fresh, clear ALL caches
-	if force_fresh then
-		-- Clear parser lock cache (reads lock file fresh)
-		clear_parser_caches(manifest_key)
+    -- If force_fresh, clear ALL caches
+    if force_fresh then
+        -- Clear parser lock cache (reads lock file fresh)
+        clear_parser_caches(manifest_key)
 
-		-- Clear buffer parse cache (forces re-parse)
-		clear_buffer_parse_cache(bufnr, manifest_key)
+        -- Clear buffer parse cache (forces re-parse)
+        clear_buffer_parse_cache(bufnr, manifest_key)
 
-		-- Clear check_manifests cache
-		pcall(function()
-			checker.clear_buffer_cache(bufnr, manifest_key)
-		end)
-	end
+        -- Clear check_manifests cache
+        pcall(function()
+            checker.clear_buffer_cache(bufnr, manifest_key)
+        end)
+    end
 
-	entry.parser.parse_buffer(bufnr)
-	call_manifest_checker(entry, bufnr)
-	virtual_text.display(bufnr, manifest_key, { force_full = true })
-	state.update_last_run(bufnr)
+    entry.parser.parse_buffer(bufnr)
+    call_manifest_checker(entry, bufnr)
+    virtual_text.display(bufnr, manifest_key, { force_full = true })
+    state.update_last_run(bufnr)
 end
 
 local function schedule_handle(bufnr, delay, full_check, force_fresh)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
-	if state.buffers[bufnr].check_scheduled then
-		return
-	end
-	state.buffers[bufnr].check_scheduled = true
-	defer_fn(function()
-		state.buffers[bufnr].check_scheduled = false
-		if full_check then
-			handle_buffer_parse_and_check(bufnr, force_fresh)
-		else
-			parse_and_render(bufnr)
-		end
-	end, delay)
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
+    if state.buffers[bufnr].check_scheduled then
+        return
+    end
+    state.buffers[bufnr].check_scheduled = true
+    defer_fn(function()
+        state.buffers[bufnr].check_scheduled = false
+        if full_check then
+            handle_buffer_parse_and_check(bufnr, force_fresh)
+        else
+            parse_and_render(bufnr)
+        end
+    end, delay)
 end
 
 local function schedule_light_render(bufnr, delay)
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	if state.buffers[bufnr].light_render_scheduled then
-		return
-	end
+    if state.buffers[bufnr].light_render_scheduled then
+        return
+    end
 
-	state.buffers[bufnr].light_render_scheduled = true
-	defer_fn(function()
-		state.buffers[bufnr].light_render_scheduled = false
+    state.buffers[bufnr].light_render_scheduled = true
+    defer_fn(function()
+        state.buffers[bufnr].light_render_scheduled = false
 
-		if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
-			return
-		end
+        if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+            return
+        end
 
-		local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-		local entry = parsers[filename]
-		if not entry then
-			return
-		end
+        local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+        local entry = parsers[filename]
+        if not entry then
+            return
+        end
 
-		local manifest_key = entry.key
-		if config[manifest_key] and config[manifest_key].enabled == false then
-			return
-		end
+        local manifest_key = entry.key
+        if config[manifest_key] and config[manifest_key].enabled == false then
+            return
+        end
 
-		virtual_text.display(bufnr, manifest_key)
-	end, delay or 25)
+        virtual_text.display(bufnr, manifest_key)
+    end, delay or 25)
 end
 
 local function on_buf_enter(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+    local bufnr = (args and args.buf) or api.nvim_get_current_buf()
 
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
+    -- Skip if we're still processing an update
+    if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
+        return
+    end
 
-	-- Skip full check if we just finished an update (cooldown period)
-	if is_in_update_cooldown(bufnr) then
-		local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-		local entry = parsers[filename]
-		commands.create_buf_commands_for(bufnr, entry and entry.key or nil)
-		return
-	end
+    -- Skip full check if we just finished an update (cooldown period)
+    if is_in_update_cooldown(bufnr) then
+        local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+        local entry = parsers[filename]
+        commands.create_buf_commands_for(bufnr, entry and entry.key or nil)
+        return
+    end
 
-	-- Full parse+check on enter (debounced)
-	schedule_handle(bufnr, 50, true, false)
+    -- Full parse+check on enter (debounced)
+    schedule_handle(bufnr, 50, true, false)
 
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local entry = parsers[filename]
-	local manifest_key = entry and entry.key or nil
+    local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+    local entry = parsers[filename]
+    local manifest_key = entry and entry.key or nil
 
-	commands.create_buf_commands_for(bufnr, manifest_key)
+    commands.create_buf_commands_for(bufnr, manifest_key)
 end
 
 local function on_buf_write(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+    local bufnr = (args and args.buf) or api.nvim_get_current_buf()
 
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
+    -- Skip if we're still processing an update
+    if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
+        return
+    end
 
-	-- Get manifest key for this buffer
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local entry = parsers[filename]
-	local manifest_key = entry and entry.key or nil
+    -- Get manifest key for this buffer
+    local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+    local entry = parsers[filename]
+    local manifest_key = entry and entry.key or nil
 
-	-- If in cooldown, clear it - user explicitly saved so they want fresh data
-	local was_in_cooldown = is_in_update_cooldown(bufnr)
-	if was_in_cooldown then
-		clear_cooldown(bufnr)
-	end
+    -- If in cooldown, clear it - user explicitly saved so they want fresh data
+    local was_in_cooldown = is_in_update_cooldown(bufnr)
+    if was_in_cooldown then
+        clear_cooldown(bufnr)
+    end
 
-	-- ALWAYS do fresh check on save - clear all caches
-	if manifest_key then
-		clear_parser_caches(manifest_key)
-		clear_buffer_parse_cache(bufnr, manifest_key)
-	end
+    -- ALWAYS do fresh check on save - clear all caches
+    if manifest_key then
+        clear_parser_caches(manifest_key)
+        clear_buffer_parse_cache(bufnr, manifest_key)
+    end
 
-	-- After write, do a full check with fresh data
-	schedule_handle(bufnr, 200, true, true)
+    -- After write, do a full check with fresh data
+    schedule_handle(bufnr, 200, true, true)
 end
 
 local function on_buf_read(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+    local bufnr = (args and args.buf) or api.nvim_get_current_buf()
 
-	state.buffers = state.buffers or {}
-	state.buffers[bufnr] = state.buffers[bufnr] or {}
+    state.buffers = state.buffers or {}
+    state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-	-- Skip if we're still processing an update
-	if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
-		return
-	end
+    -- Skip if we're still processing an update
+    if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
+        return
+    end
 
-	-- Get manifest key for this buffer
-	local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
-	local entry = parsers[filename]
-	local manifest_key = entry and entry.key or nil
+    -- Get manifest key for this buffer
+    local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
+    local entry = parsers[filename]
+    local manifest_key = entry and entry.key or nil
 
-	-- If in cooldown and user does :e, clear cooldown and do fresh check
-	local was_in_cooldown = is_in_update_cooldown(bufnr)
-	if was_in_cooldown then
-		clear_cooldown(bufnr)
-	end
+    -- If in cooldown and user does :e, clear cooldown and do fresh check
+    local was_in_cooldown = is_in_update_cooldown(bufnr)
+    if was_in_cooldown then
+        clear_cooldown(bufnr)
+    end
 
-	-- Clear caches and do fresh check
-	if manifest_key then
-		clear_parser_caches(manifest_key)
-		clear_buffer_parse_cache(bufnr, manifest_key)
-	end
+    -- Clear caches and do fresh check
+    if manifest_key then
+        clear_parser_caches(manifest_key)
+        clear_buffer_parse_cache(bufnr, manifest_key)
+    end
 
-	schedule_handle(bufnr, 100, true, true)
+    schedule_handle(bufnr, 100, true, true)
 end
 
 local function on_win_scrolled(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
-	schedule_light_render(bufnr, 20)
+    local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+    schedule_light_render(bufnr, 20)
 end
 
 local function on_cursor_hold(args)
-	local bufnr = (args and args.buf) or api.nvim_get_current_buf()
-	schedule_light_render(bufnr, 40)
+    local bufnr = (args and args.buf) or api.nvim_get_current_buf()
+    schedule_light_render(bufnr, 40)
 end
 
 M.init = function()
-	local group = api.nvim_create_augroup("LvimDependencies", { clear = true })
+    local group = api.nvim_create_augroup("LvimDependencies", { clear = true })
 
-	api.nvim_create_autocmd({ "BufEnter", "FileType" }, {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_buf_enter,
-	})
+    api.nvim_create_autocmd({ "BufEnter", "FileType" }, {
+        group = group,
+        pattern = const.MANIFEST_PATTERNS,
+        callback = on_buf_enter,
+    })
 
-	api.nvim_create_autocmd("BufWritePost", {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_buf_write,
-	})
+    api.nvim_create_autocmd("BufWritePost", {
+        group = group,
+        pattern = const.MANIFEST_PATTERNS,
+        callback = on_buf_write,
+    })
 
-	api.nvim_create_autocmd("BufReadPost", {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_buf_read,
-	})
+    api.nvim_create_autocmd("BufReadPost", {
+        group = group,
+        pattern = const.MANIFEST_PATTERNS,
+        callback = on_buf_read,
+    })
 
-	api.nvim_create_autocmd({ "WinScrolled" }, {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_win_scrolled,
-	})
+    api.nvim_create_autocmd({ "WinScrolled" }, {
+        group = group,
+        pattern = const.MANIFEST_PATTERNS,
+        callback = on_win_scrolled,
+    })
 
-	api.nvim_create_autocmd({ "CursorHold" }, {
-		group = group,
-		pattern = const.MANIFEST_PATTERNS,
-		callback = on_cursor_hold,
-	})
+    api.nvim_create_autocmd({ "CursorHold" }, {
+        group = group,
+        pattern = const.MANIFEST_PATTERNS,
+        callback = on_cursor_hold,
+    })
 end
 
 return M
