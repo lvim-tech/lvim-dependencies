@@ -259,7 +259,7 @@ The plugin displays version information as virtual text at the end of each depen
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
@@ -267,4 +267,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [crates.nvim](https://github.com/saecki/crates.nvim) for inspiration
 - [package-info.nvim](https://github.com/vuki656/package-info.nvim) for inspiration
 - [pubspec-assist.nvim](https://github.com/lvim-tech/pubspec-assist.nvim) for inspiration
-
