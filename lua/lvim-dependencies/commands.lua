@@ -5,377 +5,475 @@ local const = require("lvim-dependencies.const")
 local utils = require("lvim-dependencies.utils")
 local floating = require("lvim-dependencies.ui.floating")
 local validator = require("lvim-dependencies.validator")
+local popup = require("lvim-dependencies.ui.popup")
+local state = require("lvim-dependencies.state")
+local cargo = require("lvim-dependencies.actions.cargo")
+
+local L = vim.log.levels
 
 local M = {}
 
 local function detect_manifest_from_buf(bufnr)
-	bufnr = bufnr or api.nvim_get_current_buf()
-	local path = api.nvim_buf_get_name(bufnr) or ""
-	local base = fn.fnamemodify(path, ":t")
-	return validator.detect_manifest_from_filename(base)
+    bufnr = bufnr or api.nvim_get_current_buf()
+    local path = api.nvim_buf_get_name(bufnr) or ""
+    local base = fn.fnamemodify(path, ":t")
+    return validator.detect_manifest_from_filename(base)
 end
 
 local function leading_spaces(s)
-	local m = s:match("^(%s*)")
-	return #m
+    local m = s:match("^(%s*)")
+    return #m
 end
 
 local function detect_dep_from_line(manifest_key, bufnr)
-	bufnr = bufnr or api.nvim_get_current_buf()
-	local cursor = api.nvim_win_get_cursor(0)
-	local row = cursor[1]
-	local lines = api.nvim_buf_get_lines(bufnr, row - 1, row, false) or {}
-	local line = (lines[1] or "")
-	local trimmed = line:gsub("^%s+", "")
+    bufnr = bufnr or api.nvim_get_current_buf()
+    local cursor = api.nvim_win_get_cursor(0)
+    local row = cursor[1]
+    local lines = api.nvim_buf_get_lines(bufnr, row - 1, row, false) or {}
+    local line = (lines[1] or "")
+    local trimmed = line:gsub("^%s+", "")
 
-	if manifest_key == "pubspec" then
-		local name = trimmed:match("^([%w_%-]+)%s*:")
-		if not name then
-			name = trimmed:match("^([%w_%-]+)%s*$")
-			if not name then
-				return nil, nil
-			end
-		end
+    if manifest_key == "pubspec" then
+        local name = trimmed:match("^([%w_%-]+)%s*:")
+        if not name then
+            name = trimmed:match("^([%w_%-]+)%s*$")
+            if not name then
+                return nil, nil
+            end
+        end
 
-		local cur_indent = leading_spaces(line)
-		local search_row = row - 1
-		local sections = const.SECTION_NAMES.pubspec
+        local cur_indent = leading_spaces(line)
+        local search_row = row - 1
+        local sections = const.SECTION_NAMES.pubspec
 
-		while search_row >= 1 do
-			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
-			local ptrim = pline:gsub("^%s+", "")
-			if ptrim ~= "" then
-				local p_indent = leading_spaces(pline)
-				if p_indent < cur_indent then
-					local parent = ptrim:match("^([%w_%-]+)%s*:%s*$")
-					if parent then
-						for _, section in ipairs(sections) do
-							if parent == section then
-								return name, parent
-							end
-						end
-					end
-					break
-				end
-			end
-			search_row = search_row - 1
-		end
+        while search_row >= 1 do
+            local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
+            local ptrim = pline:gsub("^%s+", "")
+            if ptrim ~= "" then
+                local p_indent = leading_spaces(pline)
+                if p_indent < cur_indent then
+                    local parent = ptrim:match("^([%w_%-]+)%s*:%s*$")
+                    if parent then
+                        for _, section in ipairs(sections) do
+                            if parent == section then
+                                return name, parent
+                            end
+                        end
+                    end
+                    break
+                end
+            end
+            search_row = search_row - 1
+        end
 
-		return nil, nil
-	elseif manifest_key == "package" or manifest_key == "composer" then
-		local name = trimmed:match('^"(.-)"') or trimmed:match("^'(.-)'")
-		if not name then
-			return nil, nil
-		end
+        return nil, nil
+    elseif manifest_key == "package" or manifest_key == "composer" then
+        local name = trimmed:match('^"(.-)"') or trimmed:match("^'(.-)'")
+        if not name then
+            return nil, nil
+        end
 
-		local cur_indent = leading_spaces(line)
-		local search_row = row - 1
-		local sections = const.SECTION_NAMES[manifest_key]
+        local cur_indent = leading_spaces(line)
+        local search_row = row - 1
+        local sections = const.SECTION_NAMES[manifest_key]
 
-		while search_row >= 1 do
-			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
-			local ptrim = pline:gsub("^%s+", "")
-			if ptrim ~= "" then
-				local p_indent = leading_spaces(pline)
-				if p_indent < cur_indent then
-					for _, section in ipairs(sections) do
-						local pattern = string.format([["%s"%s*:]], section:gsub("%-", "%%-"))
-						if ptrim:match(pattern) then
-							return name, section
-						end
-					end
-					break
-				end
-			end
-			search_row = search_row - 1
-		end
-		return nil, nil
-	elseif manifest_key == "crates" then
-		local name = line:match("^%s*([%w_%-]+)%s*=")
-		if not name then
-			return nil, nil
-		end
+        while search_row >= 1 do
+            local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
+            local ptrim = pline:gsub("^%s+", "")
+            if ptrim ~= "" then
+                local p_indent = leading_spaces(pline)
+                if p_indent < cur_indent then
+                    for _, section in ipairs(sections) do
+                        local pattern = string.format([["%s"%s*:]], section:gsub("%-", "%%-"))
+                        if ptrim:match(pattern) then
+                            return name, section
+                        end
+                    end
+                    break
+                end
+            end
+            search_row = search_row - 1
+        end
+        return nil, nil
+    elseif manifest_key == "crates" then
+        local name = line:match("^%s*([%w_%-]+)%s*=")
+        if not name then
+            return nil, nil
+        end
 
-		local search_row = row - 1
-		local sections = const.SECTION_NAMES.crates
+        local search_row = row - 1
+        local sections = const.SECTION_NAMES.crates
 
-		while search_row >= 1 do
-			local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
-			local ptrim = pline:gsub("^%s+", ""):gsub("%s+$", "")
-			if ptrim ~= "" then
-				local section = ptrim:match("^%[(.-)%]$")
-				if section then
-					for _, valid_section in ipairs(sections) do
-						if section == valid_section then
-							return name, section
-						end
-					end
-					break
-				end
-			end
-			search_row = search_row - 1
-		end
-		return nil, nil
-	elseif manifest_key == "go" then
-		local name = line:match("^%s*require%s+([^%s]+)") or line:match("^%s*([^%s]+)%s+v[%d%w%-%+%.]+")
-		if name and name:match("%/") then
-			return name, "require"
-		end
-		return nil, nil
-	end
+        while search_row >= 1 do
+            local pline = api.nvim_buf_get_lines(bufnr, search_row - 1, search_row, false)[1] or ""
+            local ptrim = pline:gsub("^%s+", ""):gsub("%s+$", "")
+            if ptrim ~= "" then
+                local section = ptrim:match("^%[(.-)%]$")
+                if section then
+                    for _, valid_section in ipairs(sections) do
+                        if section == valid_section then
+                            return name, section
+                        end
+                    end
+                    break
+                end
+            end
+            search_row = search_row - 1
+        end
+        return nil, nil
+    elseif manifest_key == "go" then
+        local name = line:match("^%s*require%s+([^%s]+)") or line:match("^%s*([^%s]+)%s+v[%d%w%-%+%.]+")
+        if name and name:match("%/") then
+            return name, "require"
+        end
+        return nil, nil
+    end
 
-	return nil, nil
+    return nil, nil
 end
 
 local function detect_inline_version(manifest_key, line)
-	if not line or line == "" then
-		return nil
-	end
+    if not line or line == "" then
+        return nil
+    end
 
-	if manifest_key == "package" or manifest_key == "composer" then
-		local v = line:match(':%s*"(.-)"') or line:match(":%s*'(.-)'")
-		if v and v ~= "" then
-			return v
-		end
-		return nil
-	end
+    if manifest_key == "package" or manifest_key == "composer" then
+        local v = line:match(':%s*"(.-)"') or line:match(":%s*'(.-)'")
+        if v and v ~= "" then
+            return v
+        end
+        return nil
+    end
 
-	if manifest_key == "crates" then
-		local v = line:match('=%s*"(.-)"') or line:match('=%s*{.-version%s*=%s*"(.-)".-}')
-		if v and v ~= "" then
-			return v
-		end
+    if manifest_key == "crates" then
+        local v = line:match('=%s*"(.-)"') or line:match('=%s*{.-version%s*=%s*"(.-)".-}')
+        if v and v ~= "" then
+            return v
+        end
 
-		v = line:match("=%s*([^%s,]+)")
-		if v and v ~= "" then
-			return v
-		end
-		return nil
-	end
+        v = line:match("=%s*([^%s,]+)")
+        if v and v ~= "" then
+            return v
+        end
+        return nil
+    end
 
-	if manifest_key == "go" then
-		local v = line:match("%s+v([%d%w%._%-%+]+)")
-		if v and v ~= "" then
-			return v
-		end
-		return nil
-	end
+    if manifest_key == "go" then
+        local v = line:match("%s+v([%d%w%._%-%+]+)")
+        if v and v ~= "" then
+            return v
+        end
+        return nil
+    end
 
-	if manifest_key == "pubspec" then
-		local v = line:match(":%s*([^%s,]+)")
-		if v and v ~= "" then
-			return v
-		end
-		return nil
-	end
-	return nil
+    if manifest_key == "pubspec" then
+        local v = line:match(":%s*([^%s,]+)")
+        if v and v ~= "" then
+            return v
+        end
+        return nil
+    end
+    return nil
 end
 
 local function completion_fn(_, cmd_line, _)
-	local parts = vim.split(cmd_line, "%s+")
+    local parts = vim.split(cmd_line, "%s+")
 
-	if #parts >= 1 then
-		table.remove(parts, 1)
-	end
+    if #parts >= 1 then
+        table.remove(parts, 1)
+    end
 
-	local is_trailing_space = cmd_line:sub(-1) == " "
-	local arg_index = #parts
-	if is_trailing_space then
-		arg_index = arg_index + 1
-	end
+    local is_trailing_space = cmd_line:sub(-1) == " "
+    local arg_index = #parts
+    if is_trailing_space then
+        arg_index = arg_index + 1
+    end
 
-	if arg_index == 1 then
-		return validator.get_manifests()
-	end
-	if arg_index == 4 then
-		return validator.get_scopes()
-	end
-	return {}
+    if arg_index == 1 then
+        return validator.get_manifests()
+    end
+    if arg_index == 4 then
+        return validator.get_scopes()
+    end
+    return {}
 end
 
 local function get_current_line_for_buf(bufnr)
-	if not bufnr or not api.nvim_buf_is_valid(bufnr) then
-		return api.nvim_get_current_line()
-	end
-	local m = api.nvim_buf_get_mark(bufnr, ".") or { 1, 0 }
-	local row = (m[1] and m[1] > 0) and m[1] or 1
-	return api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
+    if not bufnr or not api.nvim_buf_is_valid(bufnr) then
+        return api.nvim_get_current_line()
+    end
+    local m = api.nvim_buf_get_mark(bufnr, ".") or { 1, 0 }
+    local row = (m[1] and m[1] > 0) and m[1] or 1
+    return api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
 end
 
 local function split_name_version(name, version)
-	if not name or name == "" then
-		return name, version
-	end
-	local n, v = name:match("^(.+)@(.+)$")
-	if n and v and v ~= "" then
-		return n, v
-	end
-	n, v = name:match("^(.+):(.+)$")
-	if n and v and v ~= "" then
-		return n, v
-	end
-	return name, version
+    if not name or name == "" then
+        return name, version
+    end
+    local n, v = name:match("^(.+)@(.+)$")
+    if n and v and v ~= "" then
+        return n, v
+    end
+    n, v = name:match("^(.+):(.+)$")
+    if n and v and v ~= "" then
+        return n, v
+    end
+    return name, version
 end
 
-M.install = function(manifest)
-	if not manifest or manifest == "" then
-		utils.notify_safe(
-			"LvimDeps: manifest not detected; please run the command from a manifest buffer or pass the manifest",
-			vim.log.levels.ERROR,
-			{}
-		)
-		return
-	end
-	floating.install(manifest)
+function M.install(manifest)
+    if not manifest or manifest == "" then
+        utils.notify_safe(
+            "LvimDeps: manifest not detected; please run the command from a manifest buffer or pass the manifest",
+            L.ERROR,
+            {}
+        )
+        return
+    end
+    floating.install(manifest)
 end
 
-M.update = function(manifest, name, version, scope)
-	if not manifest or manifest == "" then
-		utils.notify_safe(
-			"LvimDeps: manifest not detected; please run the command from a manifest buffer or pass the manifest",
-			vim.log.levels.ERROR,
-			{}
-		)
-		return
-	end
+function M.update(manifest, name, version, scope)
+    if not manifest or manifest == "" then
+        utils.notify_safe(
+            "LvimDeps: manifest not detected; please run the command from a manifest buffer or pass the manifest",
+            L.ERROR,
+            {}
+        )
+        return
+    end
 
-	local resolved_name = name
-	local resolved_version = version
-	local resolved_scope = scope
+    local resolved_name = name
+    local resolved_version = version
+    local resolved_scope = scope
 
-	if not resolved_name or resolved_name == "" then
-		local detected_name, detected_scope = detect_dep_from_line(manifest)
-		if not detected_name then
-			utils.notify_safe(
-				"LvimDeps: no package found on current line; specify package name as argument or place cursor on package line",
-				vim.log.levels.ERROR,
-				{}
-			)
-			return
-		end
-		resolved_name = detected_name
-		resolved_scope = detected_scope
+    if not resolved_name or resolved_name == "" then
+        local detected_name, detected_scope = detect_dep_from_line(manifest)
+        if not detected_name then
+            utils.notify_safe(
+                "LvimDeps: no package found on current line; specify package name as argument or place cursor on package line",
+                L.ERROR,
+                {}
+            )
+            return
+        end
+        resolved_name = detected_name
+        resolved_scope = detected_scope
 
-		local cur_line = get_current_line_for_buf()
-		resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
-	else
-		resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
+        local cur_line = get_current_line_for_buf()
+        resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
+    else
+        resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
 
-		if not resolved_version or resolved_version == "" then
-			local cur_line = get_current_line_for_buf()
-			local inline_ver = detect_inline_version(manifest, cur_line)
-			if inline_ver and inline_ver ~= "" then
-				resolved_version = inline_ver
-			end
-		end
+        if not resolved_version or resolved_version == "" then
+            local cur_line = get_current_line_for_buf()
+            local inline_ver = detect_inline_version(manifest, cur_line)
+            if inline_ver and inline_ver ~= "" then
+                resolved_version = inline_ver
+            end
+        end
 
-		if not resolved_scope or resolved_scope == "" then
-			local detected_name, detected_scope = detect_dep_from_line(manifest)
-			if detected_name == resolved_name and detected_scope then
-				resolved_scope = detected_scope
-			end
-		end
-	end
+        if not resolved_scope or resolved_scope == "" then
+            local detected_name, detected_scope = detect_dep_from_line(manifest)
+            if detected_name == resolved_name and detected_scope then
+                resolved_scope = detected_scope
+            end
+        end
+    end
 
-	floating.update(manifest, resolved_name, resolved_version, resolved_scope)
+    floating.update(manifest, resolved_name, resolved_version, resolved_scope)
 end
 
-M.delete = function(manifest, name, version, scope)
-	if not manifest or manifest == "" then
-		manifest = detect_manifest_from_buf()
-	end
+function M.delete(manifest, name, version, scope)
+    if not manifest or manifest == "" then
+        manifest = detect_manifest_from_buf()
+    end
 
-	local resolved_name = name
-	local resolved_version = version
-	local resolved_scope = scope
+    local resolved_name = name
+    local resolved_version = version
+    local resolved_scope = scope
 
-	if not resolved_name or resolved_name == "" then
-		local detected_name, detected_scope = detect_dep_from_line(manifest)
-		if not detected_name then
-			utils.notify_safe(
-				"LvimDeps: no package found on current line; specify package name as argument or place cursor on package line",
-				vim.log.levels.ERROR,
-				{}
-			)
-			return
-		end
-		resolved_name = detected_name
-		resolved_scope = detected_scope
-		local cur_line = get_current_line_for_buf()
-		resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
-	else
-		resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
+    if not resolved_name or resolved_name == "" then
+        local detected_name, detected_scope = detect_dep_from_line(manifest)
+        if not detected_name then
+            utils.notify_safe(
+                "LvimDeps: no package found on current line; specify package name as argument or place cursor on package line",
+                L.ERROR,
+                {}
+            )
+            return
+        end
+        resolved_name = detected_name
+        resolved_scope = detected_scope
+        local cur_line = get_current_line_for_buf()
+        resolved_version = resolved_version or detect_inline_version(manifest, cur_line)
+    else
+        resolved_name, resolved_version = split_name_version(resolved_name, resolved_version)
 
-		if not resolved_scope or resolved_scope == "" then
-			local detected_name, detected_scope = detect_dep_from_line(manifest)
-			if detected_name == resolved_name and detected_scope then
-				resolved_scope = detected_scope
-			end
-		end
-		if not resolved_version or resolved_version == "" then
-			local cur_line = get_current_line_for_buf()
-			local inline_ver = detect_inline_version(manifest, cur_line)
-			if inline_ver and inline_ver ~= "" then
-				resolved_version = inline_ver
-			end
-		end
-	end
+        if not resolved_scope or resolved_scope == "" then
+            local detected_name, detected_scope = detect_dep_from_line(manifest)
+            if detected_name == resolved_name and detected_scope then
+                resolved_scope = detected_scope
+            end
+        end
+        if not resolved_version or resolved_version == "" then
+            local cur_line = get_current_line_for_buf()
+            local inline_ver = detect_inline_version(manifest, cur_line)
+            if inline_ver and inline_ver ~= "" then
+                resolved_version = inline_ver
+            end
+        end
+    end
 
-	floating.delete(manifest, resolved_name, resolved_version, resolved_scope)
+    floating.delete(manifest, resolved_name, resolved_version, resolved_scope)
+end
+
+function M.features(manifest, name, scope)
+    if not manifest or manifest == "" then
+        manifest = detect_manifest_from_buf()
+    end
+
+    if manifest ~= "crates" then
+        utils.notify_safe("LvimDeps: features are only available for Cargo.toml", L.WARN, {})
+        return
+    end
+
+    local bufnr = api.nvim_get_current_buf()
+    local resolved_name = name
+    local resolved_scope = scope
+
+    if not resolved_name or resolved_name == "" then
+        local detected_name, detected_scope = detect_dep_from_line(manifest)
+        if not detected_name then
+            utils.notify_safe("LvimDeps: no crate found on current line; place cursor on crate line", L.ERROR, {})
+            return
+        end
+        resolved_name = detected_name
+        resolved_scope = detected_scope or "dependencies"
+    end
+
+    resolved_scope = resolved_scope or "dependencies"
+
+    local version = state.get_installed_version("crates", resolved_name)
+
+    if not version then
+        local cur_line = get_current_line_for_buf(bufnr)
+        version = cur_line:match('version%s*=%s*"([^"]+)"') or cur_line:match('=%s*"([^"]+)"')
+    end
+
+    if not version then
+        utils.notify_safe("LvimDeps: cannot determine version for " .. resolved_name, L.WARN, {})
+        return
+    end
+
+    version = version:gsub("^[%^~><=]+", "")
+
+    utils.notify_safe("Fetching features for " .. resolved_name .. "@" .. version .. "...", L.INFO, {})
+
+    vim.schedule(function()
+        local all_features = cargo.fetch_features(resolved_name, version)
+        if not all_features then
+            utils.notify_safe("Failed to fetch features for " .. resolved_name, L.ERROR, {})
+            return
+        end
+
+        if vim.tbl_isempty(all_features) then
+            utils.notify_safe(resolved_name .. " has no features", L.INFO, {})
+            return
+        end
+
+        local enabled = cargo.get_enabled_features(resolved_name, resolved_scope)
+
+        local items = {}
+        local feature_names = vim.tbl_keys(all_features)
+        table.sort(feature_names)
+
+        for _, feat_name in ipairs(feature_names) do
+            local deps = all_features[feat_name] or {}
+            table.insert(items, {
+                id = feat_name,
+                label = feat_name,
+                deps = deps,
+            })
+        end
+
+        popup.multiselect(resolved_name, "Features (v" .. version .. ")", items, enabled, function(confirmed, selected)
+            if not confirmed or not selected then
+                return
+            end
+
+            local result = cargo.set_features(resolved_name, selected, resolved_scope)
+            if not result.ok then
+                utils.notify_safe("Failed to set features: " .. result.msg, L.ERROR, {})
+            end
+        end)
+    end)
 end
 
 function M.create_buf_commands_for(bufnr, manifest)
-	if not bufnr or not api.nvim_buf_is_valid(bufnr) then
-		return
-	end
+    if not bufnr or not api.nvim_buf_is_valid(bufnr) then
+        return
+    end
 
-	local ok, marker = pcall(api.nvim_buf_get_var, bufnr, "lvim_deps_cmds_created")
-	if ok and marker then
-		return
-	end
+    local ok, marker = pcall(api.nvim_buf_get_var, bufnr, "lvim_deps_cmds_created")
+    if ok and marker then
+        return
+    end
 
-	api.nvim_buf_create_user_command(bufnr, "LvimDepsInstall", function(opts)
-		local manifest_arg, _, _, _ = validator.parse_args(opts.fargs)
-		if not manifest_arg or manifest_arg == "" then
-			manifest_arg = manifest or detect_manifest_from_buf(bufnr)
-		end
-		if not manifest_arg or manifest_arg == "" then
-			utils.notify_safe("LvimDeps: manifest not detected; cannot run install", vim.log.levels.ERROR, {})
-			return
-		end
-		M.install(manifest_arg)
-	end, {
-		nargs = "*",
-		complete = completion_fn,
-	})
+    api.nvim_buf_create_user_command(bufnr, "LvimDepsInstall", function(opts)
+        local manifest_arg, _, _, _ = validator.parse_args(opts.fargs)
+        if not manifest_arg or manifest_arg == "" then
+            manifest_arg = manifest or detect_manifest_from_buf(bufnr)
+        end
+        if not manifest_arg or manifest_arg == "" then
+            utils.notify_safe("LvimDeps: manifest not detected; cannot run install", L.ERROR, {})
+            return
+        end
+        M.install(manifest_arg)
+    end, {
+        nargs = "*",
+        complete = completion_fn,
+    })
 
-	api.nvim_buf_create_user_command(bufnr, "LvimDepsUpdate", function(opts)
-		local manifest_arg, name_arg, version_arg, scope_arg = validator.parse_args(opts.fargs)
-		if not manifest_arg or manifest_arg == "" then
-			manifest_arg = manifest or detect_manifest_from_buf(bufnr)
-		end
-		name_arg, version_arg = split_name_version(name_arg, version_arg)
-		M.update(manifest_arg, name_arg, version_arg, scope_arg)
-	end, {
-		nargs = "*",
-		complete = completion_fn,
-	})
+    api.nvim_buf_create_user_command(bufnr, "LvimDepsUpdate", function(opts)
+        local manifest_arg, name_arg, version_arg, scope_arg = validator.parse_args(opts.fargs)
+        if not manifest_arg or manifest_arg == "" then
+            manifest_arg = manifest or detect_manifest_from_buf(bufnr)
+        end
+        name_arg, version_arg = split_name_version(name_arg, version_arg)
+        M.update(manifest_arg, name_arg, version_arg, scope_arg)
+    end, {
+        nargs = "*",
+        complete = completion_fn,
+    })
 
-	api.nvim_buf_create_user_command(bufnr, "LvimDepsDelete", function(opts)
-		local manifest_arg, name_arg, version_arg, scope_arg = validator.parse_args(opts.fargs)
-		if not manifest_arg or manifest_arg == "" then
-			manifest_arg = manifest or detect_manifest_from_buf(bufnr)
-		end
-		name_arg, version_arg = split_name_version(name_arg, version_arg)
-		M.delete(manifest_arg, name_arg, version_arg, scope_arg)
-	end, {
-		nargs = "*",
-		complete = completion_fn,
-	})
+    api.nvim_buf_create_user_command(bufnr, "LvimDepsDelete", function(opts)
+        local manifest_arg, name_arg, version_arg, scope_arg = validator.parse_args(opts.fargs)
+        if not manifest_arg or manifest_arg == "" then
+            manifest_arg = manifest or detect_manifest_from_buf(bufnr)
+        end
+        name_arg, version_arg = split_name_version(name_arg, version_arg)
+        M.delete(manifest_arg, name_arg, version_arg, scope_arg)
+    end, {
+        nargs = "*",
+        complete = completion_fn,
+    })
 
-	pcall(api.nvim_buf_set_var, bufnr, "lvim_deps_cmds_created", true)
+    api.nvim_buf_create_user_command(bufnr, "LvimDepsFeatures", function(opts)
+        local manifest_arg, name_arg, _, scope_arg = validator.parse_args(opts.fargs)
+        if not manifest_arg or manifest_arg == "" then
+            manifest_arg = manifest or detect_manifest_from_buf(bufnr)
+        end
+        M.features(manifest_arg, name_arg, scope_arg)
+    end, {
+        nargs = "*",
+        complete = completion_fn,
+    })
+
+    pcall(api.nvim_buf_set_var, bufnr, "lvim_deps_cmds_created", true)
 end
 
-M.init = function() end
+function M.init() end
 
 return M

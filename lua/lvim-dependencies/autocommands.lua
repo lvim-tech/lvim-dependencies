@@ -18,7 +18,6 @@ local commands = require("lvim-dependencies.commands")
 
 local M = {}
 
--- Build parsers map from const
 local parsers = {}
 for filename, key in pairs(const.MANIFEST_KEYS) do
     local parser_map = {
@@ -31,7 +30,6 @@ for filename, key in pairs(const.MANIFEST_KEYS) do
     parsers[filename] = { parser = parser_map[key], key = key }
 end
 
--- Cooldown period after update completes (ms)
 local UPDATE_COOLDOWN_MS = 5000
 
 local function is_in_update_cooldown(bufnr)
@@ -54,27 +52,20 @@ local function clear_cooldown(bufnr)
 end
 
 local function clear_parser_caches(manifest_key)
-    -- Clear utils file cache
-    local ok_utils, u = pcall(require, "lvim-dependencies.utils")
-    if ok_utils and type(u.clear_file_cache) == "function" then
-        u.clear_file_cache()
-    end
+    local utils = require("lvim-dependencies.utils")
+    utils.clear_file_cache()
 
-    -- Clear parser-specific lock cache
     local parser_modules = {
-        package = "lvim-dependencies.parsers.package",
-        crates = "lvim-dependencies.parsers.cargo",
-        pubspec = "lvim-dependencies.parsers.pubspec",
-        composer = "lvim-dependencies.parsers.composer",
-        go = "lvim-dependencies.parsers.go",
+        package = package_parser,
+        crates = cargo_parser,
+        pubspec = pubspec_parser,
+        composer = composer_parser,
+        go = go_parser,
     }
 
-    local parser_module = parser_modules[manifest_key]
-    if parser_module then
-        local ok_parser, parser = pcall(require, parser_module)
-        if ok_parser and type(parser.clear_lock_cache) == "function" then
-            parser.clear_lock_cache()
-        end
+    local parser = parser_modules[manifest_key]
+    if parser and parser.clear_lock_cache then
+        parser.clear_lock_cache()
     end
 end
 
@@ -82,7 +73,6 @@ local function clear_buffer_parse_cache(bufnr, manifest_key)
     state.buffers = state.buffers or {}
     state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-    -- Clear manifest-specific parsed cache
     local cache_keys = {
         package = { "last_package_hash", "last_package_parsed" },
         crates = { "last_crates_hash", "last_crates_parsed" },
@@ -103,9 +93,7 @@ local function clear_buffer_parse_cache(bufnr, manifest_key)
 end
 
 local function call_manifest_checker(entry, bufnr)
-    pcall(function()
-        checker.check_manifest_outdated(bufnr, entry.key)
-    end)
+    checker.check_manifest_outdated(bufnr, entry.key)
 end
 
 local function parse_and_render(bufnr)
@@ -147,18 +135,10 @@ local function handle_buffer_parse_and_check(bufnr, force_fresh)
         return
     end
 
-    -- If force_fresh, clear ALL caches
     if force_fresh then
-        -- Clear parser lock cache (reads lock file fresh)
         clear_parser_caches(manifest_key)
-
-        -- Clear buffer parse cache (forces re-parse)
         clear_buffer_parse_cache(bufnr, manifest_key)
-
-        -- Clear check_manifests cache
-        pcall(function()
-            checker.clear_buffer_cache(bufnr, manifest_key)
-        end)
+        checker.clear_buffer_cache(bufnr, manifest_key)
     end
 
     entry.parser.parse_buffer(bufnr)
@@ -176,6 +156,12 @@ local function schedule_handle(bufnr, delay, full_check, force_fresh)
     state.buffers[bufnr].check_scheduled = true
     defer_fn(function()
         state.buffers[bufnr].check_scheduled = false
+
+        if state.buffers[bufnr].skip_next_check then
+            state.buffers[bufnr].skip_next_check = nil
+            return
+        end
+
         if full_check then
             handle_buffer_parse_and_check(bufnr, force_fresh)
         else
@@ -221,12 +207,10 @@ local function on_buf_enter(args)
     state.buffers = state.buffers or {}
     state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-    -- Skip if we're still processing an update
     if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
         return
     end
 
-    -- Skip full check if we just finished an update (cooldown period)
     if is_in_update_cooldown(bufnr) then
         local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
         local entry = parsers[filename]
@@ -234,7 +218,6 @@ local function on_buf_enter(args)
         return
     end
 
-    -- Full parse+check on enter (debounced)
     schedule_handle(bufnr, 50, true, false)
 
     local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
@@ -250,29 +233,24 @@ local function on_buf_write(args)
     state.buffers = state.buffers or {}
     state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-    -- Skip if we're still processing an update
     if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
         return
     end
 
-    -- Get manifest key for this buffer
     local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
     local entry = parsers[filename]
     local manifest_key = entry and entry.key or nil
 
-    -- If in cooldown, clear it - user explicitly saved so they want fresh data
     local was_in_cooldown = is_in_update_cooldown(bufnr)
     if was_in_cooldown then
         clear_cooldown(bufnr)
     end
 
-    -- ALWAYS do fresh check on save - clear all caches
     if manifest_key then
         clear_parser_caches(manifest_key)
         clear_buffer_parse_cache(bufnr, manifest_key)
     end
 
-    -- After write, do a full check with fresh data
     schedule_handle(bufnr, 200, true, true)
 end
 
@@ -282,23 +260,19 @@ local function on_buf_read(args)
     state.buffers = state.buffers or {}
     state.buffers[bufnr] = state.buffers[bufnr] or {}
 
-    -- Skip if we're still processing an update
     if state.buffers[bufnr].checking_single_package or state.buffers[bufnr].is_loading then
         return
     end
 
-    -- Get manifest key for this buffer
     local filename = fn.fnamemodify(api.nvim_buf_get_name(bufnr), ":t")
     local entry = parsers[filename]
     local manifest_key = entry and entry.key or nil
 
-    -- If in cooldown and user does :e, clear cooldown and do fresh check
     local was_in_cooldown = is_in_update_cooldown(bufnr)
     if was_in_cooldown then
         clear_cooldown(bufnr)
     end
 
-    -- Clear caches and do fresh check
     if manifest_key then
         clear_parser_caches(manifest_key)
         clear_buffer_parse_cache(bufnr, manifest_key)
