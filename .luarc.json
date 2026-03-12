@@ -3,7 +3,8 @@
     "Lua.diagnostics.disable": [
         "deprecated",
         "param-type-mismatch",
-        "cast-local-type"
+        "cast-local-type",
+        "undefined-field"
     ],
     "Lua.diagnostics.globals": [
         "vim"

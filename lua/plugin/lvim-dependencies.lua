@@ -1,11 +1,11 @@
 if vim.fn.has("nvim-0.10.0") == 0 then
-	print("Lvim dependencies requires Neovim >= 0.10.0")
-	return
+    print("Lvim dependencies requires Neovim >= 0.10.0")
+    return
 end
 
 -- Автоматично зареждане на plugin
 if vim.g.loaded_lvim_dependencies then
-	return
+    return
 end
 vim.g.loaded_lvim_dependencies = 1
 

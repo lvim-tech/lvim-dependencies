@@ -1,141 +1,122 @@
-local config = require("lvim-dependencies.config")
+-- lua/lvim-dependencies/ui/highlight.lua
+-- Highlight group definitions for UI components
+
+local utils_highlight = require("lvim-dependencies.utils.highlight")
+local config_highlight = require("lvim-dependencies.config.highlight")
+
+local config_highlight_groups = config_highlight.groups
+local config_highlight_colors = config_highlight.colors
 
 local M = {}
 
-local function blend(fg, bg, alpha)
-    if not fg or not bg then
-        return fg or bg or "#000000"
-    end
-
-    fg = fg:gsub("^#", "")
-    bg = bg:gsub("^#", "")
-
-    local fg_r = tonumber(fg:sub(1, 2), 16) or 0
-    local fg_g = tonumber(fg:sub(3, 4), 16) or 0
-    local fg_b = tonumber(fg:sub(5, 6), 16) or 0
-
-    local bg_r = tonumber(bg:sub(1, 2), 16) or 0
-    local bg_g = tonumber(bg:sub(3, 4), 16) or 0
-    local bg_b = tonumber(bg:sub(5, 6), 16) or 0
-
-    local r = math.floor(fg_r * alpha + bg_r * (1 - alpha) + 0.5)
-    local g = math.floor(fg_g * alpha + bg_g * (1 - alpha) + 0.5)
-    local b = math.floor(fg_b * alpha + bg_b * (1 - alpha) + 0.5)
-
-    r = math.max(0, math.min(255, r))
-    g = math.max(0, math.min(255, g))
-    b = math.max(0, math.min(255, b))
-
-    return string.format("#%02x%02x%02x", r, g, b)
-end
-
-function M.blend_with_bg(color, alpha)
-    local bg = config.ui.highlight.colors.bg or "#000000"
-    return blend(color, bg, alpha)
-end
-
-function M.lighten(color, amount)
-    return blend("#ffffff", color, amount)
-end
-
-function M.darken(color, amount)
-    return blend("#000000", color, amount)
-end
-
-local function define_hl_if_missing(name, opts)
-    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
-    if not ok or not hl or vim.tbl_isempty(hl) then
-        vim.api.nvim_set_hl(0, name, opts)
-    end
-end
-
-local bg_blend = M.blend_with_bg(config.ui.highlight.colors.up_to_date, 0.3)
-local up_to_date_blend = M.blend_with_bg(config.ui.highlight.colors.up_to_date, 0.2)
-local outdated_blend = M.blend_with_bg(config.ui.highlight.colors.outdated, 0.2)
-local loading_blend = M.blend_with_bg(config.ui.highlight.colors.loading, 0.2)
-local line_active_blend = M.blend_with_bg(config.ui.highlight.colors.up_to_date, 0.3)
-
-function M.init()
-    define_hl_if_missing(config.ui.highlight.groups.normal, {
-        bg = config.ui.highlight.colors.bg,
-        fg = config.ui.highlight.colors.fg,
-        default = true,
-    })
-    define_hl_if_missing(config.ui.highlight.groups.title, {
-        bg = bg_blend,
-        fg = config.ui.highlight.colors.real,
-        default = true,
+--- Initialize all plugin highlight groups
+function M.setup()
+    utils_highlight.define_if_missing(config_highlight_groups.loading, {
+        fg = config_highlight_colors.loading,
         bold = true,
-    })
-    define_hl_if_missing(config.ui.highlight.groups.sub_title, {
-        bg = bg_blend,
-        fg = config.ui.highlight.colors.real,
-        default = true,
-        underline = true,
-    })
-    define_hl_if_missing(config.ui.highlight.groups.subject, {
-        bg = bg_blend,
-        fg = config.ui.highlight.colors.real,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.border, {
-        bg = config.ui.highlight.colors.bg,
-        fg = config.ui.highlight.colors.fg,
-        default = true,
-    })
-    define_hl_if_missing(config.ui.highlight.groups.line_active, {
-        bg = line_active_blend,
-        fg = config.ui.highlight.colors.up_to_date,
-        default = true,
+
+    utils_highlight.define_if_missing(config_highlight_groups.separator, {
+        fg = config_highlight_colors.separator,
         bold = true,
-    })
-    define_hl_if_missing(config.ui.highlight.groups.line_inactive, {
-        fg = config.ui.highlight.colors.up_to_date,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.navigation, {
-        bg = bg_blend,
-        fg = config.ui.highlight.colors.real,
+
+    utils_highlight.define_if_missing(config_highlight_groups.info, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.info),
+        fg = config_highlight_colors.info,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.input, {
-        bg = bg_blend,
-        fg = config.ui.highlight.colors.up_to_date,
+
+    utils_highlight.define_if_missing(config_highlight_groups.declared, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.declared),
+        fg = config_highlight_colors.declared,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.outdated, {
-        bg = outdated_blend,
-        fg = config.ui.highlight.colors.outdated,
+
+    utils_highlight.define_if_missing(config_highlight_groups.installed, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.installed),
+        fg = config_highlight_colors.installed,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.up_to_date, {
-        bg = up_to_date_blend,
-        fg = config.ui.highlight.colors.up_to_date,
+
+    utils_highlight.define_if_missing(config_highlight_groups.up_to_date, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.success),
+        fg = config_highlight_colors.success,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.invalid, {
-        fg = config.ui.highlight.colors.invalid,
+
+    utils_highlight.define_if_missing(config_highlight_groups.outdated, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.error),
+        fg = config_highlight_colors.error,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.not_installed, {
-        fg = config.ui.highlight.colors.not_installed,
+
+    utils_highlight.define_if_missing(config_highlight_groups.normal, {
+        bg = config_highlight_colors.bg,
+        fg = config_highlight_colors.fg,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.real, {
-        fg = config.ui.highlight.colors.real,
+
+    utils_highlight.define_if_missing(config_highlight_groups.cursor_line, {
+        bg = utils_highlight.lighten(config_highlight_colors.bg),
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.constraint, {
-        fg = config.ui.highlight.colors.constraint,
+
+    utils_highlight.define_if_missing(config_highlight_groups.border, {
+        bg = config_highlight_colors.bg,
+        fg = config_highlight_colors.fg,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.separator, {
-        fg = config.ui.highlight.colors.separator,
+
+    utils_highlight.define_if_missing(config_highlight_groups.title, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.title),
+        fg = config_highlight_colors.title,
+        bold = true,
         default = true,
     })
-    define_hl_if_missing(config.ui.highlight.groups.loading, {
-        bg = loading_blend,
-        fg = config.ui.highlight.colors.loading,
+
+    utils_highlight.define_if_missing(config_highlight_groups.sub_title, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.sub_title),
+        fg = config_highlight_colors.sub_title,
+        default = true,
+    })
+
+    utils_highlight.define_if_missing(config_highlight_groups.subject, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.subject),
+        fg = config_highlight_colors.subject,
+        default = true,
+    })
+
+    utils_highlight.define_if_missing(config_highlight_groups.navigation, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.navigation),
+        fg = config_highlight_colors.navigation,
+        bold = true,
+        default = true,
+    })
+
+    utils_highlight.define_if_missing(config_highlight_groups.line_active, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.line_active),
+        fg = config_highlight_colors.line_active,
+        bold = true,
+        default = true,
+    })
+
+    utils_highlight.define_if_missing(config_highlight_groups.line_inactive, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.line_inactive),
+        fg = config_highlight_colors.line_inactive,
+        default = true,
+    })
+
+    utils_highlight.define_if_missing(config_highlight_groups.input, {
+        bg = utils_highlight.blend_with_background(config_highlight_colors.input),
+        fg = config_highlight_colors.input,
         default = true,
     })
 end
