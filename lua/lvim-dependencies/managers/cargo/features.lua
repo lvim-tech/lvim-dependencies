@@ -261,9 +261,7 @@ function M.update_features(package_name, opts, callback)
     hub_declared.refresh_data("cargo")
     package_loader.clear_cache(package_name)
     hub_installed.clear_cache("cargo", package_name)
-    hub_latest.clear_cache("cargo", package_name)
     require("lvim-dependencies.managers.cargo.data.installed").clear_cache()
-    require("lvim-dependencies.managers.cargo.data.latest").clear_cache()
 
     -- ==========================================================================
     -- Refresh virtual text via the public vt API (no direct virt_texts access)

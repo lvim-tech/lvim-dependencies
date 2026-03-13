@@ -86,7 +86,6 @@ local function seed_installed_version(name, version)
     local entry = cache.ensure("go", CACHE_TYPE_INSTALLED)
     entry[CACHE_FIELDS_DATA][name] = version
 
-    hub_latest.clear_cache("go", name)
     parser.clear_cache()
     require("lvim-dependencies.core.hub.declared").clear_cache("go", name)
 end

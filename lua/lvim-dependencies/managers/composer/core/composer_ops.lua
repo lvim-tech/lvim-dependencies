@@ -74,7 +74,6 @@ local function seed_installed_version(name, version)
     hub_installed.clear_cache("composer", name)
     local entry = cache.ensure("composer", CACHE_TYPE_INSTALLED)
     entry[CACHE_FIELDS_DATA][name] = version
-    hub_latest.clear_cache("composer", name)
     parser.clear_cache()
     require("lvim-dependencies.core.hub.declared").clear_cache("composer", name)
 end
