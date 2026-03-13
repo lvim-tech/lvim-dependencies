@@ -20,6 +20,16 @@ function M.setup(user_config)
         debug("Merging user config", vim.log.levels.DEBUG)
         utils_table.merge(config, user_config)
     end
+    require("lvim-utils").setup({
+        ui = {
+            border = config.ui.popup.border,
+            width = config.ui.popup.width,
+            height = config.ui.popup.height,
+            max_height = config.ui.popup.max_height,
+            max_items = config.ui.popup.max_items,
+            icons = { current = config.ui.popup.current },
+        },
+    })
     cursor.setup()
     highlight.setup()
     metrics.setup()

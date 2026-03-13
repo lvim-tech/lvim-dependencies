@@ -6,7 +6,7 @@
 local events = require("lvim-dependencies.core.events")
 local levels = require("lvim-dependencies.utils.levels")
 local notify = require("lvim-dependencies.utils").notify
-local float = require("lvim-dependencies.ui.float")
+local float = require("lvim-dependencies.ui")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 

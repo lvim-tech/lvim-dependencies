@@ -30,10 +30,4 @@ return {
         current = "➤",
         max_items = 20,
     },
-    float = {
-        border = { " ", " ", " ", " ", " ", " ", " ", " " },
-        width = "auto",
-        height = "auto",
-        max_height = 0.8,
-    },
 }

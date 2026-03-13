@@ -7,7 +7,7 @@ local operator = require("lvim-dependencies.core.operator")
 local const = require("lvim-dependencies.core.const")
 
 local utils = require("lvim-dependencies.utils")
-local ui = require("lvim-dependencies.ui.popup")
+local ui = require("lvim-dependencies.ui")
 
 local api = require("lvim-dependencies.managers.pubspec.api")
 local helpers = require("lvim-dependencies.managers.pubspec.utils.helpers")

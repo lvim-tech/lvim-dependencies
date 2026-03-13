@@ -398,7 +398,7 @@ function M.delete(name, opts, callback)
     end
 
     opts = opts or {}
-    local ui = require("lvim-dependencies.ui.popup")
+    local ui = require("lvim-dependencies.ui")
 
     M.fetch_versions_async(name, function(versions_data)
         local current_version = versions_data and versions_data.current or "not installed"

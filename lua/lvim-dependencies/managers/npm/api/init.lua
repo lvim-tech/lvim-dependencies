@@ -311,7 +311,7 @@ function M.delete(name, opts, callback)
         return
     end
 
-    local ui = require("lvim-dependencies.ui.popup")
+    local ui = require("lvim-dependencies.ui")
     ui.select(
         "Confirm Delete",
         string.format("Package: %s", name),
