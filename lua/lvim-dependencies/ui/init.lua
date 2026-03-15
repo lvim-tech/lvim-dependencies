@@ -1,9 +1,25 @@
--- UI — thin wrappers over lvim-utils.ui
--- Config is applied once via require("lvim-utils").setup() in plugin init.
+-- UI — independent lvim-utils.ui instance for lvim-dependencies.
+-- Config is sourced exclusively from lvim-dependencies.config.ui.popup.
 
 local M = {}
 
+local _instance = nil
+
 local function ui()
+    if _instance then
+        return _instance
+    end
+    local popup = require("lvim-dependencies.config").ui.popup
+    _instance = require("lvim-utils").ui.new({
+        border     = popup.border,
+        max_items  = popup.max_items,
+        max_height = popup.max_height,
+        icons      = { current = popup.current },
+    })
+    return _instance
+end
+
+local function global_ui()
     return require("lvim-utils").ui
 end
 
@@ -21,12 +37,12 @@ function M.open(content, title)
     if title then
         opts.title = title
     end
-    return ui().info(content, opts)
+    return global_ui().info(content, opts)
 end
 
 ---@param win integer
 function M.close(win)
-    ui().close_info(win)
+    global_ui().close_info(win)
 end
 
 -- ── Select ────────────────────────────────────────────────────────────────────
