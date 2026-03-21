@@ -31,9 +31,10 @@ local function find_package(bufnr, manifest_type, cursor_line)
         end
     end
 
+    local deps = utils_lsp.parse_dependencies(manifest_type, cache)
+
     local vt = init.get_virtual_text and init.get_virtual_text(manifest_type)
     if vt and vt.find_package_line then
-        local deps = utils_lsp.parse_dependencies(manifest_type, cache)
         for name, _ in pairs(deps) do
             if vt.find_package_line(bufnr, name) == cursor_line then
                 return name
@@ -43,17 +44,22 @@ local function find_package(bufnr, manifest_type, cursor_line)
 
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor_line, cursor_line + 1, false)[1] or ""
 
-    -- Try manager's find_package_in_line (handles JSON "vendor/pkg":, TOML pkg =, YAML pkg:)
+    -- Try manager's find_package_in_line and validate against declared deps
     local vt_mod_ok, vt_mod = pcall(require, string.format("lvim-dependencies.managers.%s.virtual_text", manifest_type))
     if vt_mod_ok and vt_mod and vt_mod.find_package_in_line then
         local pkg = vt_mod.find_package_in_line(line)
-        if pkg then
+        if pkg and deps[pkg] then
             return pkg
         end
     end
 
-    -- Fallback: simple key pattern
-    return line:match("^%s*([%w_%-%.]+)%s*[=:]")
+    -- Fallback: simple key pattern, validated against declared deps
+    local pkg = line:match("^%s*([%w_%-%.]+)%s*[=:]")
+    if pkg and deps[pkg] then
+        return pkg
+    end
+
+    return nil
 end
 
 ---@param manifest_type string
