@@ -67,7 +67,6 @@ end
 
 local function clear_package_cache(name)
     hub_installed.clear_cache("composer", name)
-    hub_latest.clear_cache("composer", name)
 end
 
 local function seed_installed_version(name, version)

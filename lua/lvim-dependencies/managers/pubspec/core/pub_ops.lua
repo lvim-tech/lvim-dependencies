@@ -81,7 +81,6 @@ end
 ---@param name string
 local function clear_package_cache(name)
     hub_installed.clear_cache("pubspec", name)
-    hub_latest.clear_cache("pubspec", name)
     debug(string.format("Cleared cache for %s", name), vim.log.levels.DEBUG)
 end
 

@@ -74,7 +74,6 @@ M.extract_go_error = extract_go_error
 
 local function clear_package_cache(name)
     hub_installed.clear_cache("go", name)
-    hub_latest.clear_cache("go", name)
     debug(string.format("go: cleared cache for %s", name), vim.log.levels.DEBUG)
 end
 

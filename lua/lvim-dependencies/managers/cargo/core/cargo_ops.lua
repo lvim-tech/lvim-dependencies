@@ -69,7 +69,6 @@ end
 
 local function clear_package_cache(name)
     hub_installed.clear_cache("cargo", name)
-    hub_latest.clear_cache("cargo", name)
     debug(string.format("Cleared cache for %s", name), vim.log.levels.DEBUG)
 end
 

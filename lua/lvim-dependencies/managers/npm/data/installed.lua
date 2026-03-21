@@ -210,14 +210,28 @@ end
 -- Public API
 -- ============================================================================
 
+--- Determine lock file priority based on which package manager is active.
+--- Mirrors the detect_package_manager() logic: pnpm > yarn > npm.
+---@return string[]
+local function detect_lock_file_order()
+    local cwd = vim.fn.getcwd()
+    if vim.fn.filereadable(cwd .. "/pnpm-lock.yaml") == 1 then
+        return { "pnpm-lock.yaml", "yarn.lock", "package-lock.json" }
+    end
+    if vim.fn.filereadable(cwd .. "/yarn.lock") == 1 then
+        return { "yarn.lock", "package-lock.json", "pnpm-lock.yaml" }
+    end
+    return { "package-lock.json", "yarn.lock", "pnpm-lock.yaml" }
+end
+
 --- Get installed version for a package.
---- Tries lock files in order: package-lock.json → yarn.lock → pnpm-lock.yaml
+--- Tries lock files in priority order matching the active package manager.
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
 function M.get_package_installed(package_name, callback)
     local manifest_data = get_manifest()
     local lock_files = manifest_data and manifest_data.lock_files
-        or { "package-lock.json", "yarn.lock", "pnpm-lock.yaml" }
+        or detect_lock_file_order()
 
     local readers = {
         ["package-lock.json"] = read_from_npm_lock,
@@ -251,11 +265,21 @@ function M.get_data(declared_packages)
     if not declared_packages then
         return {}
     end
+    local readers_ordered = detect_lock_file_order()
+    local readers = {
+        ["package-lock.json"] = read_from_npm_lock,
+        ["yarn.lock"] = read_from_yarn_lock,
+        ["pnpm-lock.yaml"] = read_from_pnpm_lock,
+    }
     local result = {}
     for name in pairs(declared_packages) do
-        -- Synchronous best-effort (reads lock files directly)
-        local version = read_from_npm_lock(name) or read_from_yarn_lock(name) or read_from_pnpm_lock(name)
-        result[name] = version
+        for _, lock_file in ipairs(readers_ordered) do
+            local version = readers[lock_file](name)
+            if version then
+                result[name] = version
+                break
+            end
+        end
     end
     return result
 end

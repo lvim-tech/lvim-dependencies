@@ -6,7 +6,6 @@
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
-local hub_latest = require("lvim-dependencies.core.hub.latest")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
@@ -19,7 +18,6 @@ local debug = utils.debug
 local api = vim.api
 
 local CACHE_TYPE_INSTALLED = const.CACHE_TYPES.INSTALLED
-local CACHE_TYPE_LATEST = const.CACHE_TYPES.LATEST
 
 ---@class NpmActions
 local M = {}
@@ -34,11 +32,8 @@ end
 
 local function clear_package_caches(name)
     cache.clear("npm", CACHE_TYPE_INSTALLED, name)
-    cache.clear("npm", CACHE_TYPE_LATEST, name)
     hub_installed.clear_cache("npm", name)
-    hub_latest.clear_cache("npm", name)
     require("lvim-dependencies.managers.npm.data.installed").clear_cache()
-    require("lvim-dependencies.managers.npm.data.latest").clear_cache()
     parser.clear_cache()
 end
 
@@ -240,6 +235,50 @@ function M.fetch_versions_async(name, callback)
     end)
 end
 
+--- Find 0-based line number of a package in a buffer
+---@param bufnr integer
+---@param name string
+---@return integer|nil
+local function find_package_line(bufnr, name)
+    if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+        return nil
+    end
+    local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    local pattern = string.format('^%%s*"%s"%%s*:', vim.pesc(name))
+    for i, line in ipairs(lines) do
+        if line:match(pattern) then
+            return i - 1
+        end
+    end
+    return nil
+end
+
+--- Extract a meaningful error message from a vim.system result
+---@param res table
+---@return string
+local function extract_error(res)
+    local output = (res.stderr and res.stderr ~= "" and res.stderr)
+        or (res.stdout and res.stdout ~= "" and res.stdout)
+        or ""
+    if output ~= "" then
+        for _, line in ipairs(vim.split(output, "\n")) do
+            if line:match("^npm ERR!") or line:match("^yarn error") or line:match("^error") then
+                return line
+            end
+        end
+        local last = ""
+        for _, line in ipairs(vim.split(output, "\n")) do
+            if line:match("%S") then
+                last = line
+            end
+        end
+        if last ~= "" then
+            return last
+        end
+    end
+    return res.code and string.format("exit code %d", res.code) or "unknown error"
+end
+
 ---@param name string
 ---@param opts UpdateOptions
 ---@param callback InstallerCallback
@@ -276,7 +315,25 @@ function M.update_async(name, opts, callback)
     local cwd = vim.fn.fnamemodify(path, ":h")
     local bufnr = vim.fn.bufnr(path)
 
+    -- Show working state in virtual text before the command runs
+    local lnum0 = find_package_line(bufnr, name)
+    if lnum0 and bufnr ~= -1 and api.nvim_buf_is_valid(bufnr) then
+        vt.display_loading_for_package(bufnr, "npm", { name = name, line = lnum0 }, "working")
+    end
+
     debug(string.format("npm: running %s", table.concat(cmd, " ")), vim.log.levels.INFO)
+
+    local function refresh_vt()
+        if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
+            return
+        end
+        local package_loader = require("lvim-dependencies.core.package_loader")
+        package_loader.load_package_data_async("npm", name, function(package_data)
+            if api.nvim_buf_is_valid(bufnr) then
+                vt.update_package(bufnr, package_data)
+            end
+        end, { initial = false })
+    end
 
     vim.system(cmd, { cwd = cwd, text = true }, function(res)
         vim.schedule(function()
@@ -287,14 +344,16 @@ function M.update_async(name, opts, callback)
                     refresh_buffer_state(bufnr)
                 end
                 trigger_package_updated()
+                refresh_vt()
                 callback({
                     success = true,
                     message = string.format("updated %s@%s", name, version),
                     packages = { name },
                 })
             else
-                local err = res and res.stderr and res.stderr:match("([^\n]+)") or "unknown error"
-                callback({ success = false, message = err, packages = {} })
+                local err = extract_error(res)
+                refresh_vt()
+                callback({ success = false, message = err, packages = {}, no_retry = true })
             end
         end)
     end)
