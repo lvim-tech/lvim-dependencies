@@ -8,7 +8,7 @@ local config = require("lvim-dependencies.config")
 local init = require("lvim-dependencies.core.init")
 
 local icons = config.ui.virtual_text.icons
-local groups = config.highlight.groups
+local groups = config.groups
 
 ---@class PubspecVirtualText
 local M = {}

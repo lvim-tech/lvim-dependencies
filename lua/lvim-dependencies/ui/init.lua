@@ -11,10 +11,10 @@ local function ui()
     end
     local popup = require("lvim-dependencies.config").ui.popup
     _instance = require("lvim-utils").ui.new({
-        border     = popup.border,
-        max_items  = popup.max_items,
+        border = popup.border,
+        max_items = popup.max_items,
         max_height = popup.max_height,
-        icons      = { current = popup.current },
+        icons = { current = popup.current },
     })
     return _instance
 end

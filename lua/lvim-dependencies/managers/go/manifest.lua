@@ -7,7 +7,7 @@ local compare_version = require("lvim-dependencies.managers.go.compare_versions"
 local config = require("lvim-dependencies.config")
 
 local icons = config.ui.virtual_text.icons
-local groups = config.highlight.groups
+local groups = config.groups
 
 ---@class GoManifest : ManagerManifest
 local M = {}

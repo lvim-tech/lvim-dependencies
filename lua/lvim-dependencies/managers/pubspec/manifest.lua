@@ -7,7 +7,7 @@ local compare_version = require("lvim-dependencies.managers.pubspec.compare_vers
 local config = require("lvim-dependencies.config")
 
 local icons = config.ui.virtual_text.icons
-local groups = config.highlight.groups
+local groups = config.groups
 
 ---@class PubspecManifest
 local M = {}

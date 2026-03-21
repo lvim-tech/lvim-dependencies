@@ -13,7 +13,7 @@ local cache = require("lvim-dependencies.core.cache")
 local latest = require("lvim-dependencies.core.hub.latest")
 local vt = require("lvim-dependencies.managers.pubspec.virtual_text")
 
-local config_groups = config.highlight.groups
+local config_groups = config.groups
 local debug = utils.debug
 
 -- ============================================================================

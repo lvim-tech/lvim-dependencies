@@ -4,12 +4,12 @@
 local c = require("lvim-utils.colors")
 
 local _defaults = {
-    bg           = c.bg_dark,
-    light        = c.white,
-    dark         = c.black,
-    alpha        = 0.2,
+    bg = c.bg_dark,
+    light = c.white,
+    dark = c.black,
+    alpha = 0.2,
     light_amount = 0.05,
-    dark_amount  = 0.15,
+    dark_amount = 0.15,
 }
 
 local M = {}

@@ -1,6 +1,5 @@
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
-local highlight = require("lvim-dependencies.ui.highlight")
 local cursor = require("lvim-dependencies.ui.cursor")
 local metrics = require("lvim-dependencies.core.metrics")
 local registry = require("lvim-dependencies.core.registry")
@@ -21,7 +20,23 @@ function M.setup(user_config)
         utils_table.merge(config, user_config)
     end
     cursor.setup()
-    highlight.setup()
+
+    local ok, hl = pcall(require, "lvim-utils.highlight")
+    if ok then
+        local utils_ok, utils_cfg = pcall(require, "lvim-utils.config")
+        if utils_ok then
+            hl.register(utils_cfg.colors)
+        end
+        hl.register(config.build(), config.force)
+        hl.setup()
+        local colors_ok, colors = pcall(require, "lvim-utils.colors")
+        if colors_ok then
+            colors.on_change(function()
+                hl.register(config.build(), config.force)
+            end)
+        end
+    end
+
     metrics.setup()
 
     registry.setup()

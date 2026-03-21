@@ -5,6 +5,7 @@
 local config_message = require("lvim-dependencies.config.message")
 local config_manager = require("lvim-dependencies.config.manager")
 local config_highlight = require("lvim-dependencies.config.highlight")
+local config_groups = require("lvim-dependencies.config.groups")
 local config_ui = require("lvim-dependencies.config.ui")
 local config_lsp = require("lvim-dependencies.config.lsp")
 local config_cache = require("lvim-dependencies.config.cache")
@@ -23,7 +24,9 @@ M.notify = config_message.notify
 M.debug = config_message.debug
 M.metrics = config_message.metrics
 M.managers = config_manager
-M.highlight = config_highlight
+M.groups = config_groups
+M.build = config_highlight.build
+M.force = config_highlight.force
 M.ui = config_ui
 M.lsp = config_lsp
 M.cache = config_cache
@@ -43,7 +46,7 @@ function M.get_all()
         debug = M.debug,
         metrics = M.metrics,
         managers = M.managers,
-        highlight = M.highlight,
+        groups = M.groups,
         ui = M.ui,
         lsp = M.lsp,
         cache = M.cache,

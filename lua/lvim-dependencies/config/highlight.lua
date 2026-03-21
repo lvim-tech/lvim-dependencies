@@ -1,25 +1,36 @@
+-- lvim-dependencies: highlight group definitions.
+-- All colors come from lvim-utils.colors so the palette is shared across plugins.
+-- Registered via lvim-utils.highlight — survive colorscheme changes.
+--
+-- build() must be a function so each call reads the current palette values.
+
+local groups = require("lvim-dependencies.config.groups")
+
+local function build()
+    local c = require("lvim-utils.colors")
+    local hl = require("lvim-utils.highlight")
+    return {
+        [groups.loading] = { fg = c.terminal_bg, bold = true },
+        [groups.separator] = { fg = c.cyan_dark, bold = true },
+        [groups.info] = { bg = hl.blend(c.blue, c.bg_dark, 0.2), fg = c.blue, bold = true },
+        [groups.declared] = { bg = hl.blend(c.magenta, c.bg_dark, 0.2), fg = c.magenta, bold = true },
+        [groups.installed] = { bg = hl.blend(c.yellow, c.bg_dark, 0.2), fg = c.yellow, bold = true },
+        [groups.up_to_date] = { bg = hl.blend(c.blue_dark, c.bg_dark, 0.2), fg = c.blue_dark, bold = true },
+        [groups.outdated] = { bg = hl.blend(c.git.delete, c.bg_dark, 0.2), fg = c.git.delete, bold = true },
+        [groups.normal] = { bg = c.bg_dark, fg = c.fg_light },
+        [groups.cursor_line] = { bg = hl.lighten(c.bg_dark, 0.05) },
+        [groups.border] = { bg = c.bg_dark, fg = c.fg_light },
+        [groups.title] = { bg = hl.blend(c.purple, c.bg_dark, 0.2), fg = c.purple, bold = true },
+        [groups.sub_title] = { bg = hl.blend(c.purple, c.bg_dark, 0.2), fg = c.purple },
+        [groups.subject] = { bg = hl.blend(c.yellow, c.bg_dark, 0.2), fg = c.yellow },
+        [groups.navigation] = { bg = hl.blend(c.terminal_bg, c.bg_dark, 0.2), fg = c.terminal_bg, bold = true },
+        [groups.line_active] = { bg = hl.blend(c.blue, c.bg_dark, 0.2), fg = c.blue, bold = true },
+        [groups.line_inactive] = { bg = hl.blend(c.blue, c.bg_dark, 0.2), fg = c.blue },
+        [groups.input] = { bg = hl.blend(c.blue, c.bg_dark, 0.2), fg = c.blue },
+    }
+end
+
 return {
-    groups = {
-        separator   = "LvimDepsSeparator",
-
-        declared    = "LvimDepsDeclaredVersion",
-        installed   = "LvimDepsInstalledVersion",
-        up_to_date  = "LvimDepsUpToDateVersion",
-        outdated    = "LvimDepsOutdatedVersion",
-
-        loading     = "LvimDepsLoading",
-        working     = "LvimDepsWorking",
-
-        normal      = "LvimDepsNormal",
-        cursor_line = "LvimDepsCursorLine",
-        border      = "LvimDepsBorder",
-        title       = "LvimDepsTitle",
-        sub_title   = "LvimDepsSubTitle",
-        subject     = "LvimDepsSubject",
-        info        = "LvimDepsInfo",
-        line_active   = "LvimDepsLineActive",
-        line_inactive = "LvimDepsLineInactive",
-        navigation  = "LvimDepsNavigation",
-        input       = "LvimDepsInsert",
-    },
+    build = build,
+    force = false,
 }

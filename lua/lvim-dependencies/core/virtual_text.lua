@@ -14,7 +14,7 @@ local const = require("lvim-dependencies.core.const")
 local metrics = require("lvim-dependencies.core.metrics")
 
 local config_icons = config.ui.virtual_text.icons
-local config_groups = config.highlight.groups
+local config_groups = config.groups
 local debug = utils.debug
 local notify = utils.notify
 
