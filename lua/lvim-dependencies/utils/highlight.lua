@@ -1,8 +1,16 @@
 -- lvim-dependencies/utils/hl.lua
 -- Highlight utilities for color manipulation and highlight group management
 
-local config_highlight = require("lvim-dependencies.config.highlight")
-local colors = config_highlight.colors
+local c = require("lvim-utils.colors")
+
+local _defaults = {
+    bg           = c.bg_dark,
+    light        = c.white,
+    dark         = c.black,
+    alpha        = 0.2,
+    light_amount = 0.05,
+    dark_amount  = 0.15,
+}
 
 local M = {}
 
@@ -62,8 +70,8 @@ end
 ---@param alpha number|nil Blend factor (defaults to config alpha)
 ---@return string Blended color
 function M.blend_with_background(color, bg, alpha)
-    bg = bg or colors.bg
-    alpha = alpha or colors.alpha
+    bg = bg or _defaults.bg
+    alpha = alpha or _defaults.alpha
     return blend_colors(color, bg, alpha)
 end
 
@@ -73,8 +81,8 @@ end
 ---@param amount number|nil Blend amount (0-1, defaults to config light_amount)
 ---@return string Lightened color
 function M.lighten(color, light_color, amount)
-    light_color = light_color or colors.light
-    amount = amount or colors.light_amount
+    light_color = light_color or _defaults.light
+    amount = amount or _defaults.light_amount
     return blend_colors(light_color, color, amount)
 end
 
@@ -84,8 +92,8 @@ end
 ---@param amount number|nil Blend amount (0-1, defaults to config dark_amount)
 ---@return string Darkened color
 function M.darken(color, dark_color, amount)
-    dark_color = dark_color or colors.dark
-    amount = amount or colors.dark_amount
+    dark_color = dark_color or _defaults.dark
+    amount = amount or _defaults.dark_amount
     return blend_colors(dark_color, color, amount)
 end
 
