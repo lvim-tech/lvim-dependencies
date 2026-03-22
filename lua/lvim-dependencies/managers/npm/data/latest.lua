@@ -37,9 +37,20 @@ local function extract_metadata(data)
     for _, field in ipairs(METADATA_FIELDS) do
         local value = data[field]
         if is_valid_string(value) then
+            if field == "repository" then
+                value = value:gsub("^git%+", ""):gsub("^ssh://git@", "https://"):gsub("%.git$", "")
+            end
             metadata[field] = value
         elseif field == "repository" and type(value) == "table" then
-            metadata.repository = value.url or nil
+            local url = value.url
+            if type(url) == "string" then
+                -- Strip VCS prefixes npm registry adds: "git+https://..." → "https://..."
+                url = url:gsub("^git%+", "")
+                -- Convert git+ssh: "git+ssh://git@github.com/u/r.git" → "https://github.com/u/r"
+                url = url:gsub("^ssh://git@", "https://")
+                url = url:gsub("%.git$", "")
+            end
+            metadata.repository = url or nil
         elseif field == "keywords" and type(value) == "table" then
             local kws = {}
             for _, kw in ipairs(value) do
