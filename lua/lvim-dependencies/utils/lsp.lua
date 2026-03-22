@@ -55,16 +55,17 @@ function M.parse_dependencies(manifest_type, cache)
         local installed = nil
         local latest = nil
 
-        -- Read installed version from cache
+        -- Read installed version from cache (hub stores {version=...}, extract string)
         if
             cache_data.installed
             and cache_data.installed[manifest_type]
             and cache_data.installed[manifest_type].data
         then
-            installed = cache_data.installed[manifest_type].data[name]
+            local raw = cache_data.installed[manifest_type].data[name]
+            installed = type(raw) == "table" and raw.version or raw
         end
 
-        -- Read latest version from cache
+        -- Read latest version from cache (keep full object so .version is accessible)
         if cache_data.latest and cache_data.latest[manifest_type] and cache_data.latest[manifest_type].data then
             latest = cache_data.latest[manifest_type].data[name]
         end
