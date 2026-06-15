@@ -230,8 +230,7 @@ end
 ---@param callback fun(err: string|nil, version: string|nil)
 function M.get_package_installed(package_name, callback)
     local manifest_data = get_manifest()
-    local lock_files = manifest_data and manifest_data.lock_files
-        or detect_lock_file_order()
+    local lock_files = manifest_data and manifest_data.lock_files or detect_lock_file_order()
 
     local readers = {
         ["package-lock.json"] = read_from_npm_lock,
