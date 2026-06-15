@@ -7,6 +7,8 @@ View outdated packages, update to specific versions, and manage dependencies dir
 
 ---
 
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](https://github.com/lvim-tech/lvim-dependencies/blob/main/LICENSE)
+
 ## Features
 
 - **5 package managers**: npm/yarn/pnpm, Cargo, Go modules, Composer, pub (Dart/Flutter)
