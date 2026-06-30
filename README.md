@@ -271,7 +271,6 @@ require("lvim-dependencies").setup({
             },
         },
         popup = {
-            border     = { " ", " ", " ", " ", " ", " ", " ", " " },
             width      = "auto",
             height     = "auto",
             max_height = 0.8,
