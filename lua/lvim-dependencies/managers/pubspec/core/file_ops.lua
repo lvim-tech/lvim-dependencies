@@ -1,7 +1,7 @@
 -- lvim-dependencies.managers.pubspec.core.file_ops: filesystem + buffer plumbing for pubspec.yaml.
 -- Locates the file (upward search from root_dir/cwd), reads and writes it, and reflects on-disk
 -- edits into an open buffer either as a minimal ranged change (apply_buffer_change) or a full
--- replace (force_refresh_buffer). Both paths save and re-adjust the cursor so an install/update
+-- replace (force_refresh_buffer). Both paths save and restore the cursor so an install/update
 -- never jumps the user's cursor, and clear the buffer 'modified' flag after writing.
 --
 ---@module "lvim-dependencies.managers.pubspec.core.file_ops"
@@ -110,35 +110,6 @@ local function save_cursor_position(bufnr)
     return vim.api.nvim_win_get_cursor(0)
 end
 
---- Adjust cursor position after buffer changes
----@param cursor table|nil
----@param start0 integer
----@param end0 integer
----@param replacement string[]
----@return table|nil
-local function adjust_cursor_position(cursor, start0, end0, replacement)
-    if not cursor then
-        return nil
-    end
-
-    local row = cursor[1]
-    local col = cursor[2]
-    local line_idx = row - 1
-
-    if line_idx < start0 then
-        return { row, col }
-    end
-
-    if line_idx >= end0 then
-        local removed = end0 - start0
-        local added = #replacement
-        local delta = added - removed
-        return { math.max(1, row + delta), col }
-    end
-
-    return { start0 + #replacement + 1, col }
-end
-
 --- Apply change to buffer
 ---@param path string
 ---@param change FileChange|nil
@@ -166,16 +137,13 @@ function M.apply_buffer_change(path, change)
 
     api.nvim_buf_set_lines(bufnr, start0, end0, false, replacement)
 
+    -- Restore the ORIGINAL cursor instead of recalculating it: a single-line version bump replaces the
+    -- package line in place, so the saved row still points at the package (matches cargo's file_ops). The
+    -- old recalculation returned start0 + #replacement + 1 — one line too far, dropping the cursor below.
     if saved_cursor then
         local line_count = api.nvim_buf_line_count(bufnr)
-        local new_cursor = adjust_cursor_position(saved_cursor, start0, end0, replacement)
-
-        if new_cursor then
-            local target_line = math.min(new_cursor[1], line_count)
-            pcall(api.nvim_win_set_cursor, 0, { target_line, new_cursor[2] })
-        else
-            pcall(api.nvim_win_set_cursor, 0, { line_count, 0 })
-        end
+        local row = math.min(saved_cursor[1], line_count)
+        pcall(api.nvim_win_set_cursor, 0, { row, saved_cursor[2] })
     end
 
     vim.bo[bufnr].modified = false
