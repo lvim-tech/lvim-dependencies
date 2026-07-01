@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/cargo/core/cargo_ops.lua
--- Cargo command execution — owns the full update/remove lifecycle
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.core.cargo_ops: runs the external `cargo` update/remove
+-- process and owns the whole lifecycle around it. It writes the pending Cargo.toml, shows a
+-- "working" virtual-text indicator on the package line, records pending state + a line anchor
+-- that survives buffer edits, then on the async result either seeds the installed-version
+-- cache and refreshes virtual text (success) or restores the original file/buffer (failure).
+---@module "lvim-dependencies.managers.cargo.core.cargo_ops"
 
 local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")
@@ -9,6 +11,7 @@ local const = require("lvim-dependencies.core.const")
 local virtual_text = require("lvim-dependencies.core.virtual_text")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
+local hub_declared = require("lvim-dependencies.core.hub.declared")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 
@@ -86,7 +89,7 @@ local function seed_installed_version(name, version)
     entry[CACHE_FIELDS_DATA][name] = version
 
     parser.clear_cache()
-    require("lvim-dependencies.core.hub.declared").clear_cache("cargo", name)
+    hub_declared.clear_cache("cargo", name)
 end
 
 -- ============================================================================
@@ -153,6 +156,9 @@ local function build_remove_command(pkg_name)
     return nil
 end
 
+--- Public accessor for the resolved `cargo rm` command (nil if cargo is unavailable).
+---@param pkg_name string
+---@return string[]|nil
 function M.choose_cargo_remove_cmd(pkg_name)
     return build_remove_command(pkg_name)
 end

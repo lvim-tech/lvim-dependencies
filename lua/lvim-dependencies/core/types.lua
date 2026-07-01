@@ -1,7 +1,9 @@
--- lvim-dependencies/core/types.lua
--- Centralized type definitions for the entire project
-
----@diagnostic disable: undefined-doc-name
+-- lvim-dependencies.core.types: the project's shared LuaDoc vocabulary. Pure annotations —
+-- no runtime code. Central @class/@alias definitions (async, cache, events, package
+-- loader, registry, manifests, state, virtual text, installer) that the rest of core and
+-- the manager modules reference in their own @param/@return/@field tags.
+--
+---@module "lvim-dependencies.core.types"
 
 -- ============================================================================
 -- Async primitives
@@ -191,7 +193,7 @@
 
 ---@class PackageResult
 ---@field manifest string The manager type (e.g., "pubspec", "cargo")
----@field package string The package name
+---@field ["package"] string The package name (bracketed: `package` is a reserved LuaDoc visibility keyword)
 ---@field declared table|nil The declared package data from the manifest file
 ---@field installed string|nil The currently installed version
 ---@field latest LatestPackageInfo|nil The latest available version (table with version and metadata)
@@ -397,7 +399,7 @@
 ---@field on_new_packages? fun(buf: integer, new_packages: NewPackage[])
 
 ---@class PackageRecord
----@field package string Package name
+---@field ["package"] string Package name (bracketed: `package` is a reserved LuaDoc visibility keyword)
 ---@field manifest_type string Manager type
 ---@field installed string|nil Currently installed version
 ---@field latest table|nil Latest version info (table with version and metadata)
@@ -482,7 +484,7 @@
 
 ---@class DependencyFormatContext
 ---@field buf integer Buffer number
----@field package string Package name
+---@field ["package"] string Package name (bracketed: `package` is a reserved LuaDoc visibility keyword)
 ---@field manifest_type string Manager type
 
 -- ============================================================================

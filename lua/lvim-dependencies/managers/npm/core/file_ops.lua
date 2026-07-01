@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/core/file_ops.lua
--- File operations for package.json
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.core.file_ops: filesystem + buffer plumbing for package.json.
+-- Resolves the manifest path (configured root, else buffer dir, else cwd, searched upward),
+-- reads/writes it as lines or a whole string (preserving a trailing newline), and syncs edits
+-- back into the live Neovim buffer — either a minimal line-range change or a full reload — while
+-- clearing 'modified' so the write does not look like an unsaved user edit.
+--
+---@module "lvim-dependencies.managers.npm.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")

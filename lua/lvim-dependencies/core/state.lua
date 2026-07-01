@@ -1,7 +1,12 @@
--- lvim-dependencies/core/state.lua
--- Buffer state management and event handling
-
----@include "types.lua"
+-- lvim-dependencies.core.state: per-buffer lifecycle bookkeeping and the bridge between
+-- buffer events and the virtual-text handlers. Tracks each buffer's open/save/modify
+-- counts, drives package (re)loading on open and a debounced diff on save (new / changed /
+-- removed packages), and de-duplicates concurrent loads of the same manifest:package via a
+-- pending_loads set + waiter queue so a second request just attaches to the in-flight one.
+-- The initial open uses a randomized per-package delay (hence the one-time randomseed) to
+-- stagger the virtual-text reveal.
+--
+---@module "lvim-dependencies.core.state"
 
 local api = vim.api
 local registry = require("lvim-dependencies.core.registry")
@@ -692,6 +697,7 @@ function M.set_handlers(handlers)
     M._handlers = vim.tbl_deep_extend("force", M._handlers, handlers)
 end
 
+--- Reset all buffer state and pending loads, and stop any save timers.
 function M.setup()
     debug("Initializing state module", vim.log.levels.DEBUG)
     M._state.buffers = {}

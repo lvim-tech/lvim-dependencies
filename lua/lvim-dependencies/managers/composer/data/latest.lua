@@ -1,12 +1,18 @@
--- lvim-dependencies/managers/composer/data/latest.lua
--- Latest version fetcher from packagist.org
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.data.latest: fetches the newest available version (plus
+-- metadata) for a package from packagist.org. Packagist returns every version keyed by string,
+-- so the "best" is picked by numeric comparison, honouring the include_prerelease setting and
+-- preferring a stable release over a prerelease with the same numeric base. Concurrent requests
+-- for the same package are coalesced via the in_flight table so the registry is hit once.
+--
+---@module "lvim-dependencies.managers.composer.data.latest"
 
 local utils = require("lvim-dependencies.utils")
 local http = require("lvim-dependencies.utils.http")
 local init = require("lvim-dependencies.core.init")
 local config = require("lvim-dependencies.config")
+local compare_versions = require("lvim-dependencies.managers.composer.compare_versions")
+local hub_latest = require("lvim-dependencies.core.hub.latest")
+local manifest = require("lvim-dependencies.managers.composer.manifest")
 
 local debug = utils.debug
 
@@ -83,7 +89,7 @@ end
 --- Response structure:
 ---   {"package": {"name": "vendor/pkg", "versions": {"v1.2.3": {...}, "dev-main": {...}}}}
 ---
----@param output string
+---@param output string?
 ---@return string|nil version
 ---@return table|nil metadata
 local function parse_response(output)
@@ -104,8 +110,6 @@ local function parse_response(output)
     if type(versions_map) ~= "table" then
         return nil, nil
     end
-
-    local cmp = require("lvim-dependencies.managers.composer.compare_versions")
 
     local best = nil
     local best_meta = nil
@@ -128,7 +132,7 @@ local function parse_response(output)
             best = ver
             best_meta = ver_data
         else
-            local cmp_result = cmp.compare_numeric(ver, best)
+            local cmp_result = compare_versions.compare_numeric(ver, best)
             if cmp_result == 1 then
                 best = ver
                 best_meta = ver_data
@@ -220,8 +224,7 @@ end
 ---@param callback fun(err: string|nil, result: {version: string, metadata: table}|nil)
 function M.get_package_latest(package_name, callback)
     -- Platform requirements have no registry entry — return nil silently
-    local manifest_ref = require("lvim-dependencies.managers.composer.manifest")
-    if not manifest_ref.is_package_actionable(package_name) then
+    if not manifest.is_package_actionable(package_name) then
         callback(nil, nil)
         return
     end
@@ -244,8 +247,7 @@ end
 ---@param package_name string
 ---@return table|nil
 function M.get_metadata(package_name)
-    local hub = require("lvim-dependencies.core.hub.latest")
-    local data = hub.get_full_data("composer")
+    local data = hub_latest.get_full_data("composer")
     local entry = data and data[package_name]
     return entry and entry.metadata or nil
 end
@@ -256,8 +258,7 @@ function M.get_data(declared_packages)
     if not declared_packages then
         return {}
     end
-    local hub = require("lvim-dependencies.core.hub.latest")
-    local cached = hub.get_data("composer")
+    local cached = hub_latest.get_data("composer")
     local result = {}
     for name in pairs(declared_packages) do
         local entry = cached[name]
@@ -267,8 +268,7 @@ function M.get_data(declared_packages)
 end
 
 function M.clear_cache()
-    local hub = require("lvim-dependencies.core.hub.latest")
-    hub.clear_cache("composer")
+    hub_latest.clear_cache("composer")
     in_flight = {}
     debug("composer: latest cache cleared", vim.log.levels.INFO)
 end

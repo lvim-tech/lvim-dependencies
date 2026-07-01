@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/virtual_text.lua
--- Virtual text formatting for composer dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.virtual_text: turns a package record into the inline
+-- virtual-text chunks (declared → installed → latest, with up-to-date / outdated icons) shown
+-- at end-of-line, and locates a package's line in the buffer. Dependency type (platform / vcs /
+-- registry) is resolved from the package name first (most reliable), then the manifest's
+-- per-type formatter is applied; a plain fallback formatter covers records with no type match.
+--
+---@module "lvim-dependencies.managers.composer.virtual_text"
 
 local api = vim.api
 local config = require("lvim-dependencies.config")

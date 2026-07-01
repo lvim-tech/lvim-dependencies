@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/parser.lua
--- Parses composer.json for declared dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.parser: decodes composer.json into a name → {version,
+-- section, type} map of declared dependencies. Result is memoised against the file's raw
+-- content (content-hash cache), so repeated reads are free until the file actually changes.
+-- Each dep is classified as platform / vcs / registry — "php" and "php-*" are platform but
+-- "phpunit"/"phpspec" are NOT, which is why the prefix test is exact.
+--
+---@module "lvim-dependencies.managers.composer.parser"
 
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")

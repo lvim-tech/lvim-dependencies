@@ -1,0 +1,125 @@
+*lvim-dependencies.txt*   Manage project dependencies across package managers
+
+==============================================================================
+CONTENTS                                                 *lvim-dependencies*
+
+  1. Introduction ........................... |lvim-dependencies-intro|
+  2. Requirements ........................... |lvim-dependencies-requirements|
+  3. Setup .................................. |lvim-dependencies-setup|
+  4. Commands ............................... |lvim-dependencies-commands|
+  5. Virtual text ........................... |lvim-dependencies-virtual-text|
+  6. LSP integration ........................ |lvim-dependencies-lsp|
+  7. Configuration .......................... |lvim-dependencies-config|
+  8. Health ................................. |lvim-dependencies-health|
+
+==============================================================================
+1. INTRODUCTION                                    *lvim-dependencies-intro*
+
+lvim-dependencies manages project dependencies from inside the manifest file,
+across five package managers:
+
+  - npm / yarn / pnpm   (package.json)
+  - Cargo               (Cargo.toml)
+  - Go modules          (go.mod)
+  - Composer            (composer.json)
+  - pub, Dart/Flutter   (pubspec.yaml)
+
+For each dependency it shows a 3-component virtual text — Declared → Installed |
+Latest — each with its own highlight, and lets you install / update (to a chosen
+version) / delete via commands or LSP code actions. All network + package-manager
+work is async; results are cached (declared / installed / latest / virtual-text)
+with configurable TTL, dynamic throttle, retry-with-jitter and a negative cache.
+
+==============================================================================
+2. REQUIREMENTS                                *lvim-dependencies-requirements*
+
+  - Neovim >= 0.10
+  - `curl` (registry / latest-version lookups)
+  - The CLI of each manager you use: `npm`/`yarn`/`pnpm`, `cargo`, `go`,
+    `composer`, `dart`/`flutter`. A missing CLI only disables THAT manager.
+  - lvim-utils (OPTIONAL) — palette-driven theming of the panels / virtual text.
+    Without it the plugin falls back to plain highlight groups.
+
+Run |:checkhealth| lvim-dependencies to verify the above.
+
+==============================================================================
+3. SETUP                                            *lvim-dependencies-setup*
+>lua
+    require("lvim-dependencies").setup({
+        -- see |lvim-dependencies-config| for all keys; every field is optional
+    })
+<
+setup() merges your options into the live config, self-themes from the lvim-utils
+palette (when present), and installs the autocommands, `:LvimDeps` command and
+LSP handlers. It is safe to open a manifest file before or after setup().
+
+==============================================================================
+4. COMMANDS                                       *lvim-dependencies-commands*
+
+                                                                   *:LvimDeps*
+:LvimDeps {subcommand} [args]
+        The single entry command. `{subcommand}` is completed at the prompt
+        (core cache commands + the active manifest's manager commands). With no
+        argument it prints help.
+
+Core (cache) subcommands: >
+    clear-declared      clear-installed      clear-latest
+    clear-all-caches    help
+<
+Manager subcommands (install / update / delete / refresh, and Cargo feature
+management) are contributed by the manager of the CURRENT manifest buffer, so
+completion only offers what applies to that file. The same operations are also
+available as LSP code actions on the dependency line (|lvim-dependencies-lsp|).
+
+==============================================================================
+5. VIRTUAL TEXT                              *lvim-dependencies-virtual-text*
+
+Each dependency line gets a 3-component annotation:
+
+  Declared  →  Installed  |  Latest
+
+rendered with the `groups` highlights (|lvim-dependencies-config|). A spinner
+replaces the annotation while an install / update / delete runs on that line.
+Colours track the theme (via the lvim-utils palette) and respect a transparent
+background.
+
+==============================================================================
+6. LSP INTEGRATION                                    *lvim-dependencies-lsp*
+
+The plugin registers a lightweight in-process LSP source, so any client shows:
+
+  - HOVER on a dependency — the package's metadata / available versions.
+  - CODE ACTIONS on a dependency — install / update (pick a version) / delete.
+
+Disable it with `lsp = { enable = false }`.
+
+==============================================================================
+7. CONFIGURATION                                   *lvim-dependencies-config*
+
+The live config is `require("lvim-dependencies.config")`; setup() merges your
+options into it in place. Top-level keys:
+
+                                                     *lvim-dependencies-opt-managers*
+managers    per-manager enable + behaviour.
+groups      highlight group names for the virtual-text components.
+ui          panel / virtual-text appearance.
+lsp         `{ enable = true }` — hover + code actions.
+cache       TTL + negative-cache window for the declared/installed/latest layers.
+async       concurrency, dynamic throttle, retry + jitter.
+metrics     operation metrics (view via the manager UI).
+notify      notification routing/levels.
+debug       debug logging.
+cargo / npm / composer / go / pubspec
+            per-manager overrides (registries, extra CLI flags, …).
+
+Every field is optional; omit the argument to setup() for defaults.
+
+==============================================================================
+8. HEALTH                                            *lvim-dependencies-health*
+
+|:checkhealth| lvim-dependencies verifies the Neovim version, `curl`, each
+manager's CLI (a missing one disables only that manager), and whether lvim-utils
+is available for palette theming.
+
+==============================================================================
+vim:tw=78:ts=8:et:ft=help:norl:

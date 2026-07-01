@@ -1,10 +1,13 @@
--- lvim-dependencies/managers/go/utils/helpers.lua
--- Utility helpers for Go manager
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.utils.helpers: small Go-specific query helpers used across
+-- the manager — manifest access, go.mod section/indirect lookups (via the parser), stdlib
+-- detection (a first path element with no dot), and proxy path encoding (uppercase → !lower,
+-- per golang.org/x/mod/module.EscapePath).
+--
+---@module "lvim-dependencies.managers.go.utils.helpers"
 
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
+local parser = require("lvim-dependencies.managers.go.parser")
 
 local debug = utils.debug
 
@@ -23,7 +26,6 @@ end
 ---@param name string
 ---@return string|nil
 function M.find_package_section(name)
-    local parser = require("lvim-dependencies.managers.go.parser")
     local deps = parser.get_dependencies()
     local pkg = deps[name]
     return pkg and pkg.section or "require"
@@ -54,7 +56,6 @@ end
 ---@param name string
 ---@return boolean
 function M.is_indirect(name)
-    local parser = require("lvim-dependencies.managers.go.parser")
     local deps = parser.get_dependencies()
     local pkg = deps[name]
     return pkg ~= nil and pkg.indirect == true

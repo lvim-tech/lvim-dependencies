@@ -1,12 +1,17 @@
--- lvim-dependencies/managers/go/data/latest.lua
--- Latest version fetcher from proxy.golang.org
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.data.latest: fetches the latest version of a Go module
+-- from proxy.golang.org. It prefers the @v/list endpoint (so it can filter prereleases and
+-- pick the true newest), falling back to @latest when the list is empty/unavailable. Concurrent
+-- requests for the same module are coalesced through an in-flight table so N callers trigger one
+-- HTTP fetch; module paths are !-escaped and best-effort repo/doc metadata is derived from the path.
+--
+---@module "lvim-dependencies.managers.go.data.latest"
 
 local utils = require("lvim-dependencies.utils")
 local http = require("lvim-dependencies.utils.http")
 local init = require("lvim-dependencies.core.init")
 local config = require("lvim-dependencies.config")
+local compare_versions = require("lvim-dependencies.managers.go.compare_versions")
+local hub_latest = require("lvim-dependencies.core.hub.latest")
 
 local debug = utils.debug
 
@@ -20,12 +25,16 @@ local in_flight = {}
 -- Helpers
 -- ============================================================================
 
+--- Fetch the Go manifest (typed).
+---@return GoManifest|nil
 local function get_manifest()
     local m = init.get_manifest("go")
     ---@cast m GoManifest|nil
     return m
 end
 
+--- Whether prerelease versions should be considered (config-driven).
+---@return boolean|nil
 local function include_prerelease()
     return config.go and config.go.version and config.go.version.include_prerelease
 end
@@ -113,6 +122,10 @@ local function parse_latest_response(output, module_path)
     return ver, md
 end
 
+--- Build the proxy @v/list URL for a module.
+---@param module_path string
+---@param manifest_data GoManifest|nil
+---@return string
 local function build_list_url(module_path, manifest_data)
     local registry = manifest_data and manifest_data.registry or {}
     local base = (config.go and config.go.api and config.go.api.proxy_base)
@@ -124,6 +137,10 @@ local function build_list_url(module_path, manifest_data)
     return base .. string.format(ep, encoded)
 end
 
+--- Build the proxy @latest URL for a module.
+---@param module_path string
+---@param manifest_data GoManifest|nil
+---@return string
 local function build_latest_url(module_path, manifest_data)
     local registry = manifest_data and manifest_data.registry or {}
     local base = (config.go and config.go.api and config.go.api.proxy_base)
@@ -135,12 +152,19 @@ local function build_latest_url(module_path, manifest_data)
     return base .. string.format(ep, encoded)
 end
 
+--- Resolve the request timeout (config → manifest → default 10s).
+---@param manifest_data GoManifest|nil
+---@return integer
 local function get_timeout(manifest_data)
     return (config.go and config.go.api and config.go.api.timeout)
         or (manifest_data and manifest_data.api and manifest_data.api.timeout)
         or 10
 end
 
+--- Resolve every coalesced callback waiting on a module, then clear its in-flight slot.
+---@param package_name string
+---@param err string|nil
+---@param result {version: string, metadata: table}|nil
 local function notify_waiters(package_name, err, result)
     local waiting = in_flight[package_name] or {}
     in_flight[package_name] = nil
@@ -151,8 +175,11 @@ local function notify_waiters(package_name, err, result)
     end
 end
 
+--- Fetch, filter and select the latest version for a module, notifying all waiters.
+---@param package_name string
+---@param manifest_data GoManifest
 local function fetch_from_proxy(package_name, manifest_data)
-    local cmp = require("lvim-dependencies.managers.go.compare_versions")
+    local cmp = compare_versions
     local timeout = get_timeout(manifest_data)
     local inc_pre = include_prerelease()
 
@@ -244,8 +271,7 @@ function M.get_data(declared_packages)
     if not declared_packages then
         return {}
     end
-    local hub = require("lvim-dependencies.core.hub.latest")
-    local cached = hub.get_data("go")
+    local cached = hub_latest.get_data("go")
     local result = {}
     for name in pairs(declared_packages) do
         local entry = cached[name]
@@ -254,9 +280,9 @@ function M.get_data(declared_packages)
     return result
 end
 
+--- Clear the shared latest-version hub cache and drop any in-flight coalescing state.
 function M.clear_cache()
-    local hub = require("lvim-dependencies.core.hub.latest")
-    hub.clear_cache("go")
+    hub_latest.clear_cache("go")
     in_flight = {}
     debug("go latest cache cleared (via hub)", vim.log.levels.INFO)
 end

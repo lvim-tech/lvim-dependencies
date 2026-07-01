@@ -1,11 +1,16 @@
--- lvim-dependencies/managers/cargo/lsp.lua
--- LSP extensions for cargo manager (hover + actions)
+-- lvim-dependencies.managers.cargo.lsp: LSP extensions for the cargo manager. Provides the
+-- hover markdown for a dependency (declared/installed/latest + git/path/workspace details and
+-- crates.io metadata), a "Manage features" code action, and the vim.lsp command that action
+-- invokes to open the features UI. Registered lazily (see register.lua) so it costs nothing
+-- until an LSP client is active on a Cargo.toml.
+---@module "lvim-dependencies.managers.cargo.lsp"
 
 local actions = require("lvim-dependencies.managers.cargo.api")
 local cache = require("lvim-dependencies.core.cache")
 local const = require("lvim-dependencies.core.const")
 local features = require("lvim-dependencies.managers.cargo.features")
 
+---@class CargoLsp
 local M = {}
 
 -- ============================================================================
@@ -180,6 +185,8 @@ end
 -- LSP COMMANDS
 -- ============================================================================
 
+--- Register the vim.lsp command that the "Manage features" code action resolves to.
+---@return nil
 function M.setup_commands()
     if not vim.lsp.commands["lvim-dependencies.cargo.features"] then
         vim.lsp.commands["lvim-dependencies.cargo.features"] = function(command)
@@ -193,6 +200,8 @@ function M.setup_commands()
     end
 end
 
+--- Entry point for LSP-side setup (called from register.register_lsp).
+---@return nil
 function M.setup()
     M.setup_commands()
 end

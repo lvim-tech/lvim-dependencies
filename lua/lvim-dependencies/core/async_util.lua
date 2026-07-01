@@ -1,7 +1,11 @@
--- lvim-dependencies/core/async_util.lua
--- Helper functions for coroutine-based async operations (Neovim 0.10+)
-
----@include "types.lua"
+-- lvim-dependencies.core.async_util: coroutine-based async primitives (Neovim 0.10+).
+-- await/run turn callback-style APIs into straight-line coroutine code; the combinators
+-- (all/all_with_limit/race/all_settled) and the retry/debounce/throttle helpers all sit
+-- on the same safe_resume core, which reschedules any coroutine error onto the main loop
+-- (errors thrown inside a resume can't propagate normally, so they must be re-raised via
+-- vim.schedule to surface at all).
+--
+---@module "lvim-dependencies.core.async_util"
 
 local uv = vim.loop
 local schedule = vim.schedule

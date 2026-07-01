@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/composer/core/composer_ops.lua
--- composer require/remove command execution
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.core.composer_ops: runs the real `composer require` /
+-- `composer remove` binary and reconciles editor state around it. The subtlety lives here:
+-- composer can exit non-zero on mere PHP warnings while the update actually succeeded, so the
+-- result is treated as success unless stderr names a real error/exception; the working buffer
+-- is anchored (extmark), shown a "working" indicator, then refreshed and marked unmodified
+-- without re-triggering the file-change check.
+--
+---@module "lvim-dependencies.managers.composer.core.composer_ops"
 
 local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")
@@ -9,6 +13,7 @@ local const = require("lvim-dependencies.core.const")
 local virtual_text = require("lvim-dependencies.core.virtual_text")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
+local hub_declared = require("lvim-dependencies.core.hub.declared")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 
@@ -16,6 +21,7 @@ local file_ops = require("lvim-dependencies.managers.composer.core.file_ops")
 local indicators = require("lvim-dependencies.managers.composer.utils.indicators")
 local parser = require("lvim-dependencies.managers.composer.parser")
 local package_loader = require("lvim-dependencies.core.package_loader")
+local manifest = require("lvim-dependencies.managers.composer.manifest")
 
 local debug = utils.debug
 local api = vim.api
@@ -74,7 +80,7 @@ local function seed_installed_version(name, version)
     local entry = cache.ensure("composer", CACHE_TYPE_INSTALLED)
     entry[CACHE_FIELDS_DATA][name] = version
     parser.clear_cache()
-    require("lvim-dependencies.core.hub.declared").clear_cache("composer", name)
+    hub_declared.clear_cache("composer", name)
 end
 
 local function get_executable()
@@ -96,6 +102,12 @@ local function get_executable()
     return nil
 end
 
+--- Build the `composer require <name>:<version>` argv (add --dev for the dev section).
+---@param exe string  resolved composer executable
+---@param name string
+---@param version string
+---@param section string  "require" or "require-dev"
+---@return string[]
 function M.build_require_cmd(exe, name, version, section)
     local pkg_spec = name .. ":" .. version
     local cmd = { exe, "require", pkg_spec }
@@ -105,6 +117,10 @@ function M.build_require_cmd(exe, name, version, section)
     return cmd
 end
 
+--- Build the `composer remove <name>` argv.
+---@param exe string
+---@param name string
+---@return string[]
 function M.build_remove_cmd(exe, name)
     return { exe, "remove", name }
 end
@@ -125,7 +141,6 @@ local function find_package_line_in_buf(bufnr, name)
 end
 
 local function is_platform_package(name)
-    local manifest = require("lvim-dependencies.managers.composer.manifest")
     return not manifest.is_package_actionable(name)
 end
 
@@ -200,6 +215,12 @@ local function handle_failure(name, err, bufnr)
     end
 end
 
+--- Run `composer require` to update a package, then reconcile buffer + virtual text.
+---@param path string  path to composer.json
+---@param name string
+---@param version string
+---@param opts UpdateOptions|nil
+---@param callback InstallerCallback|nil
 function M.run_composer_update(path, name, version, opts, callback)
     opts = opts or {}
 
@@ -300,6 +321,11 @@ function M.run_composer_update(path, name, version, opts, callback)
     end)
 end
 
+--- Run `composer remove` to delete a package, then reconcile buffer + virtual text.
+---@param path string  path to composer.json
+---@param name string
+---@param opts DeleteOptions|nil
+---@param callback InstallerCallback|nil
 function M.run_composer_remove(path, name, opts, callback)
     opts = opts or {}
 

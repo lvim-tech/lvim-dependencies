@@ -1,4 +1,5 @@
--- lvim-dependencies/libs/tinyyaml.lua
+-- lvim-dependencies.libs.tinyyaml: vendored peposso/lua-tinyyaml (YAML subset parser)
+---@module "lvim-dependencies.libs.tinyyaml"
 
 -- https://github.com/peposso/lua-tinyyaml/blob/master/tinyyaml.lua
 -------------------------------------------------------------------------------

@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/core/pub_ops.lua
--- Pub/Dart command execution — owns the full install lifecycle
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.core.pub_ops: runs the flutter/dart pub CLI and owns the full
+-- install lifecycle. Detects flutter vs. dart, resolves the executable (config override → exepath →
+-- PATH), builds the get/remove command from the manifest, writes the pending lines, shows a
+-- "Working…" indicator on the package line, runs `pub get` asynchronously, and on completion either
+-- seeds the installed-version cache + refreshes virtual text (success) or restores the original
+-- lines (failure). Failures are flagged no_retry because pub resolution errors are deterministic.
+--
+---@module "lvim-dependencies.managers.pubspec.core.pub_ops"
 
 local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")

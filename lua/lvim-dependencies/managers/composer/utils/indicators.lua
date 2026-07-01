@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/utils/indicators.lua
--- UI state management for composer actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.utils.indicators: buffer-local UI state around a composer
+-- operation — the "pending" extmark anchor that keeps the working indicator glued to the right
+-- line as the file changes, and the outdated-poll loop. After a require/remove the new latest
+-- version is not known instantly, so poll_for_outdated retries get_package_latest on an interval
+-- (after a start delay) until a version arrives or max attempts is hit, then clears loading state.
+--
+---@module "lvim-dependencies.managers.composer.utils.indicators"
 
 local api = vim.api
 local utils = require("lvim-dependencies.utils")
@@ -47,6 +50,8 @@ local function reset_buffer_loading_state(bufnr)
     buf_state.pending_scope = nil
 end
 
+--- Resolve (creating if needed) the composer virtual-text extmark namespace id.
+---@return integer
 function M.ensure_namespace()
     return api.nvim_create_namespace(NAMESPACE_VIRTUAL_TEXT)
 end

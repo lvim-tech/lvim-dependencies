@@ -1,5 +1,8 @@
--- lvim-dependencies/utils/http.lua
--- HTTP utilities for dependency management
+-- lvim-dependencies.utils.http: minimal async HTTP GET helpers built on `curl` via
+-- `vim.system`, used to fetch registry metadata. Callbacks always receive `(result, err)`
+-- so network/parse failures propagate without throwing; get_json layers JSON decoding on top.
+--
+---@module "lvim-dependencies.utils.http"
 
 local M = {}
 

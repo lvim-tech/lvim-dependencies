@@ -1,7 +1,8 @@
--- lvim-dependencies/managers/cargo/compare_versions.lua
--- Cargo version comparison utilities following SemVer
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.compare_versions: SemVer comparison/sorting for cargo
+-- versions. Cargo uses strict SemVer (major.minor.patch[-prerelease][+build]); the actual
+-- parse/compare logic is the shared version engine — this only supplies the cargo-specific
+-- clean/component patterns so a leading `^~><=` requirement operator is stripped first.
+---@module "lvim-dependencies.managers.cargo.compare_versions"
 
 local utils = require("lvim-dependencies.utils")
 local version = utils.version

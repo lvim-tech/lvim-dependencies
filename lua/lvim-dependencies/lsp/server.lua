@@ -1,5 +1,10 @@
--- lvim-dependencies/lsp/server.lua
--- In-process LSP server implementation
+-- lvim-dependencies.lsp.server: in-process LSP server implementation.
+-- M.cmd returns the dispatcher table vim.lsp.start uses as its "process": it answers
+-- initialize/hover/codeAction requests directly in Lua (no external binary). A single
+-- shared client is started once and re-used; on_attach immediately detaches from any
+-- non-manifest buffer, since the client is registered with an empty filetype list.
+--
+---@module "lvim-dependencies.lsp.server"
 
 local hover = require("lvim-dependencies.lsp.hover")
 local action = require("lvim-dependencies.lsp.action")
@@ -15,9 +20,11 @@ local SERVER_VER = "1.0.0"
 
 local M = {}
 
+---@type integer? id of the running in-process client (nil when not started)
 M.client_id = nil
 
--- LSP server capabilities
+--- The server's advertised LSP capabilities (hover/codeAction gated by config).
+---@return table
 function M.get_capabilities()
     return {
         textDocumentSync = 1,
@@ -42,7 +49,9 @@ local function is_manifest_buffer(bufnr)
     return registry.is_manifest_file(filename)
 end
 
--- In-process command function
+--- The in-process "command": returns the request/notify/lifecycle dispatcher table.
+---@param dispatchers table lsp rpc dispatchers (on_exit, …)
+---@return table
 function M.cmd(dispatchers)
     return {
         request = function(method, params, callback)
@@ -89,7 +98,8 @@ function M.cmd(dispatchers)
     }
 end
 
--- Start LSP server
+--- Start (or reuse) the in-process LSP client.
+---@return integer|nil client_id
 function M.start()
     if M.client_id then
         local client = vim.lsp.get_client_by_id(M.client_id)
@@ -138,7 +148,7 @@ function M.start()
     return M.client_id
 end
 
--- Stop LSP server
+--- Stop the in-process LSP client if running.
 function M.stop()
     if M.client_id then
         vim.lsp.stop_client(M.client_id)
@@ -147,7 +157,8 @@ function M.stop()
     end
 end
 
--- Check if server is running
+--- Whether the in-process client is started and not stopped.
+---@return boolean|integer|nil
 function M.is_running()
     return M.client_id
         and vim.lsp.get_client_by_id(M.client_id)

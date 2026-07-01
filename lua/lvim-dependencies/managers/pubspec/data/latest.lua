@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/data/latest.lua
--- Latest version manager for pub.dev using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.data.latest: fetches the latest available version + metadata
+-- for a package from the pub.dev registry. pub.dev's versions array is oldest-first, so the newest
+-- entry is found by walking from the end; with include_prerelease=false it skips prerelease tags
+-- (a "-" after the patch number) and prefers the registry's `latest.version`. Concurrent requests
+-- for the same package share one HTTP call via the in_flight waiter list; the resolved version
+-- cache lives in core.hub.latest, so clear_cache delegates there and drops any in-flight waiters.
+--
+---@module "lvim-dependencies.managers.pubspec.data.latest"
 
 local utils = require("lvim-dependencies.utils")
 local http = require("lvim-dependencies.utils.http")
@@ -16,6 +20,7 @@ local M = {}
 ---@type table<string, function[]>
 local in_flight = {}
 
+---@type string[]
 local METADATA_FIELDS = { "description", "homepage", "repository", "documentation", "license" }
 
 -- ============================================================================
@@ -33,6 +38,8 @@ local function is_valid_string(val)
     return val ~= nil and val ~= vim.NIL and type(val) == "string" and val ~= ""
 end
 
+--- Whether the config opts into prerelease versions.
+---@return boolean|nil
 local function include_prerelease()
     return config.pubspec and config.pubspec.version and config.pubspec.version.include_prerelease
 end
@@ -160,7 +167,7 @@ local function extract_with_paths(data, response_config)
     return version, metadata
 end
 
----@param output string
+---@param output string|nil
 ---@param manifest_data ManagerManifest
 ---@return string|nil, table|nil
 local function parse_response(output, manifest_data)
@@ -253,6 +260,7 @@ function M.get_package_latest(package_name, callback)
     end
 
     -- SDK fast path
+    ---@cast manifest_data PubspecManifest
     local sdk_packages = manifest_data.sdk_packages or {}
     if sdk_packages[package_name] then
         debug(string.format("SDK package: %s", package_name), vim.log.levels.INFO)

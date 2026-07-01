@@ -1,11 +1,15 @@
--- lvim-dependencies/hooks/commands.lua
--- Neovim commands for lvim-dependencies - DISPATCHER ONLY
+-- lvim-dependencies.hooks.commands: the :LvimDeps user command — a DISPATCHER ONLY.
+-- Parses the sub-command and routes it first to a core cli command, then to a
+-- manager-specific command for the current buffer's manifest type, else shows help.
+-- Command names are pooled (core + manager) for tab completion.
+--
+---@module "lvim-dependencies.hooks.commands"
 
-local api = vim.api
 local registry = require("lvim-dependencies.core.registry")
 local cli = require("lvim-dependencies.core.cli")
-
 local utils = require("lvim-dependencies.utils")
+
+local api = vim.api
 local utils_buffer = utils.buffer
 local notify = utils.notify
 
@@ -134,7 +138,7 @@ local function complete_subcommands(main_cmd, arg_lead)
     return {}
 end
 
---- Setup LvimDeps user commands
+--- Register the :LvimDeps user command (dispatch + completion).
 function M.setup()
     api.nvim_create_user_command("LvimDeps", function(opts)
         local args = vim.split(opts.args or "", "%s+", { trimempty = true })

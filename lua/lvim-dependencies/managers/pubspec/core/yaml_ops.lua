@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/core/yaml_ops.lua
--- YAML manipulation for pubspec.yaml
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.core.yaml_ops: line-based, indentation-aware editing of
+-- pubspec.yaml. Deliberately does NOT round-trip through a YAML parser — it locates a section by
+-- its top-level key, finds a section's end (next unindented line), and finds/replaces/inserts/
+-- removes a package's block (the key line plus its deeper-indented children) so comments,
+-- formatting and unrelated lines are preserved byte-for-byte. Each mutation also returns a minimal
+-- FileChange (0-indexed start/end + replacement lines) for buffer-side application.
+--
+---@module "lvim-dependencies.managers.pubspec.core.yaml_ops"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
@@ -50,6 +54,7 @@ function M.find_section_index(lines, section_name)
         debug("Invalid input for find_section_index", vim.log.levels.WARN)
         return nil
     end
+    ---@cast lines table
 
     local pattern = "^%s*" .. escape_pattern(section_name) .. "%s*:"
 

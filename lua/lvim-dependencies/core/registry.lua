@@ -1,7 +1,10 @@
--- lvim-dependencies/core/registry.lua
--- Registry for managing manifests, file patterns, and manager extensions
-
----@include "types.lua"
+-- lvim-dependencies.core.registry: discovers and holds every manager. On setup it scans
+-- the runtime for managers/*/manifest.lua, registers each manifest + its file patterns,
+-- then runs each manager's optional register module (commands/lsp/hover/actions). The
+-- filename → manifest-type lookup is memoised in a BOUNDED, TTL'd cache with LRU eviction
+-- so repeated buffer events on many files can't grow it without limit.
+--
+---@module "lvim-dependencies.core.registry"
 
 local api = vim.api
 local utils = require("lvim-dependencies.utils")
@@ -52,7 +55,6 @@ local M = {
     manager_lsp_handlers = {},
     manager_hover = {},
     manager_actions = {},
-    manager_completion = {},
 }
 
 ---@type table<string, boolean>
@@ -235,7 +237,6 @@ local function clear_state()
     M.manager_lsp_handlers = {}
     M.manager_hover = {}
     M.manager_actions = {}
-    M.manager_completion = {}
     initialized_managers = {}
     manifest_type_cache = {}
     manifest_type_cache_count = 0
@@ -245,6 +246,7 @@ end
 -- Public API
 -- ============================================================================
 
+--- Discover and register all managers, then run their register modules.
 function M.setup()
     local count = load_all_manifests()
     rebuild_flat_patterns()
@@ -252,6 +254,9 @@ function M.setup()
     debug(string.format("Registry setup: %d managers registered", count), vim.log.levels.INFO)
 end
 
+--- Register a single manager by module path (e.g. for a dynamically added manager).
+---@param modpath string
+---@return boolean success
 function M.register_modpath(modpath)
     local ok = register_manager(modpath)
     if ok then
@@ -260,6 +265,7 @@ function M.register_modpath(modpath)
     return ok
 end
 
+--- Clear all registry state and re-discover every manager from scratch.
 function M.reload()
     clear_state()
     local count = load_all_manifests()
@@ -315,6 +321,8 @@ function M.determine_manifest_type(filename)
     return result
 end
 
+--- All registered manager keys.
+---@return string[]
 function M.get_manifest_keys()
     local keys = {}
     for key in pairs(M.manifests) do
@@ -323,14 +331,23 @@ function M.get_manifest_keys()
     return keys
 end
 
+--- File patterns registered for a manager.
+---@param manager_key string
+---@return string[]|nil
 function M.get_file_patterns(manager_key)
     return M.file_patterns[manager_key]
 end
 
+--- The manifest module registered for a manager.
+---@param manager_key string
+---@return ManagerManifest|nil
 function M.get_manager(manager_key)
     return M.manifests[manager_key]
 end
 
+--- Whether a filename matches any registered manager's file patterns.
+---@param filename string
+---@return boolean
 function M.is_manifest_file(filename)
     if not filename or type(filename) ~= "string" then
         return false
@@ -347,6 +364,8 @@ local function format_type_indicators(type_def)
     return type_def.detect and "yes" or "no", type_def.extract and "yes" or "no"
 end
 
+--- Markdown summary of every registered manager (for the show-registry command).
+---@return string
 function M.get_registry_info()
     local lines = { "# Registry Information", "", "## Registered Managers", "" }
     local count = 0
@@ -376,6 +395,9 @@ function M.get_registry_info()
     return table.concat(lines, "\n")
 end
 
+--- Markdown detail for a single manager (for the show-manager command).
+---@param manager_key string
+---@return string|nil
 function M.get_manager_info(manager_key)
     local manifest = M.manifests[manager_key]
     if not manifest then
@@ -411,6 +433,10 @@ function M.get_manager_info(manager_key)
     return table.concat(lines, "\n")
 end
 
+--- Register a manager-specific command handler.
+---@param manager_type string
+---@param command_name string
+---@param handler fun(args: string[], manager_type: string, bufnr: integer)
 function M.register_command(manager_type, command_name, handler)
     local cmds = M.manager_commands[manager_type]
     if not cmds then
@@ -421,34 +447,44 @@ function M.register_command(manager_type, command_name, handler)
     debug(string.format("Registered command '%s' for %s", command_name, manager_type), vim.log.levels.DEBUG)
 end
 
+--- Register a manager's LSP handler table.
+---@param manager_type string
+---@param handlers table
 function M.register_lsp_handlers(manager_type, handlers)
     M.manager_lsp_handlers[manager_type] = handlers
 end
 
+--- Register a manager's hover provider.
+---@param manager_type string
+---@param handler any
 function M.register_hover(manager_type, handler)
     M.manager_hover[manager_type] = handler
 end
 
+--- Register a manager's code-actions provider.
+---@param manager_type string
+---@param handler any
 function M.register_actions(manager_type, handler)
     M.manager_actions[manager_type] = handler
 end
 
-function M.register_completion(manager_type, handler)
-    M.manager_completion[manager_type] = handler
-end
-
+--- The hover provider registered for a manager, if any.
+---@param manager_type string
+---@return any
 function M.get_hover_provider(manager_type)
     return M.manager_hover[manager_type]
 end
 
+--- The code-actions provider registered for a manager, if any.
+---@param manager_type string
+---@return any
 function M.get_actions_provider(manager_type)
     return M.manager_actions[manager_type]
 end
 
-function M.get_completion_provider(manager_type)
-    return M.manager_completion[manager_type]
-end
-
+--- LSP handlers for a manager, lazily loading its register module on first use.
+---@param manager_type string
+---@return table|nil
 function M.get_lsp_handlers(manager_type)
     if M.manager_lsp_handlers[manager_type] then
         return M.manager_lsp_handlers[manager_type]
@@ -465,10 +501,19 @@ function M.get_lsp_handlers(manager_type)
     return nil
 end
 
+--- The command table registered for a manager (name → handler).
+---@param manager_type string
+---@return table<string, function>
 function M.get_manager_commands(manager_type)
     return M.manager_commands[manager_type] or {}
 end
 
+--- Run a manager-specific command; returns false if it isn't registered.
+---@param manager_type string
+---@param command_name string
+---@param args string[]
+---@param bufnr integer
+---@return boolean handled
 function M.execute_command(manager_type, command_name, args, bufnr)
     local cmds = M.manager_commands[manager_type]
     if not cmds or not cmds[command_name] then
@@ -478,6 +523,8 @@ function M.execute_command(manager_type, command_name, args, bufnr)
     return true
 end
 
+--- All command names (core + every manager's), sorted and de-duplicated.
+---@return string[]
 function M.get_all_commands()
     local commands = {}
     local seen = {}

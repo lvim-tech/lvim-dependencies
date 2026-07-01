@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/data/declared.lua
--- Declared package manager for pubspec.yaml using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.data.declared: turns the parser's raw name→value map into
+-- typed PubspecDeclaredPackage records. Each raw value is classified via the manifest's
+-- dependency_types detectors (git/path/sdk/hosted/registry/…); SDK packages short-circuit to a
+-- "sdk" record and anything unrecognised falls back to "registry". Keeps a local manifest cache
+-- (validated for a dependency_types field) that clear_cache resets.
+--
+---@module "lvim-dependencies.managers.pubspec.data.declared"
 
 local parser = require("lvim-dependencies.managers.pubspec.parser")
 local init = require("lvim-dependencies.core.init")
@@ -18,6 +21,7 @@ local M = {}
 local manifest_cache = nil
 
 --- Known SDK packages that skip registry lookup
+---@type table<string, boolean>
 local SDK_PACKAGES = {
     flutter = true,
     dart = true,

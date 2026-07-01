@@ -1,7 +1,9 @@
--- lvim-dependencies/config/cache.lua
---- Cache configuration settings
----@class CacheConfig
+-- lvim-dependencies.config.cache: TTLs, cleanup thresholds and stats limits for the package
+-- caches. TTL units differ on purpose — per-entry TTLs are seconds, cleanup.interval is ms —
+-- because the entry age comparison and the cleanup timer use different clocks.
+---@module "lvim-dependencies.config.cache"
 
+---@class CacheConfig
 return {
     --- Time-to-live settings for different cache types (in seconds)
     ttl = {
@@ -23,4 +25,5 @@ return {
     },
     managers_cache_ttl = 5000, -- 5 seconds
     manifest_type_cache_ttl = 5000, -- 5 seconds
+    manifest_type_cache_max = 200, -- Max entries in the manifest-type cache before eviction
 }

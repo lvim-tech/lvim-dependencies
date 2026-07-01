@@ -1,5 +1,10 @@
--- lvim-dependencies/lsp/action.lua
--- LSP code actions for dependency management
+-- lvim-dependencies.lsp.action: LSP code actions for dependency management.
+-- Exposes the same set of package actions two ways: M.show() drives a synchronous
+-- vim.ui.select picker, while M.handle() answers a textDocument/codeAction LSP request
+-- (each action encoded as an LSP command so the editor round-trips it back through the
+-- vim.lsp.commands handlers registered in M.setup()).
+--
+---@module "lvim-dependencies.lsp.action"
 
 local utils = require("lvim-dependencies.utils")
 local registry = require("lvim-dependencies.core.registry")
@@ -8,13 +13,16 @@ local init = require("lvim-dependencies.core.init")
 local operation = require("lvim-dependencies.core.operation")
 local operator = require("lvim-dependencies.core.operator")
 
+local config = require("lvim-dependencies.config")
+
 local utils_lsp = utils.lsp
 local notify = utils.notify
 
 local M = {}
 
+--- Whether code actions are enabled (read live from the merged config).
+---@return boolean
 local function is_enabled()
-    local config = require("lvim-dependencies.config")
     return config.lsp and config.lsp.actions or false
 end
 
@@ -141,20 +149,26 @@ local function execute_action(sel, pkg, manifest, buf)
     end
 end
 
+--- A manifest that optionally exposes an actionability predicate. Only some managers
+--- (e.g. composer) implement is_package_actionable; the base ManagerManifest does not,
+--- so this lsp-local subclass models the optional method for the guarded call below.
+---@class ActionableManifest : ManagerManifest
+---@field is_package_actionable? fun(pkg: string): boolean
+
 --- Check if a package supports update/delete actions.
 --- Delegates to the manager manifest's is_package_actionable() if available.
 ---@param manifest_type string
 ---@param pkg string
 ---@return boolean
 local function is_actionable(manifest_type, pkg)
-    local init = require("lvim-dependencies.core.init")
-    local manifest = init.get_manifest(manifest_type)
+    local manifest = init.get_manifest(manifest_type) --[[@as ActionableManifest?]]
     if manifest and type(manifest.is_package_actionable) == "function" then
         return manifest.is_package_actionable(pkg)
     end
     return true
 end
 
+--- Build the action list for the package under the cursor and present it via vim.ui.select.
 function M.show()
     if not is_enabled() then
         notify("Code actions disabled", vim.log.levels.WARN)
@@ -230,8 +244,9 @@ function M.show()
     )
 end
 
----@param params table
----@param callback function
+--- Answer a textDocument/codeAction request: returns LSP actions encoded as commands.
+---@param params table LSP codeAction params (textDocument.uri, position)
+---@param callback fun(err: any, actions: table[])
 function M.handle(params, callback)
     if not is_enabled() then
         callback(nil, {})
@@ -336,6 +351,7 @@ function M.handle(params, callback)
     callback(nil, actions)
 end
 
+--- Register the vim.lsp.commands handlers the emitted code actions round-trip through.
 function M.setup()
     if not vim.lsp.commands["lvim-dependencies.update"] then
         vim.lsp.commands["lvim-dependencies.update"] = function(command)

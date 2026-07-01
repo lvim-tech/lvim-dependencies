@@ -1,5 +1,8 @@
--- lvim-dependencies/utils/init.lua
--- Main utils module that aggregates all utility submodules
+-- lvim-dependencies.utils: single entry point that aggregates every utility submodule
+-- under one table, so callers can `require("lvim-dependencies.utils")` and reach each
+-- helper as a field instead of requiring each file by path.
+--
+---@module "lvim-dependencies.utils"
 
 local M = {}
 

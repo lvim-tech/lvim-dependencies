@@ -1,14 +1,16 @@
--- lvim-dependencies/managers/cargo/core/file_ops.lua
--- File operations for Cargo.toml
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.core.file_ops: filesystem + buffer helpers for Cargo.toml.
+-- Locates the manifest (upward search), reads/writes its lines, and syncs a loaded buffer to
+-- disk changes — either a minimal in-place FileChange or a full refresh — always saving and
+-- restoring the cursor and clearing the 'modified' flag so an external write does not leave a
+-- dirty buffer.
+---@module "lvim-dependencies.managers.cargo.core.file_ops"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")
-local api = vim.api
 
 local debug = utils.debug
+local api = vim.api
 
 ---@class CargoFileOps
 local M = {}
@@ -131,7 +133,7 @@ function M.apply_buffer_change(path, change)
 
     api.nvim_buf_set_lines(bufnr, start0, end0, false, replacement)
 
-    -- 🔧 FIX: restore original cursor instead of recalculating
+    -- Restore the original cursor position instead of recalculating it.
     if saved_cursor then
         local line_count = api.nvim_buf_line_count(bufnr)
         local row = math.min(saved_cursor[1], line_count)

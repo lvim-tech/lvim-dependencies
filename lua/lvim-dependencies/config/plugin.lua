@@ -1,7 +1,9 @@
--- lvim-dependencies/config/plugin.lua
---- General plugin configuration
----@class PluginConfig
+-- lvim-dependencies.config.plugin: top-level plugin settings — identity, diagnostics, the
+-- command prefix, autocommand group names and state persistence. Merged over by the user's
+-- opts, then read live wherever these globals are needed.
+---@module "lvim-dependencies.config.plugin"
 
+---@class PluginConfig
 return {
     name = "lvim-dependencies",
     version = "1.0.0",

@@ -1,7 +1,9 @@
--- lvim-dependencies/config/cargo.lua
---- Cargo manager specific configuration
----@class CargoConfig
+-- lvim-dependencies.config.cargo: Cargo/crates.io manager settings — executables, API
+-- endpoints, version selection, virtual-text display and outdated polling. Merged over by
+-- the user's opts, then read live by the cargo manager.
+---@module "lvim-dependencies.config.cargo"
 
+---@class CargoConfig
 return {
     --- Executable paths for cargo commands
     executables = {

@@ -1,22 +1,30 @@
--- lvim-dependencies/lsp/hover.lua
--- Universal hover functionality for all dependency managers
+-- lvim-dependencies.lsp.hover: universal textDocument/hover for all dependency managers.
+-- Resolves the dependency under the cursor, then prefers a manager-specific hover provider
+-- (registry, then the manager's lsp module) and falls back to the manifest's per-type
+-- format_hover, returning a markdown hover payload.
+--
+---@module "lvim-dependencies.lsp.hover"
 
 local utils = require("lvim-dependencies.utils")
 local registry = require("lvim-dependencies.core.registry")
 local cache = require("lvim-dependencies.core.cache")
 local init = require("lvim-dependencies.core.init")
+local config = require("lvim-dependencies.config")
 
 local utils_lsp = utils.lsp
 local debug = utils.debug
 
 local M = {}
 
+--- Whether hover is enabled (read live from the merged config).
+---@return boolean
 local function is_enabled()
-    local config = require("lvim-dependencies.config")
     return config.lsp and config.lsp.hover or false
 end
 
---- Get manifest for type
+--- Resolve the manifest table for a manifest type, via init helpers or a direct require.
+---@param manifest_type string
+---@return table|nil
 local function get_manifest(manifest_type)
     if init and type(init.get_manifest) == "function" then
         local ok, manifest = pcall(init.get_manifest, manifest_type)
@@ -66,7 +74,10 @@ local function get_manager_hover(manifest_type, params, bufnr, dep_name, dep_dat
     return nil
 end
 
---- Handle hover request
+--- Handle a textDocument/hover request for a manifest buffer.
+---@param params table LSP hover params (position.line)
+---@param bufnr integer
+---@return table|nil hover markdown payload, or nil when nothing to show
 function M.handle(params, bufnr)
     debug("HOVER.HANDLE for buffer " .. tostring(bufnr), vim.log.levels.DEBUG)
 
@@ -140,16 +151,21 @@ function M.handle(params, bufnr)
     return { contents = { kind = "markdown", value = table.concat(lines, "\n") } }
 end
 
+--- Trace hook run when hover attaches to a buffer.
+---@param bufnr integer
 function M.attach(bufnr)
     if is_enabled() then
         debug("HOVER.ATTACH buffer " .. bufnr, vim.log.levels.DEBUG)
     end
 end
 
+--- Trace hook run when hover detaches from a buffer.
+---@param bufnr integer
 function M.detach(bufnr)
     debug("HOVER.DETACH buffer " .. bufnr, vim.log.levels.DEBUG)
 end
 
+--- Trace hook run once when the hover module is set up.
 function M.setup()
     debug("HOVER.SETUP", vim.log.levels.DEBUG)
 end

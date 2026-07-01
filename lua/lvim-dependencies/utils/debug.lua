@@ -1,5 +1,9 @@
--- lvim-dependencies/utils/debug.lua
--- Debug logging utility function with fast event support
+-- lvim-dependencies.utils.debug: the debug logger. It is callable from fast-event context,
+-- so it emits the "debug" event synchronously (wrapped in pcall so a bad handler cannot
+-- abort the caller) and defers all file I/O and `vim.fn.expand` through `vim.schedule` —
+-- those are illegal in a fast event and only run once it is safe.
+--
+---@module "lvim-dependencies.utils.debug"
 
 local config = require("lvim-dependencies.config")
 local file_system = require("lvim-dependencies.utils.file_system")

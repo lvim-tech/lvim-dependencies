@@ -1,5 +1,9 @@
--- lvim-dependencies/utils/buffer.lua
--- Buffer utility functions for Neovim with fast event safety
+-- lvim-dependencies.utils.buffer: buffer inspection/mutation helpers that stay safe in a
+-- fast-event context. In `vim.in_fast_event()` most `nvim_buf_*` calls are forbidden, so
+-- every accessor degrades gracefully there (returns minimal info / no-ops) rather than
+-- erroring, which lets the same helpers be called from autocmd fast callbacks.
+--
+---@module "lvim-dependencies.utils.buffer"
 
 local api = vim.api
 

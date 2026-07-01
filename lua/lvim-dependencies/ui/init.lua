@@ -1,10 +1,17 @@
--- UI — independent lvim-utils.ui instance for lvim-dependencies.
--- Config is sourced exclusively from lvim-dependencies.config.ui.popup.
+-- lvim-dependencies.ui: an independent lvim-utils.ui instance for lvim-dependencies.
+-- The instance is created lazily and cached on first use, so its geometry/icons are read
+-- from lvim-dependencies.config.ui.popup only once the config has been merged. lvim-utils
+-- is required inline (cross-plugin dependency) to avoid a load-order requirement.
+--
+---@module "lvim-dependencies.ui"
 
 local M = {}
 
+---@type table? cached lvim-utils.ui instance (nil until first ui() call)
 local _instance = nil
 
+--- Lazily build and cache the plugin's private ui instance from config.ui.popup.
+---@return table instance
 local function ui()
     if _instance then
         return _instance
@@ -18,6 +25,8 @@ local function ui()
     return _instance
 end
 
+--- The shared global lvim-utils.ui (used for info floats, not the private select instance).
+---@return table
 local function global_ui()
     return require("lvim-utils").ui
 end

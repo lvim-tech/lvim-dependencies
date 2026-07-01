@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/utils/indicators.lua
--- UI state management for actions (loading, anchors, extmarks)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.utils.indicators: transient UI state for in-progress actions.
+-- Manages the extmark "pending anchor" that tracks a package line across edits, the inline
+-- loading/working virtual text, and the post-install poll loop that waits (bounded by the config's
+-- polling attempts/interval) for the latest-version data to arrive before refreshing the line and
+-- firing LvimDepsPackageUpdated.
+--
+---@module "lvim-dependencies.managers.pubspec.utils.indicators"
 
 local api = vim.api
 local utils = require("lvim-dependencies.utils")
@@ -65,10 +68,16 @@ end
 -- Public API
 -- ============================================================================
 
+--- Get (creating if needed) the virtual-text namespace id.
+---@return integer
 function M.ensure_namespace()
     return api.nvim_create_namespace(NAMESPACE_VIRTUAL_TEXT)
 end
 
+--- Anchor an extmark to a package line so it can be tracked across edits.
+---@param bufnr integer
+---@param lnum integer 1-indexed line number
+---@return integer|nil extmark_id
 function M.set_pending_anchor(bufnr, lnum)
     if not is_valid_buffer_and_line(bufnr, lnum) then
         return nil
@@ -79,6 +88,9 @@ function M.set_pending_anchor(bufnr, lnum)
     return id
 end
 
+--- Remove the pending anchor extmark for a buffer, if any.
+---@param bufnr integer
+---@return nil
 function M.clear_pending_anchor(bufnr)
     if not is_valid_buffer_and_line(bufnr) then
         return
@@ -92,6 +104,10 @@ function M.clear_pending_anchor(bufnr)
     buf_state.pending_anchor_id = nil
 end
 
+--- Draw the inline "loading" virtual text on a package line.
+---@param bufnr integer
+---@param lnum integer 1-indexed line number
+---@return nil
 function M.set_loading_indicator(bufnr, lnum)
     if not is_valid_buffer_and_line(bufnr, lnum) then
         return
@@ -179,6 +195,8 @@ function M.poll_for_outdated(bufnr, name, callback)
     vim.defer_fn(poll, DEFAULT_POLL_DELAY_START)
 end
 
+--- Fire the user autocmd that tells the UI a package changed.
+---@return nil
 function M.trigger_package_updated()
     debug("Triggering LvimDepsPackageUpdated", vim.log.levels.DEBUG)
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })

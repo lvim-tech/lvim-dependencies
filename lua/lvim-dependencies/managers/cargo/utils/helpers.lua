@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/cargo/utils/helpers.lua
--- Core utilities for cargo actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.utils.helpers: shared cargo path/section helpers used by
+-- the api and cargo_ops. Exposes manifest accessors (file/lock patterns, dependency sections),
+-- finds which section a package is declared in, and reads a package's currently-installed
+-- version straight out of Cargo.lock (bounded line scan). find_package_section deliberately
+-- returns nil if a special (non-dependency) key is present, to avoid misclassifying it.
+---@module "lvim-dependencies.managers.cargo.utils.helpers"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
@@ -29,16 +31,22 @@ function M.get_manifest()
     return m
 end
 
+--- Manifest file patterns (falls back to { "Cargo.toml" }).
+---@return string[]
 function M.get_file_patterns()
     local manifest = M.get_manifest()
     return (manifest and manifest.file_patterns) or { "Cargo.toml" }
 end
 
+--- Manifest lock-file names (falls back to { "Cargo.lock" }).
+---@return string[]
 function M.get_lock_files()
     local manifest = M.get_manifest()
     return (manifest and manifest.lock_files) or { "Cargo.lock" }
 end
 
+--- Dependency section names (falls back to the three cargo defaults).
+---@return string[]
 function M.get_dependency_sections()
     local manifest = M.get_manifest()
     return (manifest and manifest.dependency_sections) or { "dependencies", "dev-dependencies", "build-dependencies" }

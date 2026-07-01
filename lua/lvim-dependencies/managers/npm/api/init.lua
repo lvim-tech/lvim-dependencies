@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/api/init.lua
--- Public API for npm/yarn/pnpm package actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.api: the public action surface for npm/yarn/pnpm — the
+-- calls the handler drives (package-at-cursor, fetch available versions, update, delete). It
+-- auto-detects the active package manager from the lock file present, builds the manager-
+-- specific add/remove command (mapping the dependency section to the right --save flag), runs
+-- it async via vim.system, and refreshes the buffer's virtual text and caches on completion.
+--
+---@module "lvim-dependencies.managers.npm.api"
 
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
@@ -26,10 +29,13 @@ local M = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Fire the User autocmd other components listen on after a package changes.
 local function trigger_package_updated()
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
+--- Invalidate every cache layer that holds installed/declared data for a package.
+---@param name string
 local function clear_package_caches(name)
     cache.clear("npm", CACHE_TYPE_INSTALLED, name)
     hub_installed.clear_cache("npm", name)
@@ -37,6 +43,8 @@ local function clear_package_caches(name)
     parser.clear_cache()
 end
 
+--- Reload the manifest buffer from disk without triggering a re-check.
+---@param bufnr integer
 local function refresh_buffer_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return

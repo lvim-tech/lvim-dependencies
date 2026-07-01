@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/utils/helpers.lua
--- Core utilities for pubspec actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.utils.helpers: shared lookups used across the pubspec action
+-- modules. Thin accessors over the manifest (lock files, dependency sections, SDK check), URL
+-- encoding for registry requests, and lock-file scanning that does NOT parse YAML — it reads the
+-- current installed version for a package (and the Flutter SDK version) by walking the lock lines,
+-- plus finding which dependency section a package is declared in.
+--
+---@module "lvim-dependencies.managers.pubspec.utils.helpers"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
@@ -13,8 +16,11 @@ local debug = utils.debug
 ---@class PubspecHelpers
 local M = {}
 
+---@type string
 M.DEFAULT_INDENT = "  "
 
+--- Max lines scanned after a package entry when reading its version from a lock file.
+---@type integer
 local MAX_LOCK_LINES_SEARCH = 100
 
 -- ============================================================================

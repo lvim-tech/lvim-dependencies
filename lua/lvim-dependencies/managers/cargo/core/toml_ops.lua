@@ -1,10 +1,14 @@
--- lvim-dependencies/managers/cargo/core/toml_ops.lua
--- TOML manipulation for Cargo.toml
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.core.toml_ops: line-based (not AST) editing of Cargo.toml.
+-- Finds a section's span, locates a package block within it (including any indented
+-- continuation lines of an inline/expanded table), and replaces / inserts / removes that
+-- block — returning both the new line array and a FileChange (start0/end0/lines) so the buffer
+-- can be updated minimally. Line-based on purpose: it preserves surrounding formatting and
+-- comments that a parse-and-serialize round-trip would lose.
+---@module "lvim-dependencies.managers.cargo.core.toml_ops"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
+
 local debug = utils.debug
 
 ---@class CargoTomlOps
@@ -50,6 +54,7 @@ function M.find_section_index(lines, section_name)
         debug("Invalid input for find_section_index", vim.log.levels.WARN)
         return nil
     end
+    ---@cast lines table validate_lines guaranteed a non-empty table
 
     local pattern = "^%s*%[" .. escape_pattern(section_name) .. "%]"
 

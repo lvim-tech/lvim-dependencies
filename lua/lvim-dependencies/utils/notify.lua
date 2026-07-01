@@ -1,5 +1,9 @@
--- lvim-dependencies/utils/notify.lua
--- Notification utility function with configuration support
+-- lvim-dependencies.utils.notify: user-facing notification helper. Honours the config
+-- enable flag and min-level threshold, then defers `vim.notify` through `vim.schedule`
+-- (wrapped in pcall) so it is callable from fast-event context and a notifier error is
+-- swallowed rather than propagated.
+--
+---@module "lvim-dependencies.utils.notify"
 
 local config = require("lvim-dependencies.config")
 local levels = require("lvim-dependencies.utils.levels")

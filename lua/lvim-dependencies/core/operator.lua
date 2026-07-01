@@ -1,7 +1,10 @@
--- lvim-dependencies/core/operator.lua
--- Command Pattern: executes Commands by dispatching to manager handlers
-
----@include "types.lua"
+-- lvim-dependencies.core.operator: the executor half of the Command pattern. Dispatches a
+-- Command to its registered per-manager handler, optionally with bounded retries — but a
+-- user cancellation or a handler-flagged deterministic failure (result.no_retry) short-
+-- circuits the retry loop so we never re-run something the user aborted or that can't
+-- succeed. On success it invalidates the affected packages' installed/latest cache entries.
+--
+---@module "lvim-dependencies.core.operator"
 
 local cache = require("lvim-dependencies.core.cache")
 local utils = require("lvim-dependencies.utils")

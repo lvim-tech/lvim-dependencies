@@ -1,8 +1,10 @@
--- lvim-dependencies/utils/lsp.lua
--- Shared utilities for LSP modules (hover, actions)
-
--- lvim-dependencies/utils/lsp.lua
--- Shared utilities for LSP modules (hover, actions)
+-- lvim-dependencies.utils.lsp: shared logic for the LSP-like features (hover, code actions).
+-- It reads parsed dependency/metadata state out of the cache and resolves which dependency
+-- sits under the cursor. Resolution is layered from most to least precise (virtual-text
+-- line map -> manifest.find_package_from_line -> generic key patterns -> word-boundary
+-- match) so it degrades gracefully across the many manifest formats.
+--
+---@module "lvim-dependencies.utils.lsp"
 
 ---@class PackageMetadata
 ---@field homepage? string

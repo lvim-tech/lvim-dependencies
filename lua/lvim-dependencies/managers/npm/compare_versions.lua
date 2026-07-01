@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/npm/compare_versions.lua
--- npm/yarn/pnpm version comparison following SemVer with npm range support
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.compare_versions: SemVer comparison for npm/yarn/pnpm.
+-- Two comparators are exposed because npm mixes prerelease and stable dist-tags: `compare`
+-- follows strict SemVer (prerelease < release) for constraint/declared-vs-installed checks,
+-- while `compare_numeric` ignores the prerelease suffix so "which published tag is newest by
+-- number" answers correctly (e.g. 7.21.4-esm.4 counts as newer than 7.18.6). Both are built
+-- once from a shared parser wired to the npm-flavoured clean/component patterns.
+--
+---@module "lvim-dependencies.managers.npm.compare_versions"
 
 local utils = require("lvim-dependencies.utils")
 local version = utils.version
@@ -30,8 +34,9 @@ end
 --- Use for: "which tag is the newest published version?"
 ---   7.21.4-esm.4 vs 7.18.6 → compares 7.21.4 vs 7.18.6 → 1 (newer)
 ---   7.21.4-esm.4 vs 7.21.4 → compares 7.21.4 vs 7.21.4 → 0 (same base)
----@param v1_str string
----@param v2_str string
+--- Nil-tolerant: an absent side is treated as "" (never a valid version).
+---@param v1_str string|nil
+---@param v2_str string|nil
 ---@return integer|nil  -1, 0, 1, or nil if invalid
 function M.compare_numeric(v1_str, v2_str)
     -- Strip prerelease suffix: "7.21.4-esm.4" → "7.21.4"

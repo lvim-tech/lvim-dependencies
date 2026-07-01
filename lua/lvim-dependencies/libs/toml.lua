@@ -1,4 +1,6 @@
--- lvim-dependencies/libs/toml.lua
+-- lvim-dependencies.libs.toml: wrapper over vendored tinytoml (TOML from file or string)
+---@module "lvim-dependencies.libs.toml"
+
 -- Wrapper for tinytoml that supports both file and string input
 
 local tinytoml = require("lvim-dependencies.libs.tinytoml")

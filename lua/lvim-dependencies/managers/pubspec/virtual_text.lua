@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/virtual_text.lua
--- Virtual text formatting for pubspec dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.virtual_text: builds the inline virtual-text chunks shown at
+-- the end of each dependency line (declared → installed → latest, with up-to-date/outdated icons).
+-- Resolves the dependency's type from its declared record and delegates to the matching
+-- manifest.dependency_types[*].format; falls back to a generic declared/installed/latest layout
+-- when no type-specific formatter is available. Also locates package lines in the buffer.
+--
+---@module "lvim-dependencies.managers.pubspec.virtual_text"
 
 local api = vim.api
 local config = require("lvim-dependencies.config")

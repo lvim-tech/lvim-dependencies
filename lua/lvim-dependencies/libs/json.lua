@@ -1,4 +1,5 @@
--- lvim-dependencies/libs/json.lua
+-- lvim-dependencies.libs.json: vendored rxi/json.lua (JSON encode/decode)
+---@module "lvim-dependencies.libs.json"
 
 -- https://github.com/rxi/json.lua/blob/master/json.lua
 --

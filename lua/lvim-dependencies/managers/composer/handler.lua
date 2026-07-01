@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/composer/handler.lua
--- Command Pattern: composer handler — implements execute(cmd, callback)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.handler: the Command-pattern handler that the core
+-- operator dispatches to for composer (install / update / delete / check-outdated). It is the
+-- UI-orchestration layer — resolve the target package (cursor, payload, or prompt), fetch the
+-- available versions, drive the version-select UI, then hand the choice to the api. Platform
+-- requirements are rejected up front (composer cannot require/remove them). It registers
+-- itself with the operator at load time (last line).
+--
+---@module "lvim-dependencies.managers.composer.handler"
 
 local operator = require("lvim-dependencies.core.operator")
 local const = require("lvim-dependencies.core.const")
@@ -10,6 +14,7 @@ local ui = require("lvim-dependencies.ui")
 
 local api = require("lvim-dependencies.managers.composer.api")
 local helpers = require("lvim-dependencies.managers.composer.utils.helpers")
+local manifest = require("lvim-dependencies.managers.composer.manifest")
 
 local debug = utils.debug
 local notify = utils.notify
@@ -24,7 +29,6 @@ local INSTALLER_METHODS = const.INSTALLER_METHODS
 ---@param name string
 ---@return boolean
 local function is_actionable(name)
-    local manifest = require("lvim-dependencies.managers.composer.manifest")
     return manifest.is_package_actionable(name)
 end
 

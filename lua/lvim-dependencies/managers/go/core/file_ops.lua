@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/go/core/file_ops.lua
--- File operations for go.mod
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.core.file_ops: low-level go.mod file I/O — locating the
+-- nearest go.mod, reading/writing it as line arrays, and pushing edits back into an already
+-- loaded buffer. Buffer writes always reset 'modified' so the in-editor copy stays in sync
+-- with the on-disk file that `go get` rewrote, without prompting the user about changes.
+--
+---@module "lvim-dependencies.managers.go.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")

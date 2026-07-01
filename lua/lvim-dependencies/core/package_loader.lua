@@ -1,7 +1,10 @@
--- lvim-dependencies/core/package_loader.lua
--- Coroutine-based package data loader
-
----@include "types.lua"
+-- lvim-dependencies.core.package_loader: fetches the three facts about a package —
+-- declared (sync, from the manifest), installed and latest (both async) — and merges them
+-- into one PackageResult. installed+latest run in parallel via async.all_settled so one
+-- failing lookup never blocks the other; batch loaders add a concurrency cap and an
+-- overall timeout so a slow registry can't stall a whole manifest's worth of packages.
+--
+---@module "lvim-dependencies.core.package_loader"
 
 local hub_declared = require("lvim-dependencies.core.hub.declared")
 local hub_installed = require("lvim-dependencies.core.hub.installed")

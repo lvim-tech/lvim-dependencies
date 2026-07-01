@@ -1,19 +1,24 @@
--- lvim-dependencies/lsp/init.lua
--- LSP integration for dependency management
+-- lvim-dependencies.lsp: entry point for the in-process LSP integration.
+-- Wires up the hover/action submodules and auto-attaches the in-process client to every
+-- manifest buffer (both those opened later and those already loaded at setup time).
+--
+---@module "lvim-dependencies.lsp"
 
 local config = require("lvim-dependencies.config")
 local server = require("lvim-dependencies.lsp.server")
 local registry = require("lvim-dependencies.core.registry")
 local utils = require("lvim-dependencies.utils")
+local hover = require("lvim-dependencies.lsp.hover")
+local action = require("lvim-dependencies.lsp.action")
 
 local debug = utils.debug
 local config_lsp = config.lsp
 
 local M = {}
 
--- Submodules
-M.hover = require("lvim-dependencies.lsp.hover")
-M.action = require("lvim-dependencies.lsp.action")
+-- Submodules re-exported for callers of the lsp entry point.
+M.hover = hover
+M.action = action
 
 --- Check if buffer is a manifest file
 ---@param bufnr integer
@@ -77,8 +82,8 @@ function M.setup()
     debug("Setting up LSP integration", vim.log.levels.INFO)
 
     -- Setup hover and action modules
-    M.hover.setup()
-    M.action.setup()
+    hover.setup()
+    action.setup()
 
     -- Auto-attach LSP to manifest files when opened
     vim.api.nvim_create_autocmd({ "BufReadPost", "BufNewFile" }, {

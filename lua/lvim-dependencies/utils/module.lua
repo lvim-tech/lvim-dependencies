@@ -1,5 +1,9 @@
--- lvim-dependencies/utils/module.lua
--- Module loading utilities with error handling and cache management
+-- lvim-dependencies.utils.module: safe module (re)loading and path<->modpath conversion.
+-- safe_require never throws (pcall + optional notify) so an optional/missing module cannot
+-- break a load path; the rest is filesystem probing of package.path for existence/location
+-- and cache clearing to support hot reload.
+--
+---@module "lvim-dependencies.utils.module"
 
 local notify = require("lvim-dependencies.utils.notify")
 local debug = require("lvim-dependencies.utils.debug")

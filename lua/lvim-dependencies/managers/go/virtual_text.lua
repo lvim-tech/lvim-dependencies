@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/go/virtual_text.lua
--- Virtual text formatting for Go module dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.virtual_text: turns a package record into the eol
+-- virtual-text chunks shown after each go.mod require line (declared → installed → latest,
+-- plus loading/working/error states). It delegates per-dependency-kind rendering to the
+-- manifest's dependency_types formatters and only falls back to a generic layout when a kind
+-- has none; it also holds the go.mod-specific line matchers used to locate a package row.
+--
+---@module "lvim-dependencies.managers.go.virtual_text"
 
 local api = vim.api
 local config = require("lvim-dependencies.config")
@@ -17,12 +20,17 @@ local M = {}
 -- Helpers
 -- ============================================================================
 
+--- Fetch the Go manifest (typed).
+---@return GoManifest|nil
 local function get_manifest()
     local m = init.get_manifest("go")
     ---@cast m GoManifest|nil
     return m
 end
 
+--- Pull the latest version string out of a record's (table) latest field.
+---@param record table
+---@return string|nil
 local function get_latest_version(record)
     if not record or not record.latest then
         return nil
@@ -30,6 +38,9 @@ local function get_latest_version(record)
     return type(record.latest) == "table" and record.latest.version or nil
 end
 
+--- Classify a record as a "replace" directive or a plain "registry" dependency.
+---@param record table
+---@return string
 local function get_dep_type_name(record)
     if type(record.declared) == "table" then
         if record.declared.replace then
@@ -40,6 +51,9 @@ local function get_dep_type_name(record)
     return "registry"
 end
 
+--- Resolve the manifest dependency-type definition for a record.
+---@param record table
+---@return DependencyTypeDef|nil
 local function get_dep_config(record)
     local manifest_data = get_manifest()
     local dep_types = manifest_data and manifest_data.dependency_types or {}
@@ -107,8 +121,13 @@ function M.get_working_parts()
     }
 end
 
+--- A go.mod package record: the shared record plus the go-specific `indirect`
+--- flag (carried in from the declared data — a `// indirect` require line).
+---@class GoPackageRecord : PackageRecord
+---@field indirect? boolean whether the go.mod require line is marked `// indirect`
+
 --- Format package chunks based on dependency type
----@param record PackageRecord
+---@param record GoPackageRecord
 ---@return VirtualTextChunk[]
 function M.format_package_chunks(record)
     if not record then
@@ -176,7 +195,7 @@ function M.format_package_chunks(record)
     return chunks
 end
 
----@param record PackageRecord
+---@param record GoPackageRecord
 ---@return string
 function M.format_package_text(record)
     local chunks = M.format_package_chunks(record)

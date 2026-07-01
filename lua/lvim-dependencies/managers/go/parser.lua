@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/go/parser.lua
--- Parser for go.mod files
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.parser: reads go.mod and extracts every require entry
+-- (both the single-line `require x v1` form and the `require ( … )` block form, tracking
+-- // indirect markers). Results are memoised on the raw file content — the same content
+-- string short-circuits re-parsing — so repeated lookups during redraw are cheap; the cache
+-- is invalidated via clear_cache() whenever an update mutates go.mod.
+--
+---@module "lvim-dependencies.managers.go.parser"
 
 local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")
@@ -21,6 +24,8 @@ local cached_result = nil
 -- Helpers
 -- ============================================================================
 
+--- Locate the nearest go.mod by walking upward from the configured root (or cwd).
+---@return string|nil
 local function find_go_mod()
     local root_dir = config.go and config.go.file_ops and config.go.file_ops.root_dir
     local search = root_dir and vim.fn.expand(root_dir) or vim.fn.getcwd()
@@ -29,6 +34,9 @@ local function find_go_mod()
     return found and found[1] or nil
 end
 
+--- Slurp a file's full contents.
+---@param path string
+---@return string|nil
 local function read_file(path)
     local f = io.open(path, "r")
     if not f then
@@ -99,6 +107,7 @@ end
 -- Public API
 -- ============================================================================
 
+--- Drop the content-hash cache so the next read re-parses go.mod.
 function M.clear_cache()
     cached_content = nil
     cached_result = nil

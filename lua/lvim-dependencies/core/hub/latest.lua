@@ -1,7 +1,10 @@
--- lvim-dependencies/core/hub/latest.lua
--- Central hub for latest package operations (callback-based)
-
----@include "types.lua"
+-- lvim-dependencies.core.hub.latest: callback-based access to a manager's LATEST available
+-- versions (fetched from a registry over the network, so slow). Unlike installed, these
+-- entries EXPIRE: a hit past its TTL is evicted and re-fetched via the manager's
+-- data.latest module, then re-stored with a fresh expiry. Every hit/miss/expiry/error is
+-- recorded to metrics (misses/expiries drive the "trending packages" view).
+--
+---@module "lvim-dependencies.core.hub.latest"
 
 local cache = require("lvim-dependencies.core.cache")
 local utils = require("lvim-dependencies.utils")
@@ -25,6 +28,9 @@ local manager_modules = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Load a manager's data.latest module (must expose get_package_latest), caching it.
+---@param manager_type string
+---@return LatestModule|nil
 local function load_latest_module(manager_type)
     if manager_modules[manager_type] then
         return manager_modules[manager_type]
@@ -71,6 +77,10 @@ end
 -- Public API
 -- ============================================================================
 
+--- Get the latest available version of a package (cache-first; re-fetches on expiry).
+---@param manager_type string
+---@param package_name string
+---@param callback fun(err: string|nil, info: LatestPackageInfo|nil)
 function M.get_package_latest(manager_type, package_name, callback)
     local entry = cache.ensure(manager_type, CACHE_TYPE_LATEST)
     local cached = entry[const.CACHE_FIELDS.DATA][package_name]
@@ -148,6 +158,9 @@ function M.get_package_latest(manager_type, package_name, callback)
     end)
 end
 
+--- All non-expired cached latest entries for a manager (name → info).
+---@param manager_type string
+---@return table<string, LatestPackageInfo>
 function M.get_data(manager_type)
     local entry = cache.ensure(manager_type, CACHE_TYPE_LATEST)
     local result = {}
@@ -162,11 +175,17 @@ function M.get_data(manager_type)
     return result
 end
 
+--- All cached latest entries for a manager, expiry ignored (deepcopied).
+---@param manager_type string
+---@return table<string, LatestPackageInfo>
 function M.get_full_data(manager_type)
     local entry = cache.ensure(manager_type, CACHE_TYPE_LATEST)
     return deepcopy(entry[const.CACHE_FIELDS.DATA])
 end
 
+--- Clear latest cache for a manager/package (or all when manager_type is nil).
+---@param manager_type? string
+---@param package_name? string
 function M.clear_cache(manager_type, package_name)
     if not manager_type then
         debug("Clearing all latest cache", vim.log.levels.INFO)

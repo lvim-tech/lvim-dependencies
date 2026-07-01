@@ -1,5 +1,8 @@
--- lvim-dependencies/managers/cargo/commands.lua
--- Cargo manager commands
+-- lvim-dependencies.managers.cargo.commands: registers cargo-specific user commands
+-- (currently the `features` subcommand) with the core registry and supplies their
+-- completion candidates. Kept separate from handler.lua so command wiring is done once
+-- at startup while the operation handlers stay in the command-pattern dispatch.
+---@module "lvim-dependencies.managers.cargo.commands"
 
 local api = require("lvim-dependencies.managers.cargo.api")
 local features = require("lvim-dependencies.managers.cargo.features")
@@ -33,6 +36,7 @@ end
 ---@param bufnr integer Buffer number
 ---@diagnostic disable-next-line: unused-local
 function M.features(args, manifest_type, bufnr)
+    ---@type string?
     local package = args[2]
 
     if not package then
@@ -52,6 +56,7 @@ end
 -- ============================================================================
 
 --- Register all cargo commands with the registry
+---@return nil
 function M.setup()
     registry.register_command("cargo", "features", M.features)
 

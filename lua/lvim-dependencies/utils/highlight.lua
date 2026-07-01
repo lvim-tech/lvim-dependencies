@@ -1,8 +1,20 @@
--- lvim-dependencies/utils/hl.lua
--- Highlight utilities for color manipulation and highlight group management
+-- lvim-dependencies.utils.highlight: colour math (hex<->rgb, alpha blend, lighten/darken)
+-- plus thin wrappers over the highlight-group API. Defaults are seeded from the live
+-- lvim-utils palette so blends track the active theme without callers passing colours.
+--
+---@module "lvim-dependencies.utils.highlight"
 
 local c = require("lvim-utils.colors")
 
+---@class LvimDependenciesHighlightDefaults
+---@field bg string Background colour blends fall back to
+---@field light string Colour used to lighten
+---@field dark string Colour used to darken
+---@field alpha number Default blend factor for blend_with_background
+---@field light_amount number Default blend amount for lighten
+---@field dark_amount number Default blend amount for darken
+
+---@type LvimDependenciesHighlightDefaults
 local _defaults = {
     bg = c.bg_dark,
     light = c.white,

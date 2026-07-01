@@ -1,5 +1,8 @@
--- lvim-dependencies/config/composer.lua
---- Composer manager specific configuration
+-- lvim-dependencies.config.composer: Composer/packagist.org manager settings — executable,
+-- API endpoints, version selection, dependency sections and outdated polling. Merged over by
+-- the user's opts, then read live by the composer manager.
+---@module "lvim-dependencies.config.composer"
+
 ---@class ComposerConfig
 return {
     --- Executable paths for composer commands

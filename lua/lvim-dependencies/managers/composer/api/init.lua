@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/api/init.lua
--- Public API for composer actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.api: public API surface for composer package actions
+-- (read the package under the cursor, fetch versions from packagist, update, delete). Non-UI
+-- paths edit composer.json directly and refresh the open buffer; UI paths delegate to
+-- composer_ops so the real `composer` binary resolves the dependency tree. Platform
+-- requirements (php / ext-* / lib-* / composer-*) short-circuit — they are not on packagist.
+--
+---@module "lvim-dependencies.managers.composer.api"
 
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
@@ -10,6 +13,8 @@ local hub_latest = require("lvim-dependencies.core.hub.latest")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
+local state = require("lvim-dependencies.core.state")
+local ui = require("lvim-dependencies.ui")
 
 local helpers = require("lvim-dependencies.managers.composer.utils.helpers")
 local file_ops = require("lvim-dependencies.managers.composer.core.file_ops")
@@ -17,6 +22,9 @@ local json_ops = require("lvim-dependencies.managers.composer.core.json_ops")
 local composer_ops = require("lvim-dependencies.managers.composer.core.composer_ops")
 local parser = require("lvim-dependencies.managers.composer.parser")
 local compare_versions = require("lvim-dependencies.managers.composer.compare_versions")
+local manifest_mod = require("lvim-dependencies.managers.composer.manifest")
+local data_installed = require("lvim-dependencies.managers.composer.data.installed")
+local data_latest = require("lvim-dependencies.managers.composer.data.latest")
 
 local debug = utils.debug
 local api = vim.api
@@ -50,8 +58,8 @@ local function clear_package_caches(name)
     cache.clear("composer", CACHE_TYPE_LATEST, name)
     hub_installed.clear_cache("composer", name)
     hub_latest.clear_cache("composer", name)
-    require("lvim-dependencies.managers.composer.data.installed").clear_cache()
-    require("lvim-dependencies.managers.composer.data.latest").clear_cache()
+    data_installed.clear_cache()
+    data_latest.clear_cache()
     parser.clear_cache()
 end
 
@@ -67,7 +75,6 @@ local function refresh_buffer_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
     end
-    local state = require("lvim-dependencies.core.state")
     local buf_state = state.get_buffer_state(bufnr)
     buf_state.skip_next_check = true
     vim.bo[bufnr].modified = false
@@ -134,8 +141,7 @@ function M.fetch_versions_async(name, callback)
     local package_section = helpers.find_package_section(name)
 
     -- Platform packages (php, ext-*, lib-*, composer-*) are not on packagist
-    local manifest_ref = require("lvim-dependencies.managers.composer.manifest")
-    if not manifest_ref.is_package_actionable(name) then
+    if not manifest_mod.is_package_actionable(name) then
         callback({ versions = {}, current = current or "n/a", section = package_section })
         return
     end
@@ -213,8 +219,7 @@ function M.fetch_versions_async(name, callback)
             end
 
             -- Get current from lock file
-            local installed = require("lvim-dependencies.managers.composer.data.installed")
-            installed.get_package_installed(name, function(_, ver)
+            data_installed.get_package_installed(name, function(_, ver)
                 callback({ versions = raw_versions, current = ver or current, section = package_section })
             end)
         end)
@@ -280,6 +285,11 @@ function M.update_async(name, opts, callback)
         new_lines, change = json_ops.insert_package_in_section(lines, section_idx, section_end, new_line)
     end
 
+    if not new_lines then
+        callback({ success = false, message = "failed to update composer.json", packages = {} })
+        return
+    end
+
     local ok, err = file_ops.write_lines(path, new_lines)
     if not ok then
         callback({ success = false, message = "failed to write: " .. tostring(err), packages = {} })
@@ -309,7 +319,6 @@ function M.delete(name, opts, callback)
     end
 
     opts = opts or {}
-    local ui = require("lvim-dependencies.ui")
 
     M.fetch_versions_async(name, function(versions_data)
         local current_version = versions_data and versions_data.current or "not installed"
@@ -374,6 +383,9 @@ function M._delete_package(name, opts, callback)
         callback({ success = false, message = "package " .. name .. " not found", packages = {} })
         return
     end
+    -- found_scope is set together with section_idx/section_end inside the loop above.
+    ---@cast section_idx integer
+    ---@cast section_end integer
 
     local new_lines, change = json_ops.remove_package_from_section(lines, section_idx, section_end, name)
     if not new_lines then

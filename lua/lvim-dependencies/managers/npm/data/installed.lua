@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/data/installed.lua
--- Installed version reader for npm/yarn/pnpm lock files
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.data.installed: reads the resolved installed version of a
+-- package from whichever lock file is present. Each package manager stores versions differently,
+-- so there is a dedicated reader per lock file — package-lock.json (v1/v2/v3), yarn.lock (v1
+-- header blocks), pnpm-lock.yaml (v5/v6 packages section + v9 importers section, stripping the
+-- peer-dependency suffix). Lock files are tried in the priority order of the active manager.
+--
+---@module "lvim-dependencies.managers.npm.data.installed"
 
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
@@ -15,12 +18,16 @@ local M = {}
 -- Lock file readers
 -- ============================================================================
 
+---@return NpmManifest|nil
 local function get_manifest()
     local m = init.get_manifest("npm")
     ---@cast m NpmManifest|nil
     return m
 end
 
+--- Search upward from cwd for a lock file by name.
+---@param lock_file string
+---@return string|nil
 local function find_lock_file(lock_file)
     local found = vim.fs.find(lock_file, {
         upward = true,
@@ -30,6 +37,8 @@ local function find_lock_file(lock_file)
     return found and found[1] or nil
 end
 
+---@param path string
+---@return string|nil
 local function read_file(path)
     local f = io.open(path, "r")
     if not f then

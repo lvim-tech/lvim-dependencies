@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/composer/compare_versions.lua
--- Composer version comparison (semver + Composer constraints)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.compare_versions: semver comparison built for Composer
+-- version strings. Composer constraints carry range operators and a "v" prefix (e.g. "^1.2",
+-- "~2.3", "v1.2.3"), so the parser strips those before comparing; a numeric-only variant
+-- ignores the prerelease suffix. Thin wrapper over the shared lvim-utils.version engine.
+--
+---@module "lvim-dependencies.managers.composer.compare_versions"
 
 local utils = require("lvim-dependencies.utils")
 local version = utils.version

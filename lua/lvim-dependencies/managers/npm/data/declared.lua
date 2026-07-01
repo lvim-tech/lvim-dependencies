@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/npm/data/declared.lua
--- Declared package manager for package.json
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.data.declared: builds the "declared" package set from the raw
+-- package.json dependencies. For each entry it classifies the dependency type against the
+-- manifest's detectors (registry/git/path/workspace) and merges the type's extracted fields into
+-- a normalized record (name/type/declared/raw/section) the rest of the pipeline consumes.
+--
+---@module "lvim-dependencies.managers.npm.data.declared"
 
 local parser = require("lvim-dependencies.managers.npm.parser")
 local init = require("lvim-dependencies.core.init")
@@ -13,6 +15,7 @@ local debug = utils.debug
 ---@class NpmDeclared
 local M = {}
 
+---@return NpmManifest|nil
 local function get_manifest()
     local m = init.get_manifest("npm")
     ---@cast m NpmManifest|nil

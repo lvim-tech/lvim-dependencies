@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/go/data/declared.lua
--- Declared package manager for go.mod
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.data.declared: turns the raw require entries the parser
+-- read from go.mod into normalized declared-package records. Each raw entry is classified
+-- through the manifest's dependency_types (registry vs replace) so downstream renderers get a
+-- consistent {name, type, declared, section, indirect, …} shape regardless of the go.mod form.
+--
+---@module "lvim-dependencies.managers.go.data.declared"
 
 local parser = require("lvim-dependencies.managers.go.parser")
 local init = require("lvim-dependencies.core.init")
@@ -13,6 +15,8 @@ local debug = utils.debug
 ---@class GoDeclared
 local M = {}
 
+--- Fetch the Go manifest (typed).
+---@return GoManifest|nil
 local function get_manifest()
     local m = init.get_manifest("go")
     ---@cast m GoManifest|nil
@@ -73,6 +77,7 @@ function M.get_data()
     return result
 end
 
+--- No-op: declared data is derived live from the parser (which holds the real cache).
 function M.clear_cache()
     debug("go declared cache cleared (no-op)", vim.log.levels.DEBUG)
 end

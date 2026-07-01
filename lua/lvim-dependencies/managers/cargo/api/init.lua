@@ -1,15 +1,20 @@
--- lvim-dependencies/managers/cargo/api/init.lua
--- Public API for cargo actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.api: the public cargo action API used by the handler, LSP
+-- and commands. Locates the package under the cursor, fetches a crate's versions from
+-- crates.io (curl, filtered by the prerelease preference and sorted), and writes/updates/
+-- deletes a dependency in Cargo.toml — either as a plain buffer+file edit or, when from_ui,
+-- by delegating to cargo_ops so the external `cargo` command runs the resolve. Invalidates
+-- every cache layer and refreshes virtual text after a mutation.
+---@module "lvim-dependencies.managers.cargo.api"
 
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
+local state = require("lvim-dependencies.core.state")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
+local ui = require("lvim-dependencies.ui")
 
 local helpers = require("lvim-dependencies.managers.cargo.utils.helpers")
 local file_ops = require("lvim-dependencies.managers.cargo.core.file_ops")
@@ -17,6 +22,8 @@ local toml_ops = require("lvim-dependencies.managers.cargo.core.toml_ops")
 local cargo_ops = require("lvim-dependencies.managers.cargo.core.cargo_ops")
 local parser = require("lvim-dependencies.managers.cargo.parser")
 local compare_versions = require("lvim-dependencies.managers.cargo.compare_versions")
+local installed_data = require("lvim-dependencies.managers.cargo.data.installed")
+local latest_data = require("lvim-dependencies.managers.cargo.data.latest")
 
 local debug = utils.debug
 local api = vim.api
@@ -65,8 +72,8 @@ local function clear_package_caches(name)
     cache.clear("cargo", CACHE_TYPE_LATEST, name)
     hub_installed.clear_cache("cargo", name)
     hub_latest.clear_cache("cargo", name)
-    require("lvim-dependencies.managers.cargo.data.installed").clear_cache()
-    require("lvim-dependencies.managers.cargo.data.latest").clear_cache()
+    installed_data.clear_cache()
+    latest_data.clear_cache()
     parser.clear_cache()
 end
 
@@ -83,7 +90,6 @@ local function refresh_buffer_state(bufnr)
         return
     end
     -- Use state API instead of direct struct access
-    local state = require("lvim-dependencies.core.state")
     local buf_state = state.get_buffer_state(bufnr)
     buf_state.skip_next_check = true
     vim.bo[bufnr].modified = false
@@ -299,7 +305,7 @@ function M.fetch_versions_async(name, callback)
             end
 
             if config.cargo.version.sort_order == "asc" then
-                compare_versions.sort_asc(uniq)
+                compare_versions.sort(uniq)
             else
                 compare_versions.sort_desc(uniq)
             end
@@ -398,7 +404,6 @@ function M.delete(name, opts, callback)
     end
 
     opts = opts or {}
-    local ui = require("lvim-dependencies.ui")
 
     M.fetch_versions_async(name, function(versions_data)
         local current_version = versions_data and versions_data.current or "not installed"
@@ -463,6 +468,9 @@ function M._delete_package(name, opts, callback)
         callback({ success = false, message = "package " .. name .. " not found", packages = {} })
         return
     end
+    -- section_idx and section_end are always set together with found_scope above.
+    ---@cast section_idx integer
+    ---@cast section_end integer
 
     local new_lines, change = toml_ops.remove_package_from_section(lines, section_idx, section_end, name)
     if not new_lines then

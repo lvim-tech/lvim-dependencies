@@ -1,7 +1,8 @@
--- lvim-dependencies/managers/cargo/data/declared.lua
--- Declared package manager for Cargo.toml using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.data.declared: turns the parsed Cargo.toml dependency map
+-- into typed declared-package records. Each raw value is classified through the manifest's
+-- dependency-type detectors (registry/git/path/workspace/…); anything not matched falls back
+-- to a plain registry record. This is the "declared" leg the core hub reads for a manager.
+---@module "lvim-dependencies.managers.cargo.data.declared"
 
 local parser = require("lvim-dependencies.managers.cargo.parser")
 local init = require("lvim-dependencies.core.init")

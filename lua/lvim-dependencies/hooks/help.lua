@@ -1,5 +1,9 @@
--- lvim-dependencies/hooks/help.lua
--- Help texts for LvimDeps commands
+-- lvim-dependencies.hooks.help: markdown help text builders for the :LvimDeps command.
+-- Command metadata lives in the section/category/per-command tables at the top; the
+-- builders render them into markdown tables (main/short) or a single command page, with
+-- get_real_length() correcting column widths for the backtick markup the tables carry.
+--
+---@module "lvim-dependencies.hooks.help"
 
 local M = {}
 

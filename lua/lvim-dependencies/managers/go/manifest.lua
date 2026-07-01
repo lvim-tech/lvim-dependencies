@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/go/manifest.lua
--- Configuration for Go modules manager
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.manifest: the static description of the Go manager —
+-- which files it owns (go.mod / go.sum), the proxy.golang.org registry endpoints, the
+-- go get commands, package-path validation, and the virtual-text / hover formatters keyed
+-- by dependency kind (registry vs replace directive). The core loader reads this table to
+-- know how to detect, render and act on Go dependencies.
+--
+---@module "lvim-dependencies.managers.go.manifest"
 
 local compare_version = require("lvim-dependencies.managers.go.compare_versions")
 local config = require("lvim-dependencies.config")
@@ -79,22 +82,36 @@ M.virtual_text = {
 -- Virtual text helpers
 -- ============================================================================
 
+--- Guard against empty / vim.NIL / non-string values before rendering them.
+---@param val any
+---@return boolean
 local function is_valid_string(val)
     return val ~= nil and val ~= vim.NIL and type(val) == "string" and val ~= ""
 end
 
+--- Append a spaced separator chunk to a virtual-text list.
+---@param vt VirtualTextChunk[]
+---@param sep string
+---@param hl string
 local function add_sep(vt, sep, hl)
     vt[#vt + 1] = { " " .. sep .. " ", hl }
 end
 
+--- Append the declared→installed transition separator.
+---@param vt VirtualTextChunk[]
 local function add_transition(vt)
     add_sep(vt, icons.separators.transition, groups.separator)
 end
 
+--- Append the installed→latest divider separator.
+---@param vt VirtualTextChunk[]
 local function add_divider(vt)
     add_sep(vt, icons.separators.divider, groups.separator)
 end
 
+--- Append the installed-version chunk (or a "Not installed" placeholder).
+---@param vt VirtualTextChunk[]
+---@param installed string|nil
 local function add_installed(vt, installed)
     if installed and installed ~= "not installed" then
         vt[#vt + 1] = { installed, groups.installed }
@@ -103,6 +120,12 @@ local function add_installed(vt, installed)
     end
 end
 
+--- Append the latest-version chunk, coloured up-to-date vs outdated against installed.
+--- `installed` may be nil / the "not installed" sentinel; the is_versioned guard ensures
+--- only a real version string ever reaches compare().
+---@param vt VirtualTextChunk[]
+---@param latest string
+---@param installed string
 local function add_latest(vt, latest, installed)
     local is_versioned = installed and installed ~= "not installed" and installed:match("^v%d")
     local is_current = is_versioned and compare_version.compare(latest, installed) == 0
@@ -117,6 +140,9 @@ local HOVER_METADATA_FIELDS = {
     { field = "homepage", label = "Homepage" },
 }
 
+--- Append the configured metadata fields (description / homepage) to hover lines.
+---@param lines string[]
+---@param metadata table|nil
 local function add_metadata(lines, metadata)
     if not metadata then
         return
@@ -134,6 +160,10 @@ local function add_metadata(lines, metadata)
     end
 end
 
+--- Human-readable " (outdated)"/" (up to date)" suffix for the hover line.
+---@param latest string
+---@param installed string|nil
+---@return string
 local function version_status(latest, installed)
     if not installed or installed == "not installed" then
         return ""
@@ -147,6 +177,10 @@ local function version_status(latest, installed)
     return ""
 end
 
+--- Build the standard declared→installed→latest virtual-text row.
+---@param dep table
+---@param declared_text string
+---@return VirtualTextChunk[]
 local function standard_vt(dep, declared_text)
     local vt = { { declared_text, groups.declared } }
     add_transition(vt)
@@ -158,6 +192,12 @@ local function standard_vt(dep, declared_text)
     return vt
 end
 
+--- Build the standard hover markdown lines for a dependency.
+---@param dep table
+---@param latest string|nil
+---@param metadata table|nil
+---@param opts? {show_fetching?: boolean}
+---@return string[]
 local function standard_hover(dep, latest, metadata, opts)
     local lines = {}
     if dep.declared then

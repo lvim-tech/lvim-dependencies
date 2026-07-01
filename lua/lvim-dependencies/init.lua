@@ -1,3 +1,12 @@
+-- lvim-dependencies: entry point — merges the user config in place, wires the runtime
+-- together and starts everything. Order matters: highlights and colours are registered
+-- before the UI/metrics/registry so the first render already has the palette, and the
+-- lvim-utils colour hook re-registers them on a live colorscheme switch; state handlers
+-- are bound to the virtual-text module (a one-way dependency that avoids a require cycle
+-- between core.state and core.virtual_text) before the LSP, autocmd and command layers arm.
+--
+---@module "lvim-dependencies"
+
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 local cursor = require("lvim-dependencies.ui.cursor")
@@ -14,10 +23,27 @@ local debug = utils.debug
 
 local M = {}
 
+--- Configure and start lvim-dependencies. Merges `user_config` into the live config in
+--- place, registers highlights (and a colorscheme-change hook), then brings up metrics,
+--- registry, state, LSP, autocmds and commands. No-op with an error notice on Neovim < 0.10.
+---@param user_config? table  user overrides merged into the live config
+---@return nil
 function M.setup(user_config)
+    if vim.fn.has("nvim-0.10") == 0 then
+        vim.notify("lvim-dependencies requires Neovim >= 0.10", vim.log.levels.ERROR)
+        return
+    end
     if user_config ~= nil then
         debug("Merging user config", vim.log.levels.DEBUG)
-        utils_table.merge(config, user_config)
+        -- Merge via the SHARED lvim-utils.utils.merge (the one every lvim-tech plugin uses — clean array
+        -- REPLACE, recursive map merge), falling back to the local table.merge when lvim-utils is absent so the
+        -- plugin still works standalone.
+        local ok_uu, uu = pcall(require, "lvim-utils.utils")
+        if ok_uu and type(uu.merge) == "function" then
+            uu.merge(config, user_config)
+        else
+            utils_table.merge(config, user_config)
+        end
     end
     cursor.setup()
 

@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/handler.lua
--- Command Pattern: pubspec handler — implements execute(cmd, callback)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.handler: the pubspec command handler (Command pattern).
+-- Registers a single `execute(cmd, callback)` object with the core operator; a dispatch table
+-- keyed by INSTALLER_METHODS routes each command type to its handler, and the handlers drive the
+-- interactive install/update/delete flows (version/section/name pickers) before delegating the
+-- actual file/CLI work to the api module. Loaded eagerly by register.lua so the operator knows
+-- about pubspec at startup.
+--
+---@module "lvim-dependencies.managers.pubspec.handler"
 
 local operator = require("lvim-dependencies.core.operator")
 local const = require("lvim-dependencies.core.const")

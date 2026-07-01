@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/cargo/manifest.lua
--- Configuration for Cargo (Rust) package manager
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.manifest: the static description of the cargo ecosystem
+-- that drives the generic core — file/lock patterns, dependency sections, special
+-- (non-dependency) keys, package line patterns, the crates.io registry endpoints, and the
+-- external `cargo` command templates. It also carries the per-dependency-type table
+-- (registry/git/path/workspace/no_version) whose format/format_hover build the virtual-text
+-- chunks and hover lines for each kind of dependency.
+---@module "lvim-dependencies.managers.cargo.manifest"
 
 local compare_version = require("lvim-dependencies.managers.cargo.compare_versions")
 local config = require("lvim-dependencies.config")
@@ -158,8 +161,10 @@ end
 ---@param latest string
 ---@param installed string|nil
 local function add_latest(vt, latest, installed)
-    local is_versioned = installed and installed ~= "not installed" and installed:match("^%d")
-    local is_current = is_versioned and compare_version.compare(latest, installed) ~= 1
+    local is_current = installed
+        and installed ~= "not installed"
+        and installed:match("^%d")
+        and compare_version.compare(latest, installed) ~= 1
 
     local icon = is_current and icons.up_to_date or icons.outdated
     local hl = is_current and groups.up_to_date or groups.outdated

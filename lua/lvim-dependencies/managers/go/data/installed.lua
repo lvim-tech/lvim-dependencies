@@ -1,15 +1,13 @@
--- lvim-dependencies/managers/go/data/installed.lua
--- Installed version reader for Go modules
+-- lvim-dependencies.managers.go.data.installed: reports the "installed" version of a Go
+-- module, which for Go modules IS the version pinned in go.mod. go.sum is deliberately NOT
+-- consulted: it accumulates checksums for every version ever downloaded, so a single package
+-- can appear many times (v1.4.9, v1.4.11, v1.4.12, …) with no single "current" answer.
 --
--- In Go modules, the "installed" version is the one declared in go.mod.
--- go.sum is NOT used for version lookups because it accumulates checksums
--- for every version ever downloaded — the same package can appear dozens
--- of times with different versions (e.g. v1.4.9, v1.4.11, v1.4.12, v1.4.13).
-
----@include "core/types.lua"
+---@module "lvim-dependencies.managers.go.data.installed"
 
 local utils = require("lvim-dependencies.utils")
 local parser = require("lvim-dependencies.managers.go.parser")
+local hub_installed = require("lvim-dependencies.core.hub.installed")
 
 local debug = utils.debug
 
@@ -50,9 +48,9 @@ function M.get_data(declared_packages)
     return result
 end
 
+--- Clear the shared installed-version hub cache for the Go manager.
 function M.clear_cache()
-    local hub = require("lvim-dependencies.core.hub.installed")
-    hub.clear_cache("go")
+    hub_installed.clear_cache("go")
     debug("go installed cache cleared (via hub)", vim.log.levels.INFO)
 end
 

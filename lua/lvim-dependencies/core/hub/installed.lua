@@ -1,7 +1,9 @@
--- lvim-dependencies/core/hub/installed.lua
--- Central hub for installed package operations (callback-based)
-
----@include "types.lua"
+-- lvim-dependencies.core.hub.installed: callback-based access to a manager's INSTALLED
+-- versions (read from lock files, disk-bound). Serves from core.cache on hit; on miss it
+-- defers to the manager's data.installed module, then stores the result with a TTL so a
+-- lock file isn't re-parsed on every lookup. Every hit/miss/error is recorded to metrics.
+--
+---@module "lvim-dependencies.core.hub.installed"
 
 local cache = require("lvim-dependencies.core.cache")
 local utils = require("lvim-dependencies.utils")
@@ -24,6 +26,9 @@ local manager_modules = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Load a manager's data.installed module, caching the result.
+---@param manager_type string
+---@return InstalledModule|nil
 local function load_installed_module(manager_type)
     if manager_modules[manager_type] then
         return manager_modules[manager_type]
@@ -47,6 +52,9 @@ local function load_installed_module(manager_type)
     return mod
 end
 
+--- Normalize a cached entry (table or bare string) to a version string.
+---@param cached any
+---@return string|nil
 local function extract_version(cached)
     if type(cached) == "table" then
         return cached.version
@@ -58,6 +66,10 @@ end
 -- Public API
 -- ============================================================================
 
+--- Get the installed version of a package (cache-first, TTL'd on miss).
+---@param manager_type string
+---@param package_name string
+---@param callback fun(err: string|nil, version: string|nil)
 function M.get_package_installed(manager_type, package_name, callback)
     local entry = cache.ensure(manager_type, CACHE_TYPE_INSTALLED)
     local cached = entry[const.CACHE_FIELDS.DATA][package_name]
@@ -135,6 +147,9 @@ function M.get_package_installed(manager_type, package_name, callback)
     end)
 end
 
+--- All cached installed versions for a manager (name → version string).
+---@param manager_type string
+---@return table<string, string|nil>
 function M.get_data(manager_type)
     local entry = cache.ensure(manager_type, CACHE_TYPE_INSTALLED)
     local result = {}
@@ -144,11 +159,17 @@ function M.get_data(manager_type)
     return result
 end
 
+--- All cached installed entries for a manager, with metadata (deepcopied).
+---@param manager_type string
+---@return table<string, InstalledPackageInfo>
 function M.get_full_data(manager_type)
     local entry = cache.ensure(manager_type, CACHE_TYPE_INSTALLED)
     return vim.deepcopy(entry[const.CACHE_FIELDS.DATA])
 end
 
+--- Clear installed cache for a manager/package (or all when manager_type is nil).
+---@param manager_type? string
+---@param package_name? string
 function M.clear_cache(manager_type, package_name)
     if not manager_type then
         cache.get()[CACHE_TYPE_INSTALLED] = {}

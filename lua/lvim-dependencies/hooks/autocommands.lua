@@ -1,13 +1,18 @@
--- lvim-dependencies/hooks/autocommands.lua
--- Autocommands for buffer events
+-- lvim-dependencies.hooks.autocommands: buffer-event autocommands that feed core.state.
+-- A data-driven AUTOCMD_DEFS table maps each Vim event to a named state event (or a custom
+-- handler); everything is registered under one augroup so setup() is idempotent (clear=true).
+--
+---@module "lvim-dependencies.hooks.autocommands"
+
+local utils = require("lvim-dependencies.utils")
+local state = require("lvim-dependencies.core.state")
 
 local api = vim.api
-local state = require("lvim-dependencies.core.state")
-local debug = require("lvim-dependencies.utils").debug
+local debug = utils.debug
 
 local M = {}
 
---- Autocommand group name
+---@type string augroup for all state-tracking autocommands
 local GROUP_NAME = "LvimDepsState"
 
 --- Map of autocommand events to the state event names they trigger
@@ -52,6 +57,7 @@ local AUTOCMD_DEFS = {
     },
 }
 
+--- Register all buffer-event autocommands (idempotent — the augroup is cleared first).
 function M.setup()
     local group = api.nvim_create_augroup(GROUP_NAME, { clear = true })
 

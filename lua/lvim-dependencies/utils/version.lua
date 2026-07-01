@@ -1,5 +1,10 @@
--- lvim-dependencies/utils/version.lua
--- Version parsing and comparison utilities for semantic and custom version formats
+-- lvim-dependencies.utils.version: semantic-version parsing, comparison, constraint
+-- satisfaction and collection ops (latest/sort). Because each package manager spells
+-- versions differently, the core parser is pattern-driven and exposed through factories
+-- (create_parser/comparator/utils) so a manager can supply its own clean/component patterns
+-- while the semver helpers cover the common case.
+--
+---@module "lvim-dependencies.utils.version"
 
 local M = {}
 

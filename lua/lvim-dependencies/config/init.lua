@@ -1,6 +1,8 @@
--- lvim-dependencies/config/init.lua
---- Main configuration module that aggregates all submodules
----@class Config
+-- lvim-dependencies.config: the aggregate config facade. Pulls every config submodule up onto
+-- one table so callers require this single module and reach any setting via M.<area> or the
+-- dotted M.get("area", "key"). The submodules are the live tables (setup merges into them in
+-- place), so this facade always exposes the effective values.
+---@module "lvim-dependencies.config"
 
 local config_message = require("lvim-dependencies.config.message")
 local config_manager = require("lvim-dependencies.config.manager")
@@ -17,6 +19,7 @@ local config_npm = require("lvim-dependencies.config.npm")
 local config_composer = require("lvim-dependencies.config.composer")
 local config_go = require("lvim-dependencies.config.go")
 
+---@class Config
 local M = {}
 
 -- Existing modules

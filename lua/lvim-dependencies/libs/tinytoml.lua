@@ -1,4 +1,5 @@
--- lvim-dependencies/libs/tinytoml.lua
+-- lvim-dependencies.libs.tinytoml: vendored FourierTransformer/tinytoml (TOML parser)
+---@module "lvim-dependencies.libs.tinytoml"
 
 -- https://github.com/FourierTransformer/tinytoml/blob/main/tinytoml.lua
 

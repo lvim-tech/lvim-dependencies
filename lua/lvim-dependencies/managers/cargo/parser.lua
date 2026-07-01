@@ -1,7 +1,8 @@
--- lvim-dependencies/managers/cargo/parser.lua
--- Parser for Cargo.toml files using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.parser: reads the project's Cargo.toml and parses it into a
+-- name→value dependency map (across all dependency sections, minus the special keys). Keeps a
+-- content-hash cache (last parsed content + result) so an unchanged file is never re-parsed;
+-- clear_cache() drops it after a write.
+---@module "lvim-dependencies.managers.cargo.parser"
 
 local toml = require("lvim-dependencies.libs.toml")
 local utils = require("lvim-dependencies.utils")
@@ -31,6 +32,8 @@ local function get_manifest()
     return m
 end
 
+---@param filename string
+---@return string|nil content
 local function read_file(filename)
     local file = io.open(filename, "r")
     if not file then
@@ -41,6 +44,11 @@ local function read_file(filename)
     return content
 end
 
+--- Return the content + path of the first existing file among the given patterns,
+--- searched relative to the configured root_dir (or cwd).
+---@param patterns string[]
+---@return string|nil content
+---@return string|nil path
 local function find_first_existing_file(patterns)
     local root_dir = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir
     local search_path = root_dir and vim.fn.expand(root_dir) or "."
@@ -54,6 +62,8 @@ local function find_first_existing_file(patterns)
     return nil, nil
 end
 
+---@param content string
+---@return table|nil
 local function parse_toml(content)
     local ok, data = pcall(toml.parse, content)
     if not ok or not data then
@@ -63,6 +73,8 @@ local function parse_toml(content)
     return data
 end
 
+---@param list string[]
+---@return table<string, boolean>
 local function list_to_set(list)
     local set = {}
     for _, v in ipairs(list) do
@@ -71,6 +83,11 @@ local function list_to_set(list)
     return set
 end
 
+--- Collect dependency entries from every dependency section, skipping special keys.
+---@param data table parsed Cargo.toml
+---@param sections string[]
+---@param special_keys table<string, boolean>
+---@return table<string, any>
 local function extract_dependencies(data, sections, special_keys)
     local result = {}
     for _, section in ipairs(sections) do
@@ -90,6 +107,8 @@ end
 -- Public API
 -- ============================================================================
 
+--- Drop the content-hash cache so the next get_dependencies() re-parses from disk.
+---@return nil
 function M.clear_cache()
     cached_content = nil
     cached_result = nil

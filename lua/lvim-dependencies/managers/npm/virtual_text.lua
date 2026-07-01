@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/virtual_text.lua
--- Virtual text formatting for npm/yarn/pnpm dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.virtual_text: turns a PackageRecord into the inline
+-- virtual-text chunks the core renders after each dependency line. It resolves the record's
+-- dependency type (registry/git/path/workspace) and delegates to the manifest's per-type
+-- formatter, falling back to a generic declared → installed ┊ latest layout. Also provides the
+-- loading/working animation chunks and helpers to locate a package's line in a buffer.
+--
+---@module "lvim-dependencies.managers.npm.virtual_text"
 
 local api = vim.api
 local config = require("lvim-dependencies.config")
@@ -17,12 +20,16 @@ local M = {}
 -- Helpers
 -- ============================================================================
 
+---@return NpmManifest|nil
 local function get_manifest()
     local m = init.get_manifest("npm")
     ---@cast m NpmManifest|nil
     return m
 end
 
+--- Pull the resolved latest version string out of a package record's latest field.
+---@param record table
+---@return string|nil
 local function get_latest_version(record)
     if not record or not record.latest then
         return nil
@@ -30,6 +37,9 @@ local function get_latest_version(record)
     return type(record.latest) == "table" and record.latest.version or nil
 end
 
+--- Classify a record's declared value into a dependency-type key.
+---@param record table
+---@return string
 local function get_dep_type_name(record)
     if type(record.declared) == "table" then
         if record.declared.git then
@@ -61,6 +71,9 @@ local function get_dep_type_name(record)
     return "registry"
 end
 
+--- Resolve the manifest dependency-type definition for a record.
+---@param record table
+---@return DependencyTypeDef|nil
 local function get_dep_config(record)
     local manifest_data = get_manifest()
     local dep_types = manifest_data and manifest_data.dependency_types or {}

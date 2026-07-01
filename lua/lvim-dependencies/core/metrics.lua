@@ -1,7 +1,11 @@
--- lvim-dependencies/core/metrics.lua
--- In-memory metrics collection and analysis
-
----@include "types.lua"
+-- lvim-dependencies.core.metrics: in-memory instrumentation for the plugin. Records
+-- cache hits/misses/expiries, per-package load timings (via a start/end_measure stack
+-- so nested/concurrent measurements don't clobber each other), operation timelines and
+-- error tallies, then renders them as a markdown report (with sparklines) into a float.
+-- Numeric-keyed tables (e.g. by_level keyed on vim.log.levels) are stringified before
+-- JSON save because vim.json.encode rejects sparse arrays.
+--
+---@module "lvim-dependencies.core.metrics"
 
 local events = require("lvim-dependencies.core.events")
 local levels = require("lvim-dependencies.utils.levels")
@@ -500,7 +504,9 @@ function M.get_trending_packages(limit)
     local now = os_time()
     local trending = {}
     -- Trending is based on latest lookups (most meaningful for "what are you working on")
-    for pkg, data in pairs(M.stats.performance.by_package.latest or {}) do
+    ---@type ByPackagePerf
+    local by_package = M.stats.performance.by_package
+    for pkg, data in pairs(by_package.latest or {}) do
         local recency = data.last_access and (now - data.last_access) or 3600
         local score = data.count * (1000 / math_max(recency, 1))
         trending[#trending + 1] = { name = pkg, score = score }
@@ -634,6 +640,8 @@ local function format_session_duration()
     return string_format("%dm %ds", math_floor(duration / 60), duration % 60)
 end
 
+--- Render the full metrics report as a markdown string.
+---@return string
 function M.report()
     local lines = {}
     local add = function(...)
@@ -728,9 +736,12 @@ function M.report()
         end
         add("")
 
+        ---@type ByPackagePerf
+        local by_package = M.stats.performance.by_package
+
         -- Slowest latest lookups (network fetches)
         local slowest_latest = {}
-        for pkg, data in pairs(M.stats.performance.by_package.latest or {}) do
+        for pkg, data in pairs(by_package.latest or {}) do
             if data.count > 0 then
                 slowest_latest[#slowest_latest + 1] = {
                     name = pkg,
@@ -755,7 +766,7 @@ function M.report()
 
         -- Slowest installed lookups (lock file reads)
         local slowest_installed = {}
-        for pkg, data in pairs(M.stats.performance.by_package.installed or {}) do
+        for pkg, data in pairs(by_package.installed or {}) do
             if data.count > 0 then
                 slowest_installed[#slowest_installed + 1] = {
                     name = pkg,
@@ -821,6 +832,8 @@ local function stop_timer(timer)
     end
 end
 
+--- Open the report in a float with reload/copy/reset/save/load keymaps.
+---@return integer? buf, integer? win
 function M.show()
     local content = M.report()
     local buf, win = float.open(content, " Dependencies Metrics ")
@@ -853,6 +866,9 @@ function M.show()
     return buf, win
 end
 
+--- Open the report in a float that auto-refreshes on a timer.
+---@param refresh_interval? number Seconds between refreshes
+---@return integer? buf, integer? win
 function M.show_live(refresh_interval)
     refresh_interval = refresh_interval or DEFAULT_REFRESH_INTERVAL
     local content = M.report()
@@ -899,8 +915,10 @@ end
 -- Setup
 -- ============================================================================
 
+---@type uv.uv_timer_t|nil
 local _auto_save_timer = nil
 
+--- Initialize stats, subscribe to debug events, and start the auto-save timer.
 function M.setup()
     if not config.metrics.enabled then
         return

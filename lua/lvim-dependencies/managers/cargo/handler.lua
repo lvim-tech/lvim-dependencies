@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/cargo/handler.lua
--- Command Pattern: cargo handler — implements execute(cmd, callback)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.handler: Command-pattern handler for cargo. Implements a
+-- single execute(cmd, callback) that a dispatch table routes to install/update/delete/
+-- check-outdated/features operations. The install/update handlers drive the multi-step async
+-- flow (fetch versions → pick version → fetch features → pick features → call the cargo api),
+-- and register themselves with the core operator on load.
+---@module "lvim-dependencies.managers.cargo.handler"
 
 local operator = require("lvim-dependencies.core.operator")
 local const = require("lvim-dependencies.core.const")
@@ -69,7 +71,7 @@ end
 --- Show version selection UI
 ---@param package string
 ---@param versions_data VersionData
----@param callback fun(selected_version: string)
+---@param callback fun(selected_version: string|nil) nil signals a cancelled selection
 local function show_version_selection(package, versions_data, callback)
     local items = versions_data.versions or {}
 
@@ -110,7 +112,7 @@ end
 
 --- Show features selection UI
 ---@param package string
----@param features_data table
+---@param features_data table|nil nil/without `available` means no features to offer
 ---@param current_features string[]
 ---@param callback fun(selected_features: string[], default_features: boolean, optional: boolean)
 local function show_features_selection(package, features_data, current_features, callback)

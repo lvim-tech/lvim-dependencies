@@ -1,5 +1,9 @@
--- lvim-dependencies/utils/fs.lua
--- File system utilities for dependency management
+-- lvim-dependencies.utils.file_system: filesystem helpers for the plugin's state and cache
+-- files. Every operation returns `(result, err)` and never throws — file work is wrapped in
+-- pcall so a missing path or permission error surfaces as an error string the caller can
+-- handle, instead of aborting whatever pipeline invoked it.
+--
+---@module "lvim-dependencies.utils.file_system"
 
 local fn = vim.fn
 

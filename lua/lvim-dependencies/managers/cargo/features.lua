@@ -1,13 +1,16 @@
--- lvim-dependencies/managers/cargo/features.lua
--- Centralized feature management for Cargo dependencies
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.features: centralized feature management for cargo
+-- dependencies. Fetches the available feature set for a crate from crates.io (cached +
+-- in-flight deduped), reads the currently-declared features out of Cargo.toml, rewrites the
+-- dependency line to the chosen features/flags, then invalidates every layer's cache and
+-- refreshes the buffer's virtual text so the change shows immediately.
+---@module "lvim-dependencies.managers.cargo.features"
 
 local utils = require("lvim-dependencies.utils")
-local notify = utils.notify
 local parser = require("lvim-dependencies.managers.cargo.parser")
 local file_ops = require("lvim-dependencies.managers.cargo.core.file_ops")
 local toml_ops = require("lvim-dependencies.managers.cargo.core.toml_ops")
+local helpers = require("lvim-dependencies.managers.cargo.utils.helpers")
+local installed_data = require("lvim-dependencies.managers.cargo.data.installed")
 local ui = require("lvim-dependencies.ui")
 local http = require("lvim-dependencies.utils.http")
 local config = require("lvim-dependencies.config")
@@ -17,13 +20,18 @@ local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
 local package_loader = require("lvim-dependencies.core.package_loader")
 
+local notify = utils.notify
 local debug = utils.debug
 local api = vim.api
 
 ---@class CargoFeatures
 local M = {}
 
+--- Per-crate available-feature cache (feature name list), keyed by crate name.
+---@type table<string, string[]>
 local features_cache = {}
+--- Pending crates.io requests → their queued callbacks (in-flight dedup).
+---@type table<string, fun(features: string[]|nil, err: string|nil)[]>
 local in_flight = {}
 
 -- ============================================================================
@@ -169,7 +177,7 @@ end
 -- ============================================================================
 
 ---@param package_name string
----@param opts {features?: string[], default_features?: boolean, optional?: boolean}
+---@param opts {features?: string[], default_features?: boolean, optional?: boolean, bufnr?: integer}
 ---@param callback fun(success: boolean, message: string|nil)
 function M.update_features(package_name, opts, callback)
     debug(string.format("Updating features for %s", package_name), vim.log.levels.INFO)
@@ -199,7 +207,7 @@ function M.update_features(package_name, opts, callback)
         return
     end
 
-    local sections = require("lvim-dependencies.managers.cargo.utils.helpers").get_dependency_sections()
+    local sections = helpers.get_dependency_sections()
     local bufnr = opts.bufnr or vim.fn.bufnr(path)
 
     local target_section_idx = nil
@@ -222,6 +230,8 @@ function M.update_features(package_name, opts, callback)
         callback(false, string.format("Could not find package %s", package_name))
         return
     end
+    -- target_section_end is always set together with target_section_idx above.
+    ---@cast target_section_end integer
 
     local saved_view = nil
     if bufnr ~= -1 and api.nvim_buf_is_valid(bufnr) and vim.api.nvim_get_current_buf() == bufnr then
@@ -241,6 +251,8 @@ function M.update_features(package_name, opts, callback)
         callback(false, string.format("Failed to replace package %s in Cargo.toml", package_name))
         return
     end
+    -- A true `replaced` guarantees new_lines was returned (never nil in that path).
+    ---@cast new_lines string[]
 
     local write_ok, write_err = file_ops.write_lines(path, new_lines)
     if not write_ok then
@@ -261,7 +273,7 @@ function M.update_features(package_name, opts, callback)
     hub_declared.refresh_data("cargo")
     package_loader.clear_cache(package_name)
     hub_installed.clear_cache("cargo", package_name)
-    require("lvim-dependencies.managers.cargo.data.installed").clear_cache()
+    installed_data.clear_cache()
 
     -- ==========================================================================
     -- Refresh virtual text via the public vt API (no direct virt_texts access)

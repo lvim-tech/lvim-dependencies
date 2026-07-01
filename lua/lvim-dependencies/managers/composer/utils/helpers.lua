@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/composer/utils/helpers.lua
--- Common utilities for composer actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.utils.helpers: small shared lookups used across the
+-- composer action layer — resolve the manifest, list the dependency sections, find which
+-- section a package lives in (composer.json), and read a single installed version out of
+-- composer.lock. Kept stateless (clear_cache is a no-op) so it can be required freely.
+--
+---@module "lvim-dependencies.managers.composer.utils.helpers"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
@@ -20,6 +22,8 @@ function M.get_manifest()
     return m
 end
 
+--- The composer.json sections that hold dependencies.
+---@return string[]
 function M.get_dependency_sections()
     local manifest = M.get_manifest()
     return (manifest and manifest.dependency_sections) or { "require", "require-dev" }

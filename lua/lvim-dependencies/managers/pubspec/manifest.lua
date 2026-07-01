@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/manifest.lua
--- PubSpec manifest - defines all configuration for pubspec manager
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.manifest: the static description of the pubspec ecosystem.
+-- Declares the technical facts (file/lock patterns, dependency sections, SDK/special keys,
+-- pub.dev registry endpoints, flutter/dart CLI commands) AND the per-dependency-type render logic
+-- (M.dependency_types): each type knows how to detect itself from a raw YAML value, extract its
+-- fields, and format both the inline virtual text and the hover lines. The values marked
+-- "overridden by config.*" are defaults the live config layers on top of.
+--
+---@module "lvim-dependencies.managers.pubspec.manifest"
 
 local compare_version = require("lvim-dependencies.managers.pubspec.compare_versions")
 local config = require("lvim-dependencies.config")
@@ -187,7 +191,7 @@ end
 ---@param installed string|nil
 local function add_latest(vt, latest, installed)
     local is_versioned = installed and installed ~= "not installed" and installed:match("^%d")
-    local is_current = is_versioned and compare_version.compare(latest, installed) ~= 1
+    local is_current = is_versioned and installed ~= nil and compare_version.compare(latest, installed) ~= 1
 
     local icon = is_current and icons.up_to_date or icons.outdated
     local hl = is_current and groups.up_to_date or groups.outdated

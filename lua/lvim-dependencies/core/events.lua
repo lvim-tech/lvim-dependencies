@@ -1,7 +1,8 @@
--- lvim-dependencies/core/events.lua
--- Central event bus for the plugin
-
----@include "types.lua"
+-- lvim-dependencies.core.events: a tiny synchronous pub/sub bus. Handlers per event are
+-- kept in insertion order and invoked under pcall so one throwing handler can't abort the
+-- rest of the emit; off() walks back-to-front so removal during dispatch is safe.
+--
+---@module "lvim-dependencies.core.events"
 
 -- LuaJIT compatibility: table.unpack may not be available
 local _unpack = table.unpack or unpack

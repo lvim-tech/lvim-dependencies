@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/data/installed.lua
--- Installed package manager for pubspec.lock using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.data.installed: resolves the installed version of each
+-- dependency from pubspec.lock. Finds the lock file by upward search (root_dir → buffer dir → cwd),
+-- parses it with tinyyaml, and looks a package up in its `packages` map (case-insensitive fallback).
+-- SDK packages report "sdk" without touching the lock file. The real version cache lives in
+-- core.hub.installed — this module just does the lookup and clear_cache delegates to that hub.
+--
+---@module "lvim-dependencies.managers.pubspec.data.installed"
 
 local utils = require("lvim-dependencies.utils")
 local tinyyaml = require("lvim-dependencies.libs.tinyyaml")
@@ -113,6 +116,7 @@ end
 ---@param manifest_data ManagerManifest
 ---@return string|nil
 local function get_sdk_version(package_name, manifest_data)
+    ---@cast manifest_data PubspecManifest
     local sdk_packages = manifest_data.sdk_packages or {}
     return sdk_packages[package_name] and "sdk" or nil
 end

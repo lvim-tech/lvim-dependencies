@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/go/compare_versions.lua
--- Go module version comparison (semver with v-prefix)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.compare_versions: semver comparison for Go module
+-- versions. Go tags are always v-prefixed (v1.2.3), can carry a "+incompatible" build
+-- suffix, and pseudo-versions encode a timestamp+commit (v0.0.0-20210101000000-abcdef012345);
+-- the shared version helpers are seeded with Go-specific clean/component patterns so all the
+-- comparators/sorters below treat those forms consistently.
+--
+---@module "lvim-dependencies.managers.go.compare_versions"
 
 local utils = require("lvim-dependencies.utils")
 local version = utils.version

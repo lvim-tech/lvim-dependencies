@@ -1,7 +1,12 @@
--- lvim-dependencies/core/cache.lua
--- Central cache module for all data types
-
----@include "types.lua"
+-- lvim-dependencies.core.cache: the single in-memory store for every data type
+-- (declared/installed/latest/manifest/virtual_text). Each manager's entry carries
+-- data + metadata + per-package expiry + a version stamp; entries whose version no
+-- longer matches CACHE_ENTRY_TEMPLATE are transparently discarded, so a template
+-- change invalidates stale on-disk-shaped data without a migration. metrics is
+-- required lazily (get_metrics) to break the cache <-> metrics require cycle at
+-- startup, and a libuv timer periodically sweeps expired entries.
+--
+---@module "lvim-dependencies.core.cache"
 
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
@@ -441,7 +446,10 @@ function M.cleanup_expired()
 end
 
 --- Start periodic cache cleanup timer
+---@type uv.uv_timer_t|nil
 local cleanup_timer = nil
+
+---@return uv.uv_timer_t|nil
 function M.start_cleanup_timer()
     if cleanup_timer then
         return cleanup_timer

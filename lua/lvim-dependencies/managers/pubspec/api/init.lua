@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/pubspec/api/init.lua
--- Public API for pubspec actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.api: the public action surface for the pubspec manager
+-- (get package at cursor, fetch versions from pub.dev, update, delete). It owns the YAML-editing
+-- orchestration — resolving the target section, preparing the line change, writing the file and,
+-- when from_ui, running `pub get`/`pub remove` — while delegating the low-level file/YAML/CLI work
+-- to core.file_ops / core.yaml_ops / core.pub_ops. On any edit it clears the relevant caches and
+-- fires the LvimDepsPackageUpdated user autocmd so the virtual text refreshes.
+--
+---@module "lvim-dependencies.managers.pubspec.api"
 
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
@@ -38,10 +42,14 @@ local cached_sections = nil
 -- Internal helpers
 -- ============================================================================
 
+--- Fire the user autocmd that tells the UI a package changed.
+---@return nil
 local function trigger_package_updated()
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
+--- Dependency sections from the manifest, memoized for the session.
+---@return string[]
 local function get_dependency_sections()
     if not cached_sections then
         cached_sections = helpers.get_dependency_sections()
@@ -49,6 +57,10 @@ local function get_dependency_sections()
     return cached_sections
 end
 
+--- Find the line index of the last dependency section present in the file.
+---@param lines string[]
+---@param sections string[]
+---@return integer|nil
 local function find_last_section_index(lines, sections)
     local last_idx = 0
     for i, line in ipairs(lines) do
@@ -76,6 +88,10 @@ local function clear_package_caches(name)
     parser.clear_cache()
 end
 
+--- Drop a removed package's virtual text and re-anchor the rest.
+---@param bufnr integer
+---@param name string
+---@return nil
 local function update_vt_after_removal(bufnr, name)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -84,6 +100,9 @@ local function update_vt_after_removal(bufnr, name)
     vt.move_virt_texts_only(bufnr)
 end
 
+--- Mark the buffer unmodified and pick up the on-disk change.
+---@param bufnr integer
+---@return nil
 local function refresh_buffer_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -94,6 +113,14 @@ local function refresh_buffer_state(bufnr)
     end)
 end
 
+--- Decide which dependency section a package write should target.
+--- Prefers an explicit valid scope, then the package's current section, then
+--- dependency_overrides, then the first section it is actually found in, finally the default.
+---@param name string
+---@param disk_lines string[]
+---@param sections string[]
+---@param scope string|nil
+---@return string
 local function resolve_scope(name, disk_lines, sections, scope)
     if scope and vim.tbl_contains(sections, scope) then
         return scope
@@ -127,6 +154,16 @@ local function resolve_scope(name, disk_lines, sections, scope)
     return sections[1] or "dependencies"
 end
 
+--- Build the new file lines for writing `name: version` into `scope`, creating the section
+--- if it is missing and replacing or inserting the package block as needed.
+---@param name string
+---@param version string
+---@param disk_lines string[]
+---@param scope string
+---@param sections string[]
+---@return string[] new_lines
+---@return FileChange|nil change
+---@return integer section_idx
 local function prepare_yaml_changes(name, version, disk_lines, scope, sections)
     local section_idx = yaml_ops.find_section_index(disk_lines, scope)
 
@@ -287,7 +324,7 @@ function M.fetch_versions_async(name, callback)
             end
 
             if config.pubspec.version.sort_order == "asc" then
-                compare_versions.sort_asc(uniq)
+                compare_versions.sort(uniq)
             else
                 compare_versions.sort_desc(uniq)
             end
@@ -454,7 +491,7 @@ function M._delete_package(name, opts, callback)
         end
     end
 
-    if not found_scope then
+    if not found_scope or not section_idx or not section_end then
         callback({ success = false, message = "package " .. name .. " not found", packages = {} })
         return
     end

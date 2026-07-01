@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/parser.lua
--- Parser for pubspec.yaml files using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.parser: reads pubspec.yaml and returns the declared
+-- dependencies as a name→raw-value map. Uses the manifest's file patterns, dependency sections
+-- and special-key set (so section headers and keys like "sdk"/"git" never surface as packages).
+-- Keeps a single-entry content cache keyed on the raw file text so an unchanged file is not
+-- re-parsed on every virtual-text refresh.
+--
+---@module "lvim-dependencies.managers.pubspec.parser"
 
 local tinyyaml = require("lvim-dependencies.libs.tinyyaml")
 local utils = require("lvim-dependencies.utils")

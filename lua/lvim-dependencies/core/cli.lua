@@ -1,7 +1,10 @@
--- lvim-dependencies/core/cli.lua
--- Core command registry and built-in command definitions
-
----@include "types.lua"
+-- lvim-dependencies.core.cli: the built-in command registry. Registers every core
+-- :LvimDeps subcommand (help/registry/cache/state/metrics, the package operations,
+-- and the virtual-text toggles) with its handler, whether it needs a manifest type,
+-- and its completion subcommands. Package operations are wrapped in run_operation so
+-- they run inside an async coroutine and report success/failure via notify.
+--
+---@module "lvim-dependencies.core.cli"
 
 local registry = require("lvim-dependencies.core.registry")
 local operation = require("lvim-dependencies.core.operation")
@@ -182,6 +185,7 @@ local function register_cache_clear(name, cache_type, description)
         if not require_manifest(manifest_type) then
             return
         end
+        ---@cast manifest_type string
         if cache_type then
             cache.clear(manifest_type, cache_type)
         else
@@ -312,6 +316,7 @@ M.register(const.COMMANDS.INSTALL, function(_, manifest_type)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
     run_operation(function(cb)
         local op = operation.install(manifest_type, {}, {}, cb)
         operator.execute(op)
@@ -322,6 +327,7 @@ M.register(const.COMMANDS.UPDATE, function(args, manifest_type, bufnr)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
     local package = args[2] or get_package_from_manager(manifest_type, bufnr)
     run_operation(function(cb)
         local packages = package and { package } or {}
@@ -334,6 +340,7 @@ M.register(const.COMMANDS.UPDATE_DIRECT, function(args, manifest_type, bufnr)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
 
     local package = args[2]
     local version = args[3]
@@ -362,6 +369,7 @@ M.register(const.COMMANDS.DELETE, function(args, manifest_type, bufnr)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
     local package = args[2] or get_package_from_manager(manifest_type, bufnr)
     if not package then
         notify("No package specified", vim.log.levels.WARN)
@@ -381,6 +389,7 @@ M.register(const.COMMANDS.SHOW, function(_, manifest_type, bufnr)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
     virtual_text.show(bufnr, manifest_type)
 end, true, "Show virtual text")
 
@@ -392,6 +401,7 @@ M.register(const.COMMANDS.TOGGLE, function(_, manifest_type, bufnr)
     if not require_manifest(manifest_type) then
         return
     end
+    ---@cast manifest_type string
     virtual_text.toggle(bufnr, manifest_type)
 end, true, "Toggle virtual text")
 

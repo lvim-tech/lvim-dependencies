@@ -1,7 +1,12 @@
--- lvim-dependencies/managers/cargo/register.lua
--- Cargo manager registration module
--- Handles both startup registration and lazy-loaded LSP features
+-- lvim-dependencies.managers.cargo.register: cargo manager registration in two phases.
+-- register() runs at plugin startup and wires only what is always needed (the command
+-- handler with the executor + the cargo user commands). register_lsp() is deferred and only
+-- runs when an LSP client actually needs cargo features (hover/actions/completion) — the
+-- LSP-only modules stay unloaded until then, so LSP costs nothing when unused. The requires
+-- inside both functions are inline ON PURPOSE (this lazy load is the module's whole reason).
+---@module "lvim-dependencies.managers.cargo.register"
 
+---@class CargoRegister
 local M = {}
 
 -- ============================================================================
@@ -10,8 +15,8 @@ local M = {}
 -- Registers components that are always needed
 -- ============================================================================
 
---- Register cargo manager core components
---- This runs at plugin startup
+--- Register cargo manager core components. This runs at plugin startup.
+---@return nil
 function M.register()
     -- 1. Register the command handler with executor
     -- This must happen early because executor needs to know about cargo
@@ -33,9 +38,9 @@ end
 -- This optimizes startup time and memory usage
 -- ============================================================================
 
---- Register cargo LSP features (hover, actions, etc.)
---- This is called lazily when get_lsp_handlers() is invoked
---- @return table|nil Table containing LSP handlers or nil if not available
+--- Register cargo LSP features (hover, actions, completion).
+--- Called lazily when get_lsp_handlers() is invoked.
+---@return table|nil handlers Table containing LSP handlers, or nil if not available
 function M.register_lsp()
     -- Get required modules
     -- These are loaded NOW, not at startup
@@ -50,9 +55,6 @@ function M.register_lsp()
     -- This enables showing package info when hovering over dependencies
     registry.register_hover("cargo", lsp.get_hover)
 
-    -- Register completion provider for feature suggestions
-    registry.register_completion("cargo", lsp.get_completion)
-
     -- Setup any LSP-specific commands
     lsp.setup()
 
@@ -61,7 +63,6 @@ function M.register_lsp()
     return {
         hover = lsp.get_hover, -- Function to get hover information
         actions = lsp.get_actions, -- Function to get code actions
-        completion = lsp.get_completion, -- Function to get completion suggestions
     }
 end
 

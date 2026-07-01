@@ -1,5 +1,8 @@
--- lvim-dependencies/utils/levels.lua
--- Log level utilities for consistent level handling across the plugin
+-- lvim-dependencies.utils.levels: the single source of truth for log-level constants and
+-- their string<->number coercion, so debug/notify agree on ordering and names. The reverse
+-- number->name map is built lazily (init_level_names) on first use.
+--
+---@module "lvim-dependencies.utils.levels"
 
 local M = {}
 

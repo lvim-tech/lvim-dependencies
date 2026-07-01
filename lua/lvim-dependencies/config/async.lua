@@ -1,7 +1,9 @@
--- lvim-dependencies/config/async.lua
---- Asynchronous operations configuration
----@class AsyncConfig
+-- lvim-dependencies.config.async: default tuning for the async subsystem — concurrency,
+-- timeouts, retry/backoff, and the debounce/throttle windows. Kept as a plain data table so
+-- setup() can merge user overrides in place and every reader sees the effective values.
+---@module "lvim-dependencies.config.async"
 
+---@class AsyncConfig
 return {
     --- Default settings for all async operations
     defaults = {

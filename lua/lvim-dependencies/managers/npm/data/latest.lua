@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/data/latest.lua
--- Latest version fetcher from npmjs.com registry
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.data.latest: fetches the latest published version + metadata
+-- from the npm registry. To avoid pulling the multi-MB full package document it hits the cheap
+-- endpoints: /<pkg>/latest for stable, or /-/package/<pkg>/dist-tags when prereleases are
+-- included (then picks the numerically-newest tag). Concurrent requests for the same package are
+-- coalesced through an in-flight table so N callers share one HTTP round-trip.
+--
+---@module "lvim-dependencies.managers.npm.data.latest"
 
 local utils = require("lvim-dependencies.utils")
 local http = require("lvim-dependencies.utils.http")
@@ -13,25 +16,34 @@ local debug = utils.debug
 ---@class NpmLatest
 local M = {}
 
+-- package_name → list of pending callbacks waiting on one in-flight registry request.
 ---@type table<string, function[]>
 local in_flight = {}
 
+---@type string[]
 local METADATA_FIELDS = { "description", "homepage", "repository", "license", "keywords" }
 
 -- ============================================================================
 -- Helpers
 -- ============================================================================
 
+---@return NpmManifest|nil
 local function get_manifest()
     local m = init.get_manifest("npm")
     ---@cast m NpmManifest|nil
     return m
 end
 
+--- True when `val` is a non-empty string (guards against vim.NIL from decoded JSON).
+---@param val any
+---@return boolean
 local function is_valid_string(val)
     return val ~= nil and val ~= vim.NIL and type(val) == "string" and val ~= ""
 end
 
+--- Normalize the registry's metadata fields (repository URLs de-VCS-prefixed, keywords listed).
+---@param data table  decoded registry response
+---@return table
 local function extract_metadata(data)
     local metadata = {}
     for _, field in ipairs(METADATA_FIELDS) do
@@ -66,6 +78,8 @@ local function extract_metadata(data)
     return metadata
 end
 
+--- Whether prerelease versions should be considered for "latest".
+---@return boolean|nil
 local function include_prerelease()
     return config.npm and config.npm.version and config.npm.version.include_prerelease
 end
@@ -88,7 +102,7 @@ end
 ---   Instead build_url still uses /%s/latest but we pick from dist-tags
 ---   which is included in the /latest response too.
 ---   For prerelease we use /%s/latest AND check dist-tags.next / dist-tags.beta.
----@param output string
+---@param output string|nil  raw HTTP body (nil on transport failure)
 ---@return string|nil version
 ---@return table|nil metadata
 local function parse_response(output)
@@ -164,6 +178,12 @@ local function encode_pkg(pkg)
     return pkg
 end
 
+--- Compose the registry URL + timeout for a package, honouring config overrides and the
+--- stable-vs-prerelease endpoint choice.
+---@param package_name string
+---@param manifest_data NpmManifest
+---@return string url
+---@return integer timeout
 local function build_url(package_name, manifest_data)
     local registry = manifest_data.registry or {}
     local base = (config.npm and config.npm.api and config.npm.api.registry_base)
@@ -193,6 +213,10 @@ local function build_url(package_name, manifest_data)
     return base .. string.format(ep, encoded), timeout
 end
 
+--- Resolve every coalesced callback for a package with the shared result.
+---@param package_name string
+---@param err string|nil
+---@param result {version: string, metadata: table}|nil
 local function notify_waiters(package_name, err, result)
     local waiting = in_flight[package_name] or {}
     in_flight[package_name] = nil
@@ -203,6 +227,9 @@ local function notify_waiters(package_name, err, result)
     end
 end
 
+--- Perform the HTTP request and dispatch the parsed result to all waiters.
+---@param package_name string
+---@param manifest_data NpmManifest
 local function fetch_from_registry(package_name, manifest_data)
     local url, timeout = build_url(package_name, manifest_data)
     debug(string.format("npm: fetching %s from %s (timeout: %ds)", package_name, url, timeout), vim.log.levels.DEBUG)

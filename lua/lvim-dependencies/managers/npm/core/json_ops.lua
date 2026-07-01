@@ -1,8 +1,10 @@
--- lvim-dependencies/managers/npm/core/json_ops.lua
--- JSON manipulation for package.json
--- Uses libs/json.lua for encoding to preserve formatting control
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.core.json_ops: line-level JSON surgery on package.json.
+-- Rather than decode → mutate → re-encode (which would reflow the whole file and lose the
+-- user's formatting), it locates a section and a package block by brace-counting and rewrites
+-- only the affected lines, preserving indent and trailing commas. libs/json.lua is used only
+-- for the read-only parse/encode helpers where full re-serialisation is acceptable.
+--
+---@module "lvim-dependencies.managers.npm.core.json_ops"
 
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")
@@ -16,6 +18,9 @@ local M = {}
 -- Helpers
 -- ============================================================================
 
+--- True when `lines` is a non-empty array of strings.
+---@param lines any
+---@return boolean
 local function validate_lines(lines)
     return lines ~= nil and type(lines) == "table" and #lines > 0
 end

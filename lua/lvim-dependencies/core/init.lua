@@ -1,7 +1,10 @@
--- lvim-dependencies/core/init.lua
--- Lazy-loads manager modules (declared, latest, manifest, virtual_text)
-
----@include "types.lua"
+-- lvim-dependencies.core: per-manager module loader. Lazily requires a manager's
+-- submodules (declared, latest, manifest, virtual_text) through ONE failure-caching
+-- layer — a failed require is memoised as `false` so a broken/absent module is never
+-- pcall'd again, and the available-manager list is scanned from package.path with a
+-- short TTL so directory reads don't happen on every lookup.
+--
+---@module "lvim-dependencies.core"
 
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")

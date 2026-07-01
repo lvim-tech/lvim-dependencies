@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/npm/parser.lua
--- Parser for package.json files
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.parser: reads package.json and returns the declared
+-- dependencies across every dependency section. It resolves the manifest upward from the
+-- configured root (or cwd) and keeps a content-hash cache so re-parsing identical file
+-- content is skipped (the hot path runs on every buffer refresh).
+--
+---@module "lvim-dependencies.managers.npm.parser"
 
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
@@ -22,12 +24,15 @@ local cached_result = nil
 -- Helpers
 -- ============================================================================
 
+---@return NpmManifest|nil
 local function get_manifest()
     local m = init.get_manifest("npm")
     ---@cast m NpmManifest|nil
     return m
 end
 
+--- Locate the nearest package.json searching upward from the configured root or cwd.
+---@return string|nil
 local function find_package_json()
     local root_dir = config.npm and config.npm.file_ops and config.npm.file_ops.root_dir
     local search = root_dir and vim.fn.expand(root_dir) or vim.fn.getcwd()
@@ -36,6 +41,8 @@ local function find_package_json()
     return found and found[1] or nil
 end
 
+---@param path string
+---@return string|nil
 local function read_file(path)
     local f = io.open(path, "r")
     if not f then
@@ -46,6 +53,9 @@ local function read_file(path)
     return content
 end
 
+--- Turn a list of strings into a set for O(1) membership tests.
+---@param list string[]
+---@return table<string, boolean>
 local function list_to_set(list)
     local set = {}
     for _, v in ipairs(list) do
@@ -79,6 +89,7 @@ end
 -- Public API
 -- ============================================================================
 
+--- Drop the content-hash cache so the next read re-parses package.json.
 function M.clear_cache()
     cached_content = nil
     cached_result = nil

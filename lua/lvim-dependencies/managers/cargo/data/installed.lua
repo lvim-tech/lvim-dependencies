@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/cargo/data/installed.lua
--- Installed package manager for Cargo.lock using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.data.installed: reads installed versions from Cargo.lock.
+-- Finds the lock file (config root_dir → buffer dir → cwd, searched upward), parses it, and
+-- returns a single package's version or a bulk map for the declared set. The version CACHE is
+-- owned by core.hub.installed — this module only reads lock files; clear_cache() delegates to
+-- the hub (required inline to break the hub↔data circular dependency).
+---@module "lvim-dependencies.managers.cargo.data.installed"
 
 local utils = require("lvim-dependencies.utils")
 local toml = require("lvim-dependencies.libs.toml")

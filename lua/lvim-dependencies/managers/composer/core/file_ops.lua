@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/composer/core/file_ops.lua
--- File operations for composer.json
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.core.file_ops: locate and read/write composer.json on
+-- disk, and keep the open buffer in sync after a write. Writes go to the file first; the
+-- buffer is then patched in place (apply_buffer_change) or hard-refreshed, and marked
+-- unmodified so nvim does not raise a "file changed" prompt.
+--
+---@module "lvim-dependencies.managers.composer.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")

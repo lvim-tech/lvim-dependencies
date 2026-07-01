@@ -1,7 +1,9 @@
--- lvim-dependencies/config/go.lua
---- Go modules manager specific configuration
----@class GoConfig
+-- lvim-dependencies.config.go: Go-modules/proxy.golang.org manager settings — executable,
+-- API endpoints, version selection, virtual-text override and outdated polling. Merged over
+-- by the user's opts, then read live by the go manager.
+---@module "lvim-dependencies.config.go"
 
+---@class GoConfig
 return {
     --- Executable paths for go commands
     executables = {

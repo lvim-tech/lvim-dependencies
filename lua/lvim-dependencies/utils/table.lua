@@ -1,5 +1,8 @@
--- lvim-dependencies/utils/table.lua
--- Table manipulation utilities for deep merging and validation
+-- lvim-dependencies.utils.table: table helpers — deep merge (in place and copy), plus
+-- predicate/size/keys/values/filter/map/pairs and shallow equality. `merge` mutates and
+-- returns base; `merge_new` first deep-copies t1 so the inputs are left untouched.
+--
+---@module "lvim-dependencies.utils.table"
 
 local M = {}
 

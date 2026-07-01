@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/npm/core/npm_ops.lua
--- npm/yarn/pnpm command execution — owns the full update/remove lifecycle
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.core.npm_ops: the full update/remove lifecycle for a package.
+-- Detects the package manager (config override, else lock file: pnpm > yarn > npm), resolves the
+-- executable, builds the manager-specific command, shows a "working" indicator + pending anchor
+-- on the package line, runs it async, then on success seeds the installed version into cache,
+-- refreshes virtual text, polls for the outdated marker, and restores the cursor — on failure it
+-- surfaces the extracted npm/yarn error and leaves the existing virtual text in place.
+--
+---@module "lvim-dependencies.managers.npm.core.npm_ops"
 
 local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")
@@ -66,12 +70,18 @@ end
 -- Cache management
 -- ============================================================================
 
+--- Clear the installed + latest hub caches for one package.
+---@param name string
 local function clear_package_cache(name)
     hub_installed.clear_cache("npm", name)
     hub_latest.clear_cache("npm", name)
     debug(string.format("npm: cleared cache for %s", name), vim.log.levels.DEBUG)
 end
 
+--- Optimistically write the just-installed version into cache so the UI updates
+--- immediately, before the lock file re-read confirms it.
+---@param name string
+---@param version string
 local function seed_installed_version(name, version)
     debug(string.format("npm: cache seed %s = %s", name, version), vim.log.levels.INFO)
 
@@ -219,6 +229,10 @@ end
 -- Buffer operations
 -- ============================================================================
 
+--- Find the 0-based line of a package inside a manifest buffer.
+---@param bufnr integer
+---@param name string
+---@return integer|nil
 local function find_package_line_in_buf(bufnr, name)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return nil
@@ -234,6 +248,10 @@ local function find_package_line_in_buf(bufnr, name)
     return nil
 end
 
+--- Replace the package line's virtual text with the "working" spinner.
+---@param bufnr integer
+---@param name string
+---@param lnum0 integer
 local function display_working(bufnr, name, lnum0)
     if not api.nvim_buf_is_valid(bufnr) then
         return
@@ -249,6 +267,9 @@ end
 -- Virtual text lifecycle
 -- ============================================================================
 
+--- Reload a package's data and repaint its virtual text, then poll for the outdated marker.
+---@param bufnr integer
+---@param name string
 local function refresh_virtual_text(bufnr, name)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -278,6 +299,11 @@ end
 -- Success / failure handlers
 -- ============================================================================
 
+--- Post-success cleanup: clear caches, refresh VT, reload the buffer, restore the cursor.
+---@param name string
+---@param version string
+---@param bufnr integer
+---@param saved_cursor integer[]|nil  {row, col} captured before the command ran
 local function handle_success(name, version, bufnr, saved_cursor)
     debug(string.format("npm: succeeded for %s@%s", name, version), vim.log.levels.INFO)
 
@@ -300,6 +326,10 @@ local function handle_success(name, version, bufnr, saved_cursor)
     end
 end
 
+--- Post-failure cleanup: drop the pending anchor and restore the prior virtual text.
+---@param name string
+---@param err string
+---@param bufnr integer
 local function handle_failure(name, err, bufnr)
     debug(string.format("npm: failed for %s: %s", name, err), vim.log.levels.ERROR)
     indicators.clear_pending_anchor(bufnr)

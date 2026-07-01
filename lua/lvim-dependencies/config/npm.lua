@@ -1,5 +1,8 @@
--- lvim-dependencies/config/npm.lua
---- npm/yarn/pnpm manager specific configuration
+-- lvim-dependencies.config.npm: npm/yarn/pnpm manager settings — executables, package-manager
+-- preference (auto-detected from the lock file when nil), API endpoints, version selection,
+-- dependency sections and outdated polling. Merged over by the user's opts, read live.
+---@module "lvim-dependencies.config.npm"
+
 ---@class NpmConfig
 return {
     --- Executable paths for package manager commands

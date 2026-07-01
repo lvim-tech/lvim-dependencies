@@ -1,5 +1,10 @@
--- lvim-dependencies/managers/common.lua
--- Common utility functions for all managers
+-- lvim-dependencies.managers.common: shared helpers every manager builds on — type
+-- detection, dependency-object construction, list processing and manifest validation.
+-- Detection is memoised in a BOUNDED cache: the TTL alone is not enough (entries were
+-- only checked on read, never evicted, so a large/varied config leaked memory), so the
+-- cache also caps its size and evicts the oldest-accessed quarter once past the limit.
+--
+---@module "lvim-dependencies.managers.common"
 
 local utils = require("lvim-dependencies.utils")
 local debug = utils.debug
@@ -8,16 +13,16 @@ local M = {}
 
 -- ============================================================================
 -- Bounded detection cache
--- Fixes: cache growing unboundedly (TTL was checked only on read, never evicted)
 -- ============================================================================
-local DETECTION_CACHE_TTL = 60000 -- 1 minute
-local DETECTION_CACHE_MAX = 500 -- max entries before eviction
+local DETECTION_CACHE_TTL = 60000 ---@type integer  entry lifetime in ms (1 minute)
+local DETECTION_CACHE_MAX = 500 ---@type integer  max entries before eviction kicks in
 
 ---@type table<string, {type_name: string, extracted: table, timestamp: integer, last_access: integer}>
 local detection_cache = {}
-local detection_cache_count = 0
+local detection_cache_count = 0 ---@type integer  live entry count (kept in sync with the table)
 
---- Evict expired and, if still over limit, oldest-accessed entries
+--- Evict expired entries and, if still over the size limit, the oldest-accessed quarter.
+---@return nil
 local function evict_detection_cache()
     local now = vim.loop.now()
     local to_delete = {}
@@ -186,8 +191,9 @@ function M.validate_manifest(manifest, required_fields)
     return true
 end
 
---- Clear detection cache
+--- Clear the detection cache — a single entry when `cache_key` is given, otherwise all.
 ---@param cache_key? string
+---@return nil
 function M.clear_cache(cache_key)
     if cache_key then
         if detection_cache[cache_key] then

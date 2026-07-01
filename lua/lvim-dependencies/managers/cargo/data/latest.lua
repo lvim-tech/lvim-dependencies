@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/cargo/data/latest.lua
--- Latest version manager for crates.io using manifest configuration
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.cargo.data.latest: fetches the latest version + crate metadata
+-- from crates.io. Honours the include_prerelease preference (max_version vs max_stable_version,
+-- with a versions-array fallback), extracts a fixed set of metadata fields, and dedups
+-- concurrent requests for the same crate via an in-flight waiter list. The result CACHE is
+-- owned by core.hub.latest (required inline to break the hub↔data circular dependency).
+---@module "lvim-dependencies.managers.cargo.data.latest"
 
 local utils = require("lvim-dependencies.utils")
 local http = require("lvim-dependencies.utils.http")
@@ -13,10 +15,12 @@ local debug = utils.debug
 ---@class CargoLatest
 local M = {}
 
---- In-flight request deduplication
----@type table<string, function[]>
+--- In-flight request dedup: crate name → callbacks awaiting the same fetch.
+---@type table<string, fun(err: string|nil, result: table|nil)[]>
 local in_flight = {}
 
+--- Metadata fields lifted verbatim from the crates.io `crate` object.
+---@type string[]
 local METADATA_FIELDS = {
     "description",
     "homepage",
@@ -102,7 +106,8 @@ end
 --- Walk versions array (crates.io: newest-first) and return the first acceptable version.
 --- With include_prerelease=true: returns the absolute newest (first entry).
 --- With include_prerelease=false: returns the first non-prerelease entry.
----@param arr table
+--- Accepts arbitrary decoded-JSON input (from traverse_path); validated internally.
+---@param arr any
 ---@return string|nil
 local function version_from_array(arr)
     if type(arr) ~= "table" or #arr == 0 then

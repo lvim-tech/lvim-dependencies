@@ -1,9 +1,10 @@
--- lvim-dependencies/managers/cargo/utils/indicators.lua
--- UI state management for actions (loading, anchors, extmarks)
+-- lvim-dependencies.managers.cargo.utils.indicators: buffer UI state for in-progress cargo
+-- operations. Manages the loading/working extmarks on a package line, a "pending anchor"
+-- extmark with left gravity so the tracked line survives edits above it, and a poller that
+-- retries crates.io until the latest version resolves (or max attempts) before firing its
+-- callback and clearing the buffer's loading state.
+---@module "lvim-dependencies.managers.cargo.utils.indicators"
 
----@include "core/types.lua"
-
-local api = vim.api
 local utils = require("lvim-dependencies.utils")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
@@ -13,6 +14,7 @@ local cache = require("lvim-dependencies.core.cache")
 local latest = require("lvim-dependencies.core.hub.latest")
 local vt = require("lvim-dependencies.managers.cargo.virtual_text")
 
+local api = vim.api
 local config_groups = config.groups
 local debug = utils.debug
 

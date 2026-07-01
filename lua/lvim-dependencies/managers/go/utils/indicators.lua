@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/go/utils/indicators.lua
--- UI state management for Go actions (loading, anchors, extmarks)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.utils.indicators: buffer-side UI state for Go actions —
+-- loading/working extmarks, the right-gravity "pending anchor" that tracks a package line
+-- while go.mod is rewritten, and the post-update poll that waits for the latest-version
+-- fetch to resolve before repainting the outdated indicator. Poll cadence/attempts come from
+-- config.go.polling; the poll self-reschedules with vim.defer_fn rather than a live timer.
+--
+---@module "lvim-dependencies.managers.go.utils.indicators"
 
 local api = vim.api
 local utils = require("lvim-dependencies.utils")
@@ -30,6 +33,10 @@ local M = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Validate a buffer handle and (optionally) a 1-indexed line number.
+---@param bufnr integer|nil
+---@param lnum? integer
+---@return boolean
 local function is_valid_buffer_and_line(bufnr, lnum)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return false
@@ -40,6 +47,10 @@ local function is_valid_buffer_and_line(bufnr, lnum)
     return true
 end
 
+--- Delete all extmarks in a namespace on one 1-indexed line.
+---@param bufnr integer
+---@param lnum integer
+---@param ns integer
 local function clear_line_extmarks(bufnr, lnum, ns)
     local marks = api.nvim_buf_get_extmarks(bufnr, ns, { lnum - 1, 0 }, { lnum - 1, -1 }, {})
     for _, mark in ipairs(marks) do
@@ -47,6 +58,8 @@ local function clear_line_extmarks(bufnr, lnum, ns)
     end
 end
 
+--- Clear the per-buffer loading flags after a poll settles.
+---@param bufnr integer
 local function reset_buffer_loading_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -61,6 +74,8 @@ end
 -- Public API
 -- ============================================================================
 
+--- Return (creating if needed) the shared virtual-text namespace id.
+---@return integer
 function M.ensure_namespace()
     return api.nvim_create_namespace(NAMESPACE_VIRTUAL_TEXT)
 end
@@ -92,6 +107,7 @@ function M.clear_pending_anchor(bufnr)
     buf_state.pending_anchor_id = nil
 end
 
+--- Paint a static loading indicator on a package line (used outside the working flow).
 ---@param bufnr integer
 ---@param lnum integer
 function M.set_loading_indicator(bufnr, lnum)
@@ -125,6 +141,7 @@ function M.set_loading_indicator(bufnr, lnum)
     vim.cmd("redraw")
 end
 
+--- Clear the global installed+latest caches for the Go manager.
 function M.clear_global_go_cache()
     cache.clear("go", const.CACHE_TYPES.INSTALLED)
     cache.clear("go", const.CACHE_TYPES.LATEST)
@@ -173,6 +190,7 @@ function M.poll_for_outdated(bufnr, name, callback)
     vim.defer_fn(poll, DEFAULT_START_DELAY)
 end
 
+--- Fire the User autocmd that tells the UI a package changed.
 function M.trigger_package_updated()
     debug("go: triggering LvimDepsPackageUpdated", vim.log.levels.DEBUG)
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })

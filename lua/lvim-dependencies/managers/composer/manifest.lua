@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/manifest.lua
--- Configuration for PHP Composer package manager
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.manifest: the static descriptor the core registry reads
+-- to drive composer support — file/lock patterns, dependency sections, registry endpoint,
+-- validation, and the per-type virtual-text / hover formatters. is_package_actionable is the
+-- single seam that classifies platform requirements (php / ext-* / lib-* / composer-*), which
+-- are not on packagist and cannot be require/remove'd, so every other module funnels through it.
+--
+---@module "lvim-dependencies.managers.composer.manifest"
 
 local compare_version = require("lvim-dependencies.managers.composer.compare_versions")
 local config = require("lvim-dependencies.config")

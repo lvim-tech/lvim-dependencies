@@ -1,7 +1,9 @@
--- lvim-dependencies/core/operation.lua
--- Command Pattern: defines the Command object and constructors
-
----@include "types.lua"
+-- lvim-dependencies.core.operation: the Command half of a Command pattern. Pure data —
+-- each constructor (install/update/update_direct/delete/check_outdated) builds a
+-- normalized Command table (type, manager, payload, opts, callback) with defaults filled
+-- in; core.operator later dispatches it to the manager's handler. No side effects here.
+--
+---@module "lvim-dependencies.core.operation"
 
 local const = require("lvim-dependencies.core.const")
 

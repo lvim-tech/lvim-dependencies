@@ -1,5 +1,10 @@
--- lvim-dependencies/core/const.lua
--- Centralized constants for the entire plugin
+-- lvim-dependencies.core.const: the single source of truth for every fixed string the
+-- plugin keys on — extmark namespaces, event names, command names, cache type/field
+-- names, module/loader types, installer method names and metrics/stats identifiers.
+-- Referencing these symbolically (never a bare literal) keeps producers and consumers
+-- of the cache/event/command tables from silently drifting apart.
+--
+---@module "lvim-dependencies.core.const"
 
 ---@class Namespaces
 local M = {

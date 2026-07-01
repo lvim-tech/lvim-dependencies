@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/handler.lua
--- Command handler for npm/yarn/pnpm
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.handler: the npm command handler registered with the core
+-- operator. It translates the generic installer commands (install/update/update_direct/delete/
+-- check_outdated) into the npm API calls, driving the interactive version-selection flow through
+-- the shared ui when a command reaches the user without an explicit version. Registered under the
+-- "npm" key at load time so the executor can dispatch to it.
+--
+---@module "lvim-dependencies.managers.npm.handler"
 
 local operator = require("lvim-dependencies.core.operator")
 local const = require("lvim-dependencies.core.const")
@@ -18,6 +21,8 @@ local INSTALLER_METHODS = const.INSTALLER_METHODS
 -- Internal helpers
 -- ============================================================================
 
+--- Resolve the package under the cursor, notifying the user when none is found.
+---@return string|nil
 local function get_package_at_cursor()
     local pkg = actions.get_package_at_cursor()
     if not pkg then
@@ -26,6 +31,10 @@ local function get_package_at_cursor()
     return pkg
 end
 
+--- Present the version picker for a package and call back with the chosen version (or nil).
+---@param package string
+---@param versions_data VersionData
+---@param callback fun(version: string|nil)
 local function show_version_selection(package, versions_data, callback)
     local items = versions_data.versions or {}
     if #items == 0 then
@@ -57,6 +66,9 @@ local function show_version_selection(package, versions_data, callback)
     )
 end
 
+--- Full "pick a version then update" flow: fetch versions, prompt, then run the update.
+---@param package string
+---@param callback InstallerCallback
 local function complete_update_flow(package, callback)
     actions.fetch_versions_async(package, function(versions_data)
         if not versions_data or #(versions_data.versions or {}) == 0 then
@@ -86,6 +98,8 @@ end
 -- Operation handlers
 -- ============================================================================
 
+---@param cmd Command
+---@param callback InstallerCallback
 local function handle_install(cmd, callback)
     local pkg = actions.get_package_at_cursor() or (cmd.payload.packages and cmd.payload.packages[1])
 
@@ -103,6 +117,8 @@ local function handle_install(cmd, callback)
     complete_update_flow(pkg, callback)
 end
 
+---@param cmd Command
+---@param callback InstallerCallback
 local function handle_update(cmd, callback)
     local pkg = (cmd.payload.packages and cmd.payload.packages[1]) or get_package_at_cursor()
     if not pkg then
@@ -112,6 +128,8 @@ local function handle_update(cmd, callback)
     complete_update_flow(pkg, callback)
 end
 
+---@param cmd Command
+---@param callback InstallerCallback
 local function handle_update_direct(cmd, callback)
     local package = cmd.payload.package
     local version = cmd.payload.version
@@ -140,6 +158,8 @@ local function handle_update_direct(cmd, callback)
     end)
 end
 
+---@param cmd Command
+---@param callback InstallerCallback
 local function handle_delete(cmd, callback)
     local pkg = (cmd.payload.packages and cmd.payload.packages[1]) or get_package_at_cursor()
     if not pkg then
@@ -149,6 +169,8 @@ local function handle_delete(cmd, callback)
     actions.delete(pkg, { from_ui = cmd.opts and cmd.opts.from_ui }, callback)
 end
 
+---@param _ Command
+---@param callback InstallerCallback
 local function handle_check_outdated(_, callback)
     debug("npm check_outdated: not yet implemented", vim.log.levels.INFO)
     callback({ success = true, message = "Use npm outdated in terminal", packages = {} })

@@ -1,7 +1,10 @@
--- lvim-dependencies/core/hub/declared.lua
--- Central hub for declared package operations (synchronous, cache only)
-
----@include "types.lua"
+-- lvim-dependencies.core.hub.declared: synchronous access to a manager's DECLARED
+-- packages (what the manifest file asks for). Reads the whole manifest once through the
+-- manager's data.declared module, caches it in core.cache, and serves deepcopies so
+-- callers can't mutate the cached table. Declared data has no TTL — it's refreshed
+-- explicitly (force_refresh) when the buffer changes, not by expiry.
+--
+---@module "lvim-dependencies.core.hub.declared"
 
 local cache = require("lvim-dependencies.core.cache")
 local utils = require("lvim-dependencies.utils")

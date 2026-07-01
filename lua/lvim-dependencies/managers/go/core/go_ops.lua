@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/go/core/go_ops.lua
--- Go command execution — owns the full update/remove lifecycle
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.core.go_ops: owns the full `go get` update/remove
+-- lifecycle. Around the spawned command it manages the whole UI/cache dance: a "working"
+-- virtual-text indicator on the package line, a right-gravity pending anchor so the line is
+-- tracked while go.mod is rewritten, optimistic cache seeding of the new installed version,
+-- then a virtual-text refresh + outdated poll on success (or restore on failure), buffer
+-- checktime, and cursor restoration. It also parses go's noisy stderr into one useful error.
+--
+---@module "lvim-dependencies.managers.go.core.go_ops"
 
 local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")
@@ -9,11 +13,13 @@ local const = require("lvim-dependencies.core.const")
 local virtual_text = require("lvim-dependencies.core.virtual_text")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
+local hub_declared = require("lvim-dependencies.core.hub.declared")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 
 local indicators = require("lvim-dependencies.managers.go.utils.indicators")
 local parser = require("lvim-dependencies.managers.go.parser")
+local file_ops = require("lvim-dependencies.managers.go.core.file_ops")
 local package_loader = require("lvim-dependencies.core.package_loader")
 
 local debug = utils.debug
@@ -72,11 +78,17 @@ M.extract_go_error = extract_go_error
 -- Cache management
 -- ============================================================================
 
+--- Drop the installed-version hub cache for one module.
+---@param name string
 local function clear_package_cache(name)
     hub_installed.clear_cache("go", name)
     debug(string.format("go: cleared cache for %s", name), vim.log.levels.DEBUG)
 end
 
+--- Optimistically record the just-installed version so the UI updates before the
+--- background re-read of go.mod confirms it.
+---@param name string
+---@param version string
 local function seed_installed_version(name, version)
     debug(string.format("go: cache seed %s = %s", name, version), vim.log.levels.INFO)
 
@@ -86,13 +98,15 @@ local function seed_installed_version(name, version)
     entry[CACHE_FIELDS_DATA][name] = version
 
     parser.clear_cache()
-    require("lvim-dependencies.core.hub.declared").clear_cache("go", name)
+    hub_declared.clear_cache("go", name)
 end
 
 -- ============================================================================
 -- Executable resolution
 -- ============================================================================
 
+--- Resolve the go binary: prefer the configured path, else fall back to $PATH.
+---@return string|nil
 local function get_executable()
     local configured = config.go and config.go.executables and config.go.executables.go
     if configured then
@@ -116,6 +130,10 @@ end
 -- Buffer operations
 -- ============================================================================
 
+--- Locate the 0-indexed line of a package's require entry in a buffer.
+---@param bufnr integer
+---@param name string
+---@return integer|nil
 local function find_package_line(bufnr, name)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return nil
@@ -130,6 +148,10 @@ local function find_package_line(bufnr, name)
     return nil
 end
 
+--- Replace any virtual text on a line with the "working" spinner while go runs.
+---@param bufnr integer
+---@param name string
+---@param lnum0 integer  0-indexed line
 local function display_working(bufnr, name, lnum0)
     if not api.nvim_buf_is_valid(bufnr) then
         return
@@ -148,6 +170,10 @@ end
 -- Virtual text lifecycle
 -- ============================================================================
 
+--- Reload a package's data and repaint its virtual text, then poll once more for the
+--- outdated indicator (which may lag until the latest-version fetch resolves).
+---@param bufnr integer
+---@param name string
 local function refresh_virtual_text(bufnr, name)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -177,6 +203,11 @@ end
 -- Success / failure handlers
 -- ============================================================================
 
+--- Post-success bookkeeping: clear caches, repaint VT, checktime, restore the cursor.
+---@param name string
+---@param version string
+---@param bufnr integer
+---@param saved_cursor integer[]|nil  {row, col} captured before the command
 local function handle_success(name, version, bufnr, saved_cursor)
     debug(string.format("go: succeeded for %s@%s", name, version), vim.log.levels.INFO)
 
@@ -199,6 +230,10 @@ local function handle_success(name, version, bufnr, saved_cursor)
     end
 end
 
+--- Post-failure cleanup: clear the pending anchor and settle the virtual text.
+---@param name string
+---@param err string
+---@param bufnr integer
 local function handle_failure(name, err, bufnr)
     debug(string.format("go: failed for %s: %s", name, err), vim.log.levels.ERROR)
     indicators.clear_pending_anchor(bufnr)
@@ -343,7 +378,7 @@ end
 
 ---@return string|nil
 function M.find_go_mod_path()
-    return require("lvim-dependencies.managers.go.core.file_ops").find_go_mod_path()
+    return file_ops.find_go_mod_path()
 end
 
 return M

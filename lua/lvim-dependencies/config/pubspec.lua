@@ -1,7 +1,9 @@
--- lvim-dependencies/config/pubspec.lua
---- Pubspec manager specific configuration
----@class PubspecConfig
+-- lvim-dependencies.config.pubspec: Dart/Flutter pub.dev manager settings — executables, API
+-- endpoints, version selection, dependency sections, SDK packages that skip registry lookup,
+-- virtual-text override and outdated polling. Merged over by the user's opts, read live.
+---@module "lvim-dependencies.config.pubspec"
 
+---@class PubspecConfig
 return {
     --- Executable paths for pubspec commands
     executables = {

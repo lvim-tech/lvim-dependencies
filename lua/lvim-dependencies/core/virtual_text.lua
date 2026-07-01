@@ -1,7 +1,12 @@
--- lvim-dependencies/core/virtual_text.lua
--- Virtual text management using extmarks
-
----@include "types.lua"
+-- lvim-dependencies.core.virtual_text: renders each package's version status as an
+-- end-of-line extmark. Owns a per-buffer record table (declared/installed/latest + the
+-- live extmark id) and repaints it as data arrives, moving marks to follow edits (guarded
+-- by _moving so a repaint can't re-enter). Line ↔ package resolution is delegated to the
+-- manager's find_package_in_line when present, with a universal YAML/TOML/JSON fallback,
+-- so the core stays format-agnostic. All redraws bail out of fast events (extmark APIs are
+-- unsafe there) and reschedule.
+--
+---@module "lvim-dependencies.core.virtual_text"
 
 local api = vim.api
 local init = require("lvim-dependencies.core.init")

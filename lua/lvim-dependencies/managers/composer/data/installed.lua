@@ -1,10 +1,14 @@
--- lvim-dependencies/managers/composer/data/installed.lua
--- Reads installed versions from composer.lock
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.data.installed: reports the versions actually INSTALLED,
+-- read straight from composer.lock each call (no local cache — the lock file is the source of
+-- truth). Composer stores "v"-prefixed versions, which are normalised. Platform requirements
+-- (php / ext-* / lib-* / composer-*) are never in the lock, so their composer.json constraint
+-- is returned as the "installed" value instead.
+--
+---@module "lvim-dependencies.managers.composer.data.installed"
 
 local utils = require("lvim-dependencies.utils")
-local init = require("lvim-dependencies.core.init")
+local manifest = require("lvim-dependencies.managers.composer.manifest")
+local parser = require("lvim-dependencies.managers.composer.parser")
 
 local debug = utils.debug
 
@@ -69,7 +73,6 @@ end
 ---@param name string
 ---@return boolean
 local function is_platform_package(name)
-    local manifest = require("lvim-dependencies.managers.composer.manifest")
     return not manifest.is_package_actionable(name)
 end
 
@@ -80,7 +83,6 @@ function M.get_package_installed(package_name, callback)
     -- Platform packages are not tracked in composer.lock
     -- Return their constraint from composer.json as the "installed" value
     if is_platform_package(package_name) then
-        local parser = require("lvim-dependencies.managers.composer.parser")
         local all = parser.get_dependencies()
         local pkg = all[package_name]
         local constraint = pkg and pkg.version or nil

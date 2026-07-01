@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/npm/utils/helpers.lua
--- Common utilities for npm actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.utils.helpers: small shared utilities for the npm actions —
+-- manifest accessors (file patterns, dependency sections), locating which section a package
+-- lives in, reading a version straight from node_modules/<pkg>/package.json (faster than lock
+-- parsing for single lookups), and URL-encoding scoped package names for registry requests.
+--
+---@module "lvim-dependencies.managers.npm.utils.helpers"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
@@ -25,11 +27,15 @@ function M.get_manifest()
     return m
 end
 
+--- Manifest file patterns npm buffers are matched against.
+---@return string[]
 function M.get_file_patterns()
     local manifest = M.get_manifest()
     return (manifest and manifest.file_patterns) or { "package.json" }
 end
 
+--- The dependency sections scanned inside package.json.
+---@return string[]
 function M.get_dependency_sections()
     local manifest = M.get_manifest()
     return (manifest and manifest.dependency_sections)

@@ -1,12 +1,14 @@
--- lvim-dependencies/managers/cargo/virtual_text.lua
--- Virtual text formatting for cargo dependencies
+-- lvim-dependencies.managers.cargo.virtual_text: builds the inline virtual-text chunks for a
+-- dependency line. Detects the dependency kind from a PackageRecord and delegates to the
+-- matching manifest dependency_types[...].format; carries a hand-rolled fallback formatter
+-- for when no type formatter applies. Also finds a package's name/line in the buffer and
+-- supplies the loading/working animation chunks.
+---@module "lvim-dependencies.managers.cargo.virtual_text"
 
----@include "core/types.lua"
-
-local api = vim.api
 local config = require("lvim-dependencies.config")
 local init = require("lvim-dependencies.core.init")
 
+local api = vim.api
 local icons = config.ui.virtual_text.icons
 local groups = config.groups
 
@@ -25,6 +27,8 @@ local function get_manifest()
     return m
 end
 
+---@param record PackageRecord|nil
+---@return string|nil
 local function get_latest_version(record)
     if not record or not record.latest then
         return nil
@@ -32,6 +36,10 @@ local function get_latest_version(record)
     return type(record.latest) == "table" and record.latest.version or nil
 end
 
+--- Infer the dependency-type key (registry/git/path/workspace/no_version) from a record's
+--- declared value, so the matching manifest formatter can be selected.
+---@param record PackageRecord
+---@return string
 local function get_dep_type_name(record)
     if type(record.declared) == "table" then
         if record.declared.git then
@@ -56,6 +64,9 @@ local function get_dep_type_name(record)
     return "no_version"
 end
 
+--- Look up the manifest dependency-type definition for a record.
+---@param record PackageRecord
+---@return DependencyTypeDef|nil
 local function get_dep_config(record)
     local manifest_data = get_manifest()
     local dep_types = manifest_data and manifest_data.dependency_types or {}
@@ -127,8 +138,16 @@ function M.get_working_parts()
     }
 end
 
+--- Cargo-specific record: adds the crate dependency attributes that originate from the
+--- declared TOML data (CargoDeclaredPackage) and are read here but never live on the shared
+--- PackageRecord.
+---@class CargoPackageRecord : PackageRecord
+---@field features? string[] Enabled crate features declared in Cargo.toml
+---@field optional? boolean Whether the dependency is marked `optional = true`
+---@field default_features? boolean Whether `default-features` is enabled
+
 --- Format package chunks based on dependency type
----@param record PackageRecord
+---@param record CargoPackageRecord
 ---@return VirtualTextChunk[]
 function M.format_package_chunks(record)
     if not record then
@@ -207,7 +226,7 @@ function M.format_package_chunks(record)
 end
 
 --- Format package as plain text (backward compatibility)
----@param record PackageRecord
+---@param record CargoPackageRecord
 ---@return string
 function M.format_package_text(record)
     local chunks = M.format_package_chunks(record)

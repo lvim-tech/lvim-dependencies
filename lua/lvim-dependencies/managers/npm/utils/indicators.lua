@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/npm/utils/indicators.lua
--- UI state management for npm actions (loading, anchors, extmarks)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.npm.utils.indicators: the per-buffer UI state for in-flight npm
+-- actions. It manages the extmark "pending anchor" that tracks a package's line across edits,
+-- the loading/working virtual text, and the post-install poll loop that waits (bounded by
+-- config.npm.polling) for the registry's latest version to resolve before repainting the
+-- outdated marker and clearing the buffer's loading state.
+--
+---@module "lvim-dependencies.managers.npm.utils.indicators"
 
 local api = vim.api
 local utils = require("lvim-dependencies.utils")
@@ -30,6 +33,10 @@ local M = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Validate a buffer handle and (optionally) a 1-based line number.
+---@param bufnr integer|nil
+---@param lnum? integer
+---@return boolean
 local function is_valid_buffer_and_line(bufnr, lnum)
     if not bufnr or bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return false
@@ -40,6 +47,10 @@ local function is_valid_buffer_and_line(bufnr, lnum)
     return true
 end
 
+--- Remove every extmark on a 1-based line in a namespace.
+---@param bufnr integer
+---@param lnum integer
+---@param ns integer
 local function clear_line_extmarks(bufnr, lnum, ns)
     local marks = api.nvim_buf_get_extmarks(bufnr, ns, { lnum - 1, 0 }, { lnum - 1, -1 }, {})
     for _, mark in ipairs(marks) do
@@ -47,6 +58,8 @@ local function clear_line_extmarks(bufnr, lnum, ns)
     end
 end
 
+--- Clear the per-buffer loading/pending fields once an action settles.
+---@param bufnr integer
 local function reset_buffer_loading_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -62,6 +75,8 @@ end
 -- Public API
 -- ============================================================================
 
+--- Get (creating if needed) the virtual-text extmark namespace id.
+---@return integer
 function M.ensure_namespace()
     return api.nvim_create_namespace(NAMESPACE_VIRTUAL_TEXT)
 end
@@ -178,6 +193,7 @@ function M.poll_for_outdated(bufnr, name, callback)
     vim.defer_fn(poll, DEFAULT_START_DELAY)
 end
 
+--- Fire the User autocmd other components refresh on after a package changes.
 function M.trigger_package_updated()
     debug("npm: triggering LvimDepsPackageUpdated", vim.log.levels.DEBUG)
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })

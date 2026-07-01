@@ -1,7 +1,11 @@
--- lvim-dependencies/managers/go/api/init.lua
--- Public API for Go module actions
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.go.api: the public async action surface for the Go manager
+-- (get-package-at-cursor, fetch-versions, update, delete). It fetches version lists from the
+-- proxy (module paths are !-escaped for uppercase before the request), filters/limits them
+-- per config, and delegates the actual mutating `go get` lifecycle to go_ops while keeping
+-- the buffer/virtual-text caches coherent. The handler drives these; the returned table is
+-- also what the operator dispatch ultimately calls into.
+--
+---@module "lvim-dependencies.managers.go.api"
 
 local cache = require("lvim-dependencies.core.cache")
 local vt = require("lvim-dependencies.core.virtual_text")
@@ -11,10 +15,14 @@ local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 local state = require("lvim-dependencies.core.state")
+local init = require("lvim-dependencies.core.init")
+local ui = require("lvim-dependencies.ui")
 
 local parser = require("lvim-dependencies.managers.go.parser")
 local compare_versions = require("lvim-dependencies.managers.go.compare_versions")
 local go_ops = require("lvim-dependencies.managers.go.core.go_ops")
+local data_installed = require("lvim-dependencies.managers.go.data.installed")
+local data_latest = require("lvim-dependencies.managers.go.data.latest")
 
 local debug = utils.debug
 local api = vim.api
@@ -29,20 +37,25 @@ local M = {}
 -- Internal helpers
 -- ============================================================================
 
+--- Fire the User autocmd that tells the UI a package changed.
 local function trigger_package_updated()
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
+--- Invalidate every cache layer (core, hub, go data, parser) for one module.
+---@param name string
 local function clear_package_caches(name)
     cache.clear("go", CACHE_TYPE_INSTALLED, name)
     cache.clear("go", CACHE_TYPE_LATEST, name)
     hub_installed.clear_cache("go", name)
     hub_latest.clear_cache("go", name)
-    require("lvim-dependencies.managers.go.data.installed").clear_cache()
-    require("lvim-dependencies.managers.go.data.latest").clear_cache()
+    data_installed.clear_cache()
+    data_latest.clear_cache()
     parser.clear_cache()
 end
 
+--- Mark a buffer unmodified and reload it from disk after go rewrote go.mod/go.sum.
+---@param bufnr integer
 local function refresh_buffer_state(bufnr)
     if bufnr == -1 or not api.nvim_buf_is_valid(bufnr) then
         return
@@ -55,6 +68,8 @@ local function refresh_buffer_state(bufnr)
     end)
 end
 
+--- Resolve the go binary: prefer the configured path, else fall back to $PATH.
+---@return string|nil
 local function get_executable()
     local configured = config.go and config.go.executables and config.go.executables.go
     if configured then
@@ -115,7 +130,7 @@ function M.fetch_versions_async(name, callback)
         return
     end
 
-    local manifest_data = require("lvim-dependencies.core.init").get_manifest("go")
+    local manifest_data = init.get_manifest("go")
     local proxy_base = (config.go and config.go.api and config.go.api.proxy_base)
         or (manifest_data and manifest_data.registry and manifest_data.registry.base_url)
         or "https://proxy.golang.org"
@@ -159,8 +174,7 @@ function M.fetch_versions_async(name, callback)
             end
 
             -- Get current installed version from go.sum
-            local installed = require("lvim-dependencies.managers.go.data.installed")
-            installed.get_package_installed(name, function(_, current)
+            data_installed.get_package_installed(name, function(_, current)
                 callback({ versions = versions, current = current })
             end)
         end)
@@ -204,7 +218,6 @@ function M.delete(name, opts, callback)
         return
     end
 
-    local ui = require("lvim-dependencies.ui")
     ui.select(
         "Confirm Delete",
         string.format("Package: %s", name),

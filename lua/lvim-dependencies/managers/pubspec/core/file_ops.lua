@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/pubspec/core/file_ops.lua
--- File operations for pubspec.yaml
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.core.file_ops: filesystem + buffer plumbing for pubspec.yaml.
+-- Locates the file (upward search from root_dir/cwd), reads and writes it, and reflects on-disk
+-- edits into an open buffer either as a minimal ranged change (apply_buffer_change) or a full
+-- replace (force_refresh_buffer). Both paths save and re-adjust the cursor so an install/update
+-- never jumps the user's cursor, and clear the buffer 'modified' flag after writing.
+--
+---@module "lvim-dependencies.managers.pubspec.core.file_ops"
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")

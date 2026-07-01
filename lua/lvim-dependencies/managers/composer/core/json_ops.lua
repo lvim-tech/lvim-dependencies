@@ -1,7 +1,10 @@
--- lvim-dependencies/managers/composer/core/json_ops.lua
--- JSON manipulation for composer.json (reuses npm json_ops logic)
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.core.json_ops: line-based edits of composer.json. It
+-- works on the raw line array (not a decoded/re-encoded tree) so the user's formatting,
+-- ordering and comments survive an update — only the touched package line changes. Each
+-- section is scanned by brace depth, and trailing commas are fixed up on insert/remove.
+-- Composer packages are always single-line ("vendor/pkg": "^1.0"), which simplifies blocks.
+--
+---@module "lvim-dependencies.managers.composer.core.json_ops"
 
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")
@@ -103,7 +106,7 @@ end
 ---@param section_end integer
 ---@param pkg_name string
 ---@param new_line string
----@return table|nil new_lines
+---@return string[]|nil new_lines
 ---@return boolean replaced
 ---@return FileChange|nil change
 function M.replace_package_in_section(lines, section_idx, section_end, pkg_name, new_line)
@@ -140,7 +143,7 @@ end
 ---@param section_idx integer
 ---@param section_end integer
 ---@param new_line string
----@return table new_lines
+---@return string[] new_lines
 ---@return FileChange change
 function M.insert_package_in_section(lines, section_idx, section_end, new_line)
     local indent = detect_indent(lines)
@@ -176,7 +179,7 @@ end
 ---@param section_idx integer
 ---@param section_end integer
 ---@param pkg_name string
----@return table|nil new_lines
+---@return string[]|nil new_lines
 ---@return FileChange|nil change
 function M.remove_package_from_section(lines, section_idx, section_end, pkg_name)
     local start_idx, end_idx = M.find_package_block(lines, section_idx, section_end, pkg_name)

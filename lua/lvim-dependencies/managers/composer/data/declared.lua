@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/composer/data/declared.lua
--- Declared dependency data for composer
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.composer.data.declared: exposes the versions DECLARED in
+-- composer.json (the constraint the user wrote, not what is installed). It is the "declared"
+-- data source the core hub loads for composer; it just reshapes the parser's dependency map
+-- into the hub's record shape and delegates caching to the parser.
+--
+---@module "lvim-dependencies.managers.composer.data.declared"
 
 local utils = require("lvim-dependencies.utils")
 local parser = require("lvim-dependencies.managers.composer.parser")

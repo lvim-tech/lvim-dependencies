@@ -1,5 +1,11 @@
+-- lvim-dependencies.config.message: settings for the messaging subsystem — user-facing
+-- notifications, the on-disk debug log, and metrics collection. The debug log path is
+-- resolved through the shared state dir so it lands next to the plugin's other state.
+---@module "lvim-dependencies.config.message"
+
 local utils_file_system = require("lvim-dependencies.utils.file_system")
 
+---@class LvimDependenciesMessageConfig
 return {
     notify = {
         enabled = true,

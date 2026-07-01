@@ -1,7 +1,9 @@
--- lvim-dependencies/managers/pubspec/compare_versions.lua
--- PubSpec version comparison utilities following SemVer with build number support
-
----@include "core/types.lua"
+-- lvim-dependencies.managers.pubspec.compare_versions: pubspec version comparison — SemVer with
+-- build-number support. Wraps the shared lvim-utils version helpers with pubspec's constraint
+-- syntax: the CLEAN_PATTERN strips the leading constraint operators (^ ~ > < =) so a declared
+-- "^1.2.3" compares as the plain "1.2.3", and COMPONENT_PATTERN tolerates partial versions.
+--
+---@module "lvim-dependencies.managers.pubspec.compare_versions"
 
 local utils = require("lvim-dependencies.utils")
 local version = utils.version
