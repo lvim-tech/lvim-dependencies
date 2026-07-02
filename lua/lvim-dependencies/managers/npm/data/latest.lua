@@ -121,7 +121,7 @@ local function parse_response(output)
         -- Response from /-/package/%s/dist-tags:
         -- {"latest":"7.18.6","esm":"7.21.4-esm.4"}
         -- All values are valid dist-tag versions — pick the newest by numeric comparison.
-        -- compare_numeric strips prerelease suffix: 7.21.4-esm.4 → 7.21.4 > 7.18.6 ✓
+        -- compare_numeric strips prerelease suffix: 7.21.4-esm.4 -> 7.21.4 > 7.18.6 (correct)
         local cmp = require("lvim-dependencies.managers.npm.compare_versions")
 
         for _, tagged_ver in pairs(data) do

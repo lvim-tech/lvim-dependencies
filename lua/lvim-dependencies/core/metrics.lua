@@ -565,13 +565,13 @@ function M.save(filepath)
 
     local ok, encoded = pcall(vim.json.encode, prepare_for_json(M.stats))
     if not ok or not encoded then
-        notify(string_format("✗ Failed to encode metrics: %s", tostring(encoded)), vim.log.levels.ERROR)
+        notify(string_format(" Failed to encode metrics: %s", tostring(encoded)), vim.log.levels.ERROR)
         return
     end
 
     local file, err = io.open(filepath, "w")
     if not file then
-        notify(string_format("✗ Failed to open file: %s", tostring(err)), vim.log.levels.ERROR)
+        notify(string_format(" Failed to open file: %s", tostring(err)), vim.log.levels.ERROR)
         return
     end
 
@@ -581,9 +581,9 @@ function M.save(filepath)
     end)
 
     if write_ok then
-        notify(string_format("✓ Metrics saved to %s", filepath), vim.log.levels.INFO)
+        notify(string_format(" Metrics saved to %s", filepath), vim.log.levels.INFO)
     else
-        notify(string_format("✗ Failed to write metrics: %s", tostring(write_err)), vim.log.levels.ERROR)
+        notify(string_format(" Failed to write metrics: %s", tostring(write_err)), vim.log.levels.ERROR)
     end
 end
 
@@ -601,16 +601,16 @@ function M.load(filepath)
     f:close()
 
     if not content or content == "" then
-        notify("✗ Metrics file is empty", vim.log.levels.ERROR)
+        notify(" Metrics file is empty", vim.log.levels.ERROR)
         return
     end
 
     local ok, data = pcall(vim.json.decode, content)
     if ok and type(data) == "table" then
         M.stats = data
-        notify(string_format("✓ Metrics loaded from %s", filepath), vim.log.levels.INFO)
+        notify(string_format(" Metrics loaded from %s", filepath), vim.log.levels.INFO)
     else
-        notify(string_format("✗ Failed to parse metrics: %s", tostring(data)), vim.log.levels.ERROR)
+        notify(string_format(" Failed to parse metrics: %s", tostring(data)), vim.log.levels.ERROR)
     end
 end
 

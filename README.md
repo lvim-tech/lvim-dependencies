@@ -48,11 +48,24 @@ View outdated packages, update to specific versions, and manage dependencies dir
 
 ## Installation
 
+Requires Neovim >= 0.10 and [lvim-utils](https://github.com/lvim-tech/lvim-utils) (palette / merge / UI helpers).
+
+### lvim-installer (recommended)
+
+Install and manage it from the LVIM package manager — open the **Plugins** tab and install / update / pin it:
+
+```vim
+:LvimInstaller plugins
+```
+
+lvim-installer installs plugins through Neovim's built-in `vim.pack`, so no external plugin manager is needed.
+
 ### lazy.nvim
 
 ```lua
-{
+return {
     "lvim-tech/lvim-dependencies",
+    dependencies = { "lvim-tech/lvim-utils" },
     config = function()
         require("lvim-dependencies").setup({
             -- see Configuration section below
@@ -64,12 +77,23 @@ View outdated packages, update to specific versions, and manage dependencies dir
 ### packer.nvim
 
 ```lua
-use {
+use({
     "lvim-tech/lvim-dependencies",
+    requires = { "lvim-tech/lvim-utils" },
     config = function()
         require("lvim-dependencies").setup({})
     end,
-}
+})
+```
+
+### Native (vim.pack)
+
+```lua
+vim.pack.add({
+    { src = "https://github.com/lvim-tech/lvim-utils" },
+    { src = "https://github.com/lvim-tech/lvim-dependencies" },
+})
+require("lvim-dependencies").setup({})
 ```
 
 ---
@@ -159,10 +183,10 @@ These require an open manifest file in the current buffer.
 **Suggested keybindings:**
 
 ```lua
-vim.keymap.set("n", "<leader>du", "<cmd>LvimDeps update<cr>",  { desc = "Update dependency" })
+vim.keymap.set("n", "<leader>du", "<cmd>LvimDeps update<cr>", { desc = "Update dependency" })
 vim.keymap.set("n", "<leader>di", "<cmd>LvimDeps install<cr>", { desc = "Install dependency" })
-vim.keymap.set("n", "<leader>dd", "<cmd>LvimDeps delete<cr>",  { desc = "Delete dependency" })
-vim.keymap.set("n", "<leader>dr", "<cmd>LvimDeps toggle<cr>",  { desc = "Toggle dependency virtual text" })
+vim.keymap.set("n", "<leader>dd", "<cmd>LvimDeps delete<cr>", { desc = "Delete dependency" })
+vim.keymap.set("n", "<leader>dr", "<cmd>LvimDeps toggle<cr>", { desc = "Toggle dependency virtual text" })
 ```
 
 ---
@@ -205,17 +229,17 @@ require("lvim-dependencies").setup({
     -- Notifications
     -- -----------------------------------------------------------------------
     notify = {
-        enabled   = true,
+        enabled = true,
         min_level = vim.log.levels.INFO,
-        title     = "Lvim Dependencies",
-        timeout   = 10000,
+        title = "Lvim Dependencies",
+        timeout = 10000,
     },
 
     -- -----------------------------------------------------------------------
     -- Debug logging (written to a state file)
     -- -----------------------------------------------------------------------
     debug = {
-        enabled   = true,
+        enabled = true,
         min_level = vim.log.levels.DEBUG,
         -- file = <state dir>/debug.log
     },
@@ -226,23 +250,23 @@ require("lvim-dependencies").setup({
     -- -----------------------------------------------------------------------
     highlight = {
         colors = {
-            bg            = "#1a1f21",
-            fg            = "#646c62",
-            separator     = "#486b4c",
-            declared      = "#bb755e",
-            installed     = "#f0c776",
-            loading       = "#6e8068",
-            working       = "#6e8068",
-            error         = "#ce5f57",   -- also used for outdated versions
-            success       = "#3a6479",   -- also used for up-to-date versions
-            title         = "#7954c6",
-            sub_title     = "#7954c6",
-            subject       = "#f0c776",
-            info          = "#545ec6",
-            navigation    = "#6e8068",
-            line_active   = "#4b809b",
+            bg = "#1a1f21",
+            fg = "#646c62",
+            separator = "#486b4c",
+            declared = "#bb755e",
+            installed = "#f0c776",
+            loading = "#6e8068",
+            working = "#6e8068",
+            error = "#ce5f57", -- also used for outdated versions
+            success = "#3a6479", -- also used for up-to-date versions
+            title = "#7954c6",
+            sub_title = "#7954c6",
+            subject = "#f0c776",
+            info = "#545ec6",
+            navigation = "#6e8068",
+            line_active = "#4b809b",
             line_inactive = "#43728a",
-            input         = "#43728a",
+            input = "#43728a",
         },
     },
 
@@ -250,6 +274,10 @@ require("lvim-dependencies").setup({
     -- UI
     -- -----------------------------------------------------------------------
     ui = {
+        -- Bounds (ms) for the randomized delay before initial virtual text appears,
+        -- so packages fade in staggered rather than all at once on first render.
+        visual_delay_min = 100,
+        visual_delay_max = 900,
         virtual_text = {
             -- Position relative to the line. nil defaults to "eol".
             -- Valid values: "eol" | "overlay" | "right_align" | "inline"
@@ -259,29 +287,23 @@ require("lvim-dependencies").setup({
             },
             icons = {
                 separators = {
-                    prefix     = "➤➤➤",  -- shown before the entire VT block
-                    transition = "→",     -- between declared and installed
-                    divider    = "|",     -- between installed and latest
+                    prefix = "➤➤➤", -- shown before the entire VT block
+                    transition = "→", -- between declared and installed
+                    divider = "|", -- between installed and latest
                 },
-                up_to_date = "",        -- prefix icon on latest when up to date
-                outdated   = "",        -- prefix icon on latest when update available
-                loading    = "Loading...",
-                working    = "Working... ",
-                error      = "?",
+                up_to_date = "", -- prefix icon on latest when up to date
+                outdated = "", -- prefix icon on latest when update available
+                loading = "Loading...",
+                working = "Working... ",
+                error = "?",
             },
         },
         popup = {
-            width      = "auto",
-            height     = "auto",
+            width = "auto",
+            height = "auto",
             max_height = 0.8,
-            current    = "➤",   -- marker for the currently installed version
-            max_items  = 20,
-        },
-        float = {
-            border     = { " ", " ", " ", " ", " ", " ", " ", " " },
-            width      = "auto",
-            height     = "auto",
-            max_height = 0.8,
+            current = "➤", -- marker for the currently installed version
+            max_items = 20,
         },
     },
 
@@ -300,8 +322,9 @@ require("lvim-dependencies").setup({
                 vim.lsp.buf.code_action()
             end, { buffer = bufnr, desc = "Lvim Dependencies: Code actions" })
         end,
-        actions = true,   -- enable code actions
-        hover   = true,   -- enable hover
+        actions = true, -- enable code actions
+        hover = true, -- enable hover
+        completion = false, -- enable the buffer omnifunc on attach (off: no completionProvider yet)
     },
 
     -- -----------------------------------------------------------------------
@@ -309,22 +332,22 @@ require("lvim-dependencies").setup({
     -- -----------------------------------------------------------------------
     cache = {
         ttl = {
-            installed = 300,    -- seconds — installed package info
-            latest    = 1800,   -- seconds — latest version from registry
-            manifest  = 3600,   -- seconds — parsed manifest data
-            declared  = nil,    -- nil = no expiry
+            installed = 300, -- seconds — installed package info
+            latest = 1800, -- seconds — latest version from registry
+            manifest = 3600, -- seconds — parsed manifest data
+            declared = nil, -- nil = no expiry
         },
         cleanup = {
-            interval    = 3600000,  -- ms — how often cleanup runs
-            threshold   = 0.8,      -- trigger when 80% of max_entries is reached
-            max_entries = 1000,     -- per-manager entry limit before cleanup
+            interval = 3600000, -- ms — how often cleanup runs
+            threshold = 0.8, -- trigger when 80% of max_entries is reached
+            max_entries = 1000, -- per-manager entry limit before cleanup
         },
         stats = {
-            collect        = true,
+            collect = true,
             warn_threshold = 500,
         },
-        managers_cache_ttl      = 5000,  -- ms
-        manifest_type_cache_ttl = 5000,  -- ms
+        managers_cache_ttl = 5000, -- ms
+        manifest_type_cache_ttl = 5000, -- ms
     },
 
     -- -----------------------------------------------------------------------
@@ -332,10 +355,10 @@ require("lvim-dependencies").setup({
     -- -----------------------------------------------------------------------
     async = {
         defaults = {
-            concurrency     = 10,
-            timeout         = 5000,
-            retry_count     = 3,
-            retry_delay     = 1000,
+            concurrency = 10,
+            timeout = 5000,
+            retry_count = 3,
+            retry_delay = 1000,
             max_retry_delay = 5000,
         },
         package_loader = {
@@ -364,36 +387,36 @@ require("lvim-dependencies").setup({
     -- -----------------------------------------------------------------------
     npm = {
         executables = {
-            npm  = nil,   -- nil = auto-detect from PATH
+            npm = nil, -- nil = auto-detect from PATH
             yarn = nil,
             pnpm = nil,
         },
         -- nil = auto-detect from lock file (pnpm-lock.yaml → pnpm, yarn.lock → yarn, else npm)
         preferred_manager = nil,
         api = {
-            timeout       = 10,   -- seconds
-            registry_base = nil,  -- nil = "https://registry.npmjs.org"
-            endpoint      = nil,  -- nil = "/%s/latest"
+            timeout = 10, -- seconds
+            registry_base = nil, -- nil = "https://registry.npmjs.org"
+            endpoint = nil, -- nil = "/%s/latest"
         },
         file_ops = {
             root_dir = nil,
         },
         version = {
             include_prerelease = false,
-            sort_order         = "desc",
-            max_versions       = 50,
+            sort_order = "desc",
+            max_versions = 50,
         },
         sections = {
-            order   = { "dependencies", "devDependencies", "peerDependencies", "optionalDependencies" },
+            order = { "dependencies", "devDependencies", "peerDependencies", "optionalDependencies" },
             default = "dependencies",
         },
         virtual_text = {
-            position = nil,   -- overrides global ui.virtual_text.position for package.json
+            position = nil, -- overrides global ui.virtual_text.position for package.json
             priority = nil,
         },
         polling = {
-            max_attempts   = 30,
-            interval_ms    = 200,
+            max_attempts = 30,
+            interval_ms = 200,
             start_delay_ms = 500,
         },
     },
@@ -407,33 +430,33 @@ require("lvim-dependencies").setup({
             rustc = nil,
         },
         api = {
-            timeout       = 10,
-            registry_base = nil,  -- nil = "https://crates.io/api/v1"
-            endpoint      = nil,
+            timeout = 10,
+            registry_base = nil, -- nil = "https://crates.io/api/v1"
+            endpoint = nil,
         },
         file_ops = {
             root_dir = nil,
         },
         version = {
             include_prerelease = false,
-            sort_order         = "desc",
-            max_versions       = 50,
+            sort_order = "desc",
+            max_versions = 50,
         },
         display = {
-            show_features         = true,   -- show enabled features in VT
-            filter_default        = true,   -- hide the implicit "default" feature
-            show_optional         = false,  -- show "[opt]" for optional deps
-            show_default_features = false,  -- show "[no-default]" when default-features = false
-            max_features_display  = 3,      -- truncate after this many features
-            truncation_indicator  = "...",
+            show_features = true, -- show enabled features in VT
+            filter_default = true, -- hide the implicit "default" feature
+            show_optional = false, -- show "[opt]" for optional deps
+            show_default_features = false, -- show "[no-default]" when default-features = false
+            max_features_display = 3, -- truncate after this many features
+            truncation_indicator = "...",
         },
         virtual_text = {
             position = nil,
             priority = nil,
         },
         polling = {
-            max_attempts   = 30,
-            interval_ms    = 200,
+            max_attempts = 30,
+            interval_ms = 200,
             start_delay_ms = 500,
         },
     },
@@ -446,24 +469,24 @@ require("lvim-dependencies").setup({
             go = nil,
         },
         api = {
-            timeout    = 10,
-            proxy_base = nil,  -- nil = "https://proxy.golang.org"
+            timeout = 10,
+            proxy_base = nil, -- nil = "https://proxy.golang.org"
         },
         file_ops = {
             root_dir = nil,
         },
         version = {
             include_prerelease = false,
-            sort_order         = "desc",
-            max_versions       = 50,
+            sort_order = "desc",
+            max_versions = 50,
         },
         virtual_text = {
             position = nil,
             priority = nil,
         },
         polling = {
-            max_attempts   = 30,
-            interval_ms    = 200,
+            max_attempts = 30,
+            interval_ms = 200,
             start_delay_ms = 500,
         },
     },
@@ -476,25 +499,25 @@ require("lvim-dependencies").setup({
             composer = nil,
         },
         api = {
-            timeout       = 10,
-            registry_base = nil,  -- nil = "https://repo.packagist.org/p2"
-            endpoint      = nil,
+            timeout = 10,
+            registry_base = nil, -- nil = "https://repo.packagist.org/p2"
+            endpoint = nil,
         },
         file_ops = {
             root_dir = nil,
         },
         version = {
             include_prerelease = false,
-            sort_order         = "desc",
-            max_versions       = 50,
+            sort_order = "desc",
+            max_versions = 50,
         },
         sections = {
-            order   = { "require", "require-dev" },
+            order = { "require", "require-dev" },
             default = "require",
         },
         polling = {
-            max_attempts   = 30,
-            interval_ms    = 200,
+            max_attempts = 30,
+            interval_ms = 200,
             start_delay_ms = 500,
         },
     },
@@ -505,34 +528,34 @@ require("lvim-dependencies").setup({
     pubspec = {
         executables = {
             flutter = nil,
-            dart    = nil,
+            dart = nil,
         },
         api = {
-            timeout       = 10,
-            registry_base = nil,  -- nil = "https://pub.dartlang.org/api"
-            endpoint      = nil,
+            timeout = 10,
+            registry_base = nil, -- nil = "https://pub.dartlang.org/api"
+            endpoint = nil,
         },
         file_ops = {
-            root_dir      = nil,
+            root_dir = nil,
             file_patterns = nil,
         },
         version = {
-            include_prerelease = true,   -- pub.dev includes stable+prerelease by default
-            sort_order         = "desc",
-            max_versions       = 50,
+            include_prerelease = true, -- pub.dev includes stable+prerelease by default
+            sort_order = "desc",
+            max_versions = 50,
         },
         sections = {
-            order   = { "dependencies", "dev_dependencies", "dependency_overrides" },
+            order = { "dependencies", "dev_dependencies", "dependency_overrides" },
             default = "dependencies",
         },
-        sdk_packages = {},   -- additional SDK package names to skip registry lookup
+        sdk_packages = {}, -- additional SDK package names to skip registry lookup
         virtual_text = {
             position = nil,
             priority = nil,
         },
         polling = {
-            max_attempts   = 30,
-            interval_ms    = 200,
+            max_attempts = 30,
+            interval_ms = 200,
             start_delay_ms = 500,
         },
     },
@@ -583,9 +606,9 @@ Override any group in your colorscheme to change the appearance.
 **Example overrides:**
 
 ```lua
-vim.api.nvim_set_hl(0, "LvimDepsOutdatedVersion",  { fg = "#ff6b6b", bold = true })
-vim.api.nvim_set_hl(0, "LvimDepsUpToDateVersion",  { fg = "#6bcb77" })
-vim.api.nvim_set_hl(0, "LvimDepsDeclaredVersion",  { fg = "#e0a070" })
+vim.api.nvim_set_hl(0, "LvimDepsOutdatedVersion", { fg = "#ff6b6b", bold = true })
+vim.api.nvim_set_hl(0, "LvimDepsUpToDateVersion", { fg = "#6bcb77" })
+vim.api.nvim_set_hl(0, "LvimDepsDeclaredVersion", { fg = "#e0a070" })
 vim.api.nvim_set_hl(0, "LvimDepsInstalledVersion", { fg = "#f0d080" })
 ```
 
@@ -629,8 +652,8 @@ lvim-dependencies/
 │   └── register.lua         — entry point called by registry; loads handler + optional LSP extensions
 ├── lsp/                     — shared LSP hover + code actions infrastructure
 ├── ui/
-│   ├── popup.lua            — interactive floating version picker
-│   └── float.lua            — read-only floating window (help, registry info, hover)
+│   ├── init.lua             — cached lvim-utils.ui instance (open/select/multiselect/input)
+│   └── cursor.lua           — hides the hardware cursor in the plugin's popup (lvim-utils.cursor)
 └── hooks/
     ├── commands.lua         — :LvimDeps user command with tab completion
     └── autocommands.lua     — BufRead, BufWrite, BufEnter, TextChanged handlers

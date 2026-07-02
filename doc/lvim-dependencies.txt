@@ -62,14 +62,22 @@ LSP handlers. It is safe to open a manifest file before or after setup().
         (core cache commands + the active manifest's manager commands). With no
         argument it prints help.
 
-Core (cache) subcommands: >
-    clear-declared      clear-installed      clear-latest
-    clear-all-caches    help
+Core subcommands (always available): >
+    install             update [package]     update-direct <package> <version>
+    delete [package]    show                 hide
+    toggle              cache [type]         clear-declared
+    clear-installed     clear-latest         clear-all-caches
+    show-registry       show-manager         state
+    metrics             help
 <
-Manager subcommands (install / update / delete / refresh, and Cargo feature
-management) are contributed by the manager of the CURRENT manifest buffer, so
-completion only offers what applies to that file. The same operations are also
-available as LSP code actions on the dependency line (|lvim-dependencies-lsp|).
+Package operations (install / update / update-direct / delete) and the
+virtual-text toggles (show / hide / toggle) act on the dependency under the
+cursor in the CURRENT manifest buffer. The same operations are also available
+as LSP code actions on the dependency line (|lvim-dependencies-lsp|).
+
+Manager subcommands are contributed by the manager of the current manifest, so
+completion only offers what applies to that file; currently the only one is
+Cargo's `features <package>` (feature management).
 
 ==============================================================================
 5. VIRTUAL TEXT                              *lvim-dependencies-virtual-text*
@@ -91,7 +99,7 @@ The plugin registers a lightweight in-process LSP source, so any client shows:
   - HOVER on a dependency — the package's metadata / available versions.
   - CODE ACTIONS on a dependency — install / update (pick a version) / delete.
 
-Disable it with `lsp = { enable = false }`.
+Disable it with `lsp = { enabled = false }`.
 
 ==============================================================================
 7. CONFIGURATION                                   *lvim-dependencies-config*
@@ -103,7 +111,7 @@ options into it in place. Top-level keys:
 managers    per-manager enable + behaviour.
 groups      highlight group names for the virtual-text components.
 ui          panel / virtual-text appearance.
-lsp         `{ enable = true }` — hover + code actions.
+lsp         `{ enabled = true }` — hover + code actions.
 cache       TTL + negative-cache window for the declared/installed/latest layers.
 async       concurrency, dynamic throttle, retry + jitter.
 metrics     operation metrics (view via the manager UI).
