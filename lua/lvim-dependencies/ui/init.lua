@@ -17,9 +17,10 @@ local function ui()
         return _instance
     end
     local popup = require("lvim-dependencies.config").ui.popup
+    -- max_height / close_keys / position come from the SHARED lvim-utils `config.ui` (the presenters read them),
+    -- so we only forward lvim-dependencies-specific values: the list-row cap and the active-item marker.
     _instance = require("lvim-utils").ui.new({
         max_items = popup.max_items,
-        max_height = popup.max_height,
         icons = { current = popup.current },
     })
     return _instance
