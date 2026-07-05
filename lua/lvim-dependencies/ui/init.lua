@@ -1,4 +1,4 @@
--- lvim-dependencies.ui: an independent lvim-utils.ui instance for lvim-dependencies.
+-- lvim-dependencies.ui: an independent lvim-ui instance for lvim-dependencies.
 -- The instance is created lazily and cached on first use, so its geometry/icons are read
 -- from lvim-dependencies.config.ui.popup only once the config has been merged. lvim-utils
 -- is required inline (cross-plugin dependency) to avoid a load-order requirement.
@@ -7,7 +7,7 @@
 
 local M = {}
 
----@type table? cached lvim-utils.ui instance (nil until first ui() call)
+---@type table? cached lvim-ui instance (nil until first ui() call)
 local _instance = nil
 
 --- Lazily build and cache the plugin's private ui instance from config.ui.popup.
@@ -17,19 +17,19 @@ local function ui()
         return _instance
     end
     local popup = require("lvim-dependencies.config").ui.popup
-    -- max_height / close_keys / position come from the SHARED lvim-utils `config.ui` (the presenters read them),
+    -- max_height / close_keys / position come from the SHARED lvim-ui `config.ui` (the presenters read them),
     -- so we only forward lvim-dependencies-specific values: the list-row cap and the active-item marker.
-    _instance = require("lvim-utils").ui.new({
+    _instance = require("lvim-ui").new({
         max_items = popup.max_items,
         icons = { current = popup.current },
     })
     return _instance
 end
 
---- The shared global lvim-utils.ui (used for info floats, not the private select instance).
+--- The shared global lvim-ui (used for info floats, not the private select instance).
 ---@return table
 local function global_ui()
-    return require("lvim-utils").ui
+    return require("lvim-ui")
 end
 
 -- ── Info / float ──────────────────────────────────────────────────────────────
