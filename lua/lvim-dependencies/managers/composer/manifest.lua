@@ -184,7 +184,8 @@ end
 
 local function add_latest(vt, latest, installed)
     local is_versioned = installed and installed ~= "not installed" and installed:match("^%d")
-    local is_current = is_versioned and compare_version.compare(latest, installed) ~= 1
+    local cmp = is_versioned and compare_version.compare(latest, installed) or nil
+    local is_current = is_versioned and cmp ~= nil and cmp ~= 1
     local icon = is_current and icons.up_to_date or icons.outdated
     local hl = is_current and groups.up_to_date or groups.outdated
     vt[#vt + 1] = { icon .. " ", hl }

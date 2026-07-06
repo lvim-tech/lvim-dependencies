@@ -26,7 +26,6 @@ local M = {
         -- Buffer events
         BUFFER_OPENED = "opened",
         BUFFER_SAVED = "saved",
-        BUFFER_MODIFIED = "modified",
         BUFFER_CLOSED = "closed",
         BUFFER_ENTERED = "entered",
         BUFFER_FILETYPE_CHANGED = "filetype_changed",

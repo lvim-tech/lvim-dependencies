@@ -65,8 +65,8 @@ end
 function M.find_section_end(lines, section_idx)
     local depth = 0
     for i = section_idx, #lines do
-        local line = lines[i]
-        -- Count braces
+        -- Strip quoted spans first so a `{`/`}` inside a string VALUE isn't counted as structure.
+        local line = lines[i]:gsub('"[^"]*"', "")
         for ch in line:gmatch("[{}]") do
             if ch == "{" then
                 depth = depth + 1

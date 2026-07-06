@@ -34,12 +34,12 @@ local function load_installed_module(manager_type)
         return manager_modules[manager_type]
     end
 
-    metrics.start_measure("module:installed:" .. manager_type)
+    local module_token = metrics.start_measure("module:installed:" .. manager_type)
 
     local module_path = string.format("lvim-dependencies.managers.%s.data.installed", manager_type)
     local ok, mod = pcall(require, module_path)
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(module_token)
     metrics.record_operation("module_load", duration)
 
     if not ok or not mod then
@@ -99,10 +99,10 @@ function M.get_package_installed(manager_type, package_name, callback)
         return
     end
 
-    metrics.start_measure("installed:lookup:" .. package_name)
+    local lookup_token = metrics.start_measure("installed:lookup:" .. package_name)
 
     installed_mod.get_package_installed(package_name, function(err, version)
-        local duration = metrics.end_measure()
+        local duration = metrics.end_measure(lookup_token)
         metrics.record_operation("installed_lookup", duration)
         if metrics.stats then
             metrics.stats.operations.total_loads = (metrics.stats.operations.total_loads or 0) + 1

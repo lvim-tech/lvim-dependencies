@@ -375,7 +375,6 @@ require("lvim-dependencies").setup({
         },
         debounce = {
             save = 200,
-            move = 50,
         },
         throttle = {
             default_limit = 100,

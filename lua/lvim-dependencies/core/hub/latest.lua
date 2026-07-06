@@ -36,12 +36,12 @@ local function load_latest_module(manager_type)
         return manager_modules[manager_type]
     end
 
-    metrics.start_measure("module:latest:" .. manager_type)
+    local module_token = metrics.start_measure("module:latest:" .. manager_type)
 
     local module_path = string.format("lvim-dependencies.managers.%s.data.latest", manager_type)
     local ok, mod = pcall(require, module_path)
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(module_token)
     metrics.record_operation("module_load", duration)
 
     if not ok or not mod then
@@ -117,10 +117,10 @@ function M.get_package_latest(manager_type, package_name, callback)
         return
     end
 
-    metrics.start_measure("latest:lookup:" .. package_name)
+    local lookup_token = metrics.start_measure("latest:lookup:" .. package_name)
 
     latest_mod.get_package_latest(package_name, function(err, result)
-        local duration = metrics.end_measure()
+        local duration = metrics.end_measure(lookup_token)
         metrics.record_operation("latest_lookup", duration)
         if metrics.stats then
             metrics.stats.operations.total_loads = (metrics.stats.operations.total_loads or 0) + 1

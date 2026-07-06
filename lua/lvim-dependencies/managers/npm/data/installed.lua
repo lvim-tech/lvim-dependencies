@@ -41,22 +41,62 @@ local function read_file(path)
     return content
 end
 
+---@class NpmLockCacheEntry
+---@field sig string path + mtime + size signature the cache is keyed on
+---@field content string|nil raw file content (read once)
+---@field decoded table|false|nil decoded JSON (lazy; false once a decode has failed)
+
+--- Parsed-lock cache keyed by absolute path. A project-wide open resolves EVERY package's
+--- installed version on the first paint; without this each package re-read + re-json_decoded
+--- the whole (multi-MB) lock synchronously on the UI thread. We read+decode each lock once
+--- per (mtime,size) signature and serve all packages — per-package and bulk — from it.
+---@type table<string, NpmLockCacheEntry>
+local lock_cache = {}
+
+--- Load a lock file, cached by path + mtime + size so it is read at most once per change.
+---@param lock_file string
+---@return NpmLockCacheEntry|nil
+local function load_lock(lock_file)
+    local path = find_lock_file(lock_file)
+    if not path then
+        return nil
+    end
+    local stat = vim.uv.fs_stat(path)
+    local sig = string.format("%d:%d", stat and stat.mtime and stat.mtime.sec or 0, stat and stat.size or 0)
+    local entry = lock_cache[path]
+    if not entry or entry.sig ~= sig then
+        entry = { sig = sig, content = read_file(path), decoded = nil }
+        lock_cache[path] = entry
+    end
+    return entry
+end
+
+--- Decoded JSON for a cached lock entry (memoised; false after a failed decode).
+---@param entry NpmLockCacheEntry
+---@return table|nil
+local function decoded_json(entry)
+    if entry.decoded == nil then
+        if not entry.content then
+            entry.decoded = false
+        else
+            local ok, data = pcall(vim.json.decode, entry.content)
+            entry.decoded = (ok and type(data) == "table") and data or false
+        end
+    end
+    return entry.decoded or nil
+end
+
 --- Read installed version from package-lock.json (npm)
 ---@param pkg_name string
 ---@return string|nil
 local function read_from_npm_lock(pkg_name)
-    local path = find_lock_file("package-lock.json")
-    if not path then
+    local entry = load_lock("package-lock.json")
+    if not entry then
         return nil
     end
 
-    local content = read_file(path)
-    if not content then
-        return nil
-    end
-
-    local ok, data = pcall(vim.json.decode, content)
-    if not ok or type(data) ~= "table" then
+    local data = decoded_json(entry)
+    if not data then
         return nil
     end
 
@@ -85,12 +125,8 @@ end
 ---@param pkg_name string
 ---@return string|nil
 local function read_from_yarn_lock(pkg_name)
-    local path = find_lock_file("yarn.lock")
-    if not path then
-        return nil
-    end
-
-    local content = read_file(path)
+    local entry = load_lock("yarn.lock")
+    local content = entry and entry.content
     if not content then
         return nil
     end
@@ -131,12 +167,8 @@ end
 ---@param pkg_name string
 ---@return string|nil
 local function read_from_pnpm_lock(pkg_name)
-    local path = find_lock_file("pnpm-lock.yaml")
-    if not path then
-        return nil
-    end
-
-    local content = read_file(path)
+    local entry = load_lock("pnpm-lock.yaml")
+    local content = entry and entry.content
     if not content then
         return nil
     end
@@ -285,6 +317,7 @@ end
 
 --- Delegates to hub/installed
 function M.clear_cache()
+    lock_cache = {}
     local hub = require("lvim-dependencies.core.hub.installed")
     hub.clear_cache("npm")
     debug("npm installed cache cleared (via hub)", vim.log.levels.INFO)

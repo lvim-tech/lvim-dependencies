@@ -20,6 +20,55 @@ local function format_log_line(msg, level_num)
     return string.format("%s [%s] %s\n", timestamp, level_name, tostring(msg))
 end
 
+-- Rotate the log once it passes this size so an enabled logger can't grow the debug file
+-- without bound over a long session. One previous generation is kept as "<file>.1".
+local MAX_LOG_BYTES = 5 * 1024 * 1024
+
+-- Kept-open writer state (only ever touched inside vim.schedule). Caching the expanded path,
+-- the ensured directory and an OPEN append handle means a message costs one write+flush — not
+-- an expand + mkdir + open/close every time, which is what made an enabled logger expensive.
+---@class DebugWriter
+---@field source string|nil the config.debug.file value the cache was built from
+---@field expanded string|nil resolved absolute log path (expanded once)
+---@field handle file*|nil append-mode handle kept open across writes
+---@field size integer bytes in the current file
+local writer = { source = nil, expanded = nil, handle = nil, size = 0 }
+
+--- Close and reset the writer (config change or rotation).
+local function reset_writer()
+    if writer.handle then
+        pcall(function()
+            writer.handle:close()
+        end)
+    end
+    writer.handle = nil
+    writer.expanded = nil
+    writer.size = 0
+end
+
+--- Ensure the append handle is open for the current config.debug.file. Runs scheduled (safe).
+---@return file*|nil
+local function ensure_handle()
+    local file = config.debug.file
+    if not file or file == "" then
+        return nil
+    end
+    if writer.source ~= file then
+        reset_writer()
+        writer.source = file
+    end
+    if not writer.expanded then
+        writer.expanded = vim.fn.expand(file)
+        file_system.ensure_dir(writer.expanded)
+    end
+    if not writer.handle then
+        writer.handle = io.open(writer.expanded, "a")
+        local stat = writer.expanded and vim.uv.fs_stat(writer.expanded)
+        writer.size = stat and stat.size or 0
+    end
+    return writer.handle
+end
+
 --- Write log message to debug file (always in scheduled context)
 ---@param msg string Message to log
 ---@param level_num integer Log level number
@@ -29,15 +78,29 @@ local function write_to_file(msg, level_num)
         return
     end
 
-    -- Always schedule file operations
+    -- Always schedule file operations (fn.expand and file I/O are illegal in a fast event).
     vim.schedule(function()
-        -- Expand path in scheduled context (safe)
-        local fn = vim.fn
-        local expanded_file = fn.expand(file)
+        local handle = ensure_handle()
+        if not handle then
+            return
+        end
         local log_line = format_log_line(msg, level_num)
-
-        file_system.ensure_dir(expanded_file)
-        file_system.append_line(expanded_file, log_line)
+        local ok = pcall(function()
+            handle:write(log_line)
+            handle:flush()
+        end)
+        if not ok then
+            reset_writer()
+            return
+        end
+        writer.size = writer.size + #log_line
+        if writer.size >= MAX_LOG_BYTES then
+            local path = writer.expanded
+            reset_writer()
+            if path then
+                pcall(os.rename, path, path .. ".1")
+            end
+        end
     end)
 end
 

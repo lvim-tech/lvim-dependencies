@@ -119,6 +119,14 @@ local function resolve_scope(name, disk_lines, sections, scope)
     return sections[1] or "dependencies"
 end
 
+---@param name string
+---@param version string
+---@param disk_lines string[]
+---@param scope string
+---@param sections string[]
+---@return string[] new_lines
+---@return FileChange|nil change
+---@return string|nil err reason the update was refused (git/path dependency)
 local function prepare_toml_changes(name, version, disk_lines, scope, sections)
     local section_idx = toml_ops.find_section_index(disk_lines, scope)
 
@@ -151,7 +159,6 @@ local function prepare_toml_changes(name, version, disk_lines, scope, sections)
         end
     end
 
-    local line_value
     local start_idx, _, current_line = toml_ops.find_package_block(disk_lines, section_idx, section_end, name)
 
     if start_idx and current_line then
@@ -160,36 +167,36 @@ local function prepare_toml_changes(name, version, disk_lines, scope, sections)
             pkg_indent = existing_indent
         end
 
-        local current_features = {}
-        if current_line:match("=") and current_line:match("{") then
-            local features_match = current_line:match("features%s*=%s*%[([^%]]+)%]")
-            if features_match then
-                for feature in features_match:gmatch('"([^"]+)"') do
-                    table.insert(current_features, feature)
-                end
+        local new_line
+        if current_line:match("=%s*{") then
+            -- Inline table dependency (`serde = { version = "1", optional = true }`). A crates.io
+            -- version is meaningless for a git/path dependency, so refuse rather than silently
+            -- converting it to a registry dep (which drops the source and breaks the build).
+            if current_line:match("%f[%w]git%s*=") or current_line:match("%f[%w]path%s*=") then
+                return disk_lines, nil, string.format("%s is a git/path dependency; version update skipped", name)
             end
-        end
-
-        if #current_features > 0 then
-            local features_str = 'features = ["' .. table.concat(current_features, '", "') .. '"]'
-            line_value = string.format('%s = { version = "%s", %s }', name, version, features_str)
+            -- Change ONLY the version value in place — every other key (features, optional,
+            -- default-features, rev, package, registry, …) is preserved byte-for-byte.
+            if current_line:match('version%s*=%s*"') then
+                new_line = current_line:gsub('(version%s*=%s*")[^"]*(")', "%1" .. version .. "%2", 1)
+            else
+                new_line = current_line:gsub("(=%s*{)%s*", '%1 version = "' .. version .. '", ', 1)
+            end
         else
-            line_value = string.format('%s = "%s"', name, version)
+            new_line = pkg_indent .. string.format('%s = "%s"', name, version)
         end
 
-        local new_line = pkg_indent .. line_value
         local new_lines, replaced, change =
             toml_ops.replace_package_in_section(disk_lines, section_idx, section_end, name, new_line)
         if replaced then
-            return new_lines or {}, change, section_idx
+            return new_lines or {}, change, nil
         end
     end
 
     debug(string.format("Package %s not found in section, inserting", name), vim.log.levels.INFO)
-    line_value = string.format('%s = "%s"', name, version)
-    local new_line = pkg_indent .. line_value
+    local new_line = pkg_indent .. string.format('%s = "%s"', name, version)
     local new_lines, change = toml_ops.insert_package_in_section(disk_lines, section_idx, new_line)
-    return new_lines or {}, change, section_idx
+    return new_lines or {}, change, nil
 end
 
 -- ============================================================================
@@ -223,9 +230,39 @@ function M.get_package_at_cursor(opts)
         return nil
     end
 
+    -- Only lines inside a *dependency* section are packages. Without this, keys in [package]
+    -- (name/version/edition), [features], [profile], etc. matched the `simple`/`bare` patterns
+    -- and were returned as if they were dependencies.
+    local prev = api.nvim_buf_get_lines(bufnr, 0, cursor_line + 1, false)
+    local section
+    for i = #prev, 1, -1 do
+        local hdr = prev[i]:match("^%s*%[%s*(.-)%s*%]")
+        if hdr then
+            section = hdr
+            break
+        end
+    end
+    if not section then
+        return nil
+    end
+
+    -- A per-dependency subsection ([dependencies.serde], [target.'…'.dependencies.serde]): the
+    -- package is the trailing dotted component, never a key on the line inside it.
+    local sub = section:match("dependencies%.([%w%-_]+)$")
+    if sub then
+        return sub
+    end
+    -- Otherwise only a plain dependency table (…dependencies) has per-line packages.
+    if not section:match("dependencies$") then
+        return nil
+    end
+
     for _, pattern in pairs(manifest.package_patterns) do
         local name = line:match(pattern)
         if name then
+            if manifest.special_keys and vim.tbl_contains(manifest.special_keys, name) then
+                return nil
+            end
             return name
         end
     end
@@ -363,7 +400,11 @@ function M.update_async(name, opts, callback)
 
     local scope = resolve_scope(name, disk_lines, sections, opts.scope)
     local original_lines = vim.deepcopy(disk_lines)
-    local new_lines, change = prepare_toml_changes(name, version, disk_lines, scope, sections)
+    local new_lines, change, prep_err = prepare_toml_changes(name, version, disk_lines, scope, sections)
+    if prep_err then
+        callback({ success = false, message = prep_err, packages = {} })
+        return
+    end
 
     if opts.from_ui then
         cargo_ops.run_cargo_update(path, name, version, {

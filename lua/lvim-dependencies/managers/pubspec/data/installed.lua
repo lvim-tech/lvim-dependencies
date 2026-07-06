@@ -55,7 +55,13 @@ local function find_lock_file(lock_file, bufnr)
     return found and found[1] or nil
 end
 
---- Read and parse a lock file
+--- Parsed pubspec.lock cache keyed by path + mtime + size. On a project-wide open every
+--- declared package goes through get_package_installed separately; without this each one
+--- re-read AND re-YAML-parsed the whole lock. Parse once per signature and serve all packages.
+---@type table<string, { sig: string, data: table|false }>
+local lock_cache = {}
+
+--- Read and parse a lock file (cached by path + mtime + size).
 ---@param lock_file string
 ---@param bufnr? integer
 ---@return table|nil
@@ -63,6 +69,13 @@ local function read_and_parse_lock(lock_file, bufnr)
     local lock_path = find_lock_file(lock_file, bufnr)
     if not lock_path then
         return nil
+    end
+
+    local stat = vim.uv.fs_stat(lock_path)
+    local sig = string.format("%d:%d", stat and stat.mtime and stat.mtime.sec or 0, stat and stat.size or 0)
+    local cached = lock_cache[lock_path]
+    if cached and cached.sig == sig then
+        return cached.data or nil
     end
 
     local file, open_err = io.open(lock_path, "r")
@@ -79,11 +92,13 @@ local function read_and_parse_lock(lock_file, bufnr)
     end
 
     local ok, data = pcall(tinyyaml.parse, content)
-    if not ok then
+    if not ok or type(data) ~= "table" then
         debug(string.format("Failed to parse YAML %s: %s", lock_file, tostring(data)), vim.log.levels.WARN)
+        lock_cache[lock_path] = { sig = sig, data = false }
         return nil
     end
 
+    lock_cache[lock_path] = { sig = sig, data = data }
     return data
 end
 
@@ -241,6 +256,7 @@ end
 --- Clear cache — delegates to hub/installed which owns caching.
 --- Kept for backward compatibility with pub_ops.lua and api/init.lua.
 function M.clear_cache()
+    lock_cache = {}
     local hub = require("lvim-dependencies.core.hub.installed")
     hub.clear_cache("pubspec")
     debug("Installed cache cleared (via hub)", vim.log.levels.INFO)

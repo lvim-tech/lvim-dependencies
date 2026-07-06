@@ -36,12 +36,12 @@ local function load_declared_module(manager_type)
         return manager_modules[manager_type]
     end
 
-    metrics.start_measure("module:declared:" .. manager_type)
+    local module_token = metrics.start_measure("module:declared:" .. manager_type)
 
     local module_path = string.format("lvim-dependencies.managers.%s.data.declared", manager_type)
     local ok, mod = pcall(require, module_path)
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(module_token)
     metrics.record_operation("module_load", duration)
 
     if not ok or not mod then
@@ -66,12 +66,12 @@ local function load_fresh_data(manager_type, entry)
         return {}
     end
 
-    metrics.start_measure("declared:load:" .. manager_type)
+    local load_token = metrics.start_measure("declared:load:" .. manager_type)
 
     local ok, data = pcall(loader.get_data)
 
     if not ok then
-        metrics.end_measure()
+        metrics.end_measure(load_token)
         debug(
             string.format("Failed to load declared data for %s: %s", manager_type, tostring(data)),
             vim.log.levels.ERROR
@@ -80,7 +80,7 @@ local function load_fresh_data(manager_type, entry)
         return {}
     end
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(load_token)
     metrics.record_operation("declared_load", duration)
     if metrics.stats then
         metrics.stats.operations.total_loads = (metrics.stats.operations.total_loads or 0) + 1

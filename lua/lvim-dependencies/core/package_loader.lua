@@ -82,7 +82,7 @@ end
 function M.load_package_data_async(manifest_type, package_name, callback, opts)
     opts = opts or {}
 
-    metrics.start_measure("package:load:" .. manifest_type .. ":" .. package_name)
+    local load_token = metrics.start_measure("package:load:" .. manifest_type .. ":" .. package_name)
 
     async.run(function()
         local declared = load_declared(manifest_type, package_name)
@@ -102,7 +102,7 @@ function M.load_package_data_async(manifest_type, package_name, callback, opts)
             debug(string.format("Invalid results for %s/%s", manifest_type, package_name), vim.log.levels.ERROR)
             metrics.record_error(manifest_type, const.METRICS.ERROR_TYPES.OTHER)
 
-            local duration = metrics.end_measure()
+            local duration = metrics.end_measure(load_token)
             metrics.record_operation("package_load_failed", duration)
 
             callback(make_result(manifest_type, package_name, {
@@ -116,7 +116,7 @@ function M.load_package_data_async(manifest_type, package_name, callback, opts)
         local installed_result = results[1] or {}
         local latest_result = results[2] or {}
 
-        local duration = metrics.end_measure()
+        local duration = metrics.end_measure(load_token)
         metrics.record_operation("package_load", duration)
         if metrics.stats then
             metrics.stats.operations.total_loads = (metrics.stats.operations.total_loads or 0) + 1

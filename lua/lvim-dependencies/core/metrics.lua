@@ -1,7 +1,8 @@
 -- lvim-dependencies.core.metrics: in-memory instrumentation for the plugin. Records
--- cache hits/misses/expiries, per-package load timings (via a start/end_measure stack
--- so nested/concurrent measurements don't clobber each other), operation timelines and
--- error tallies, then renders them as a markdown report (with sparklines) into a float.
+-- cache hits/misses/expiries, per-package load timings (via a start_measure token that
+-- end_measure consumes, so out-of-order concurrent measurements are attributed correctly),
+-- operation timelines and error tallies, then renders them as a markdown report (with
+-- sparklines) into a float.
 -- Numeric-keyed tables (e.g. by_level keyed on vim.log.levels) are stringified before
 -- JSON save because vim.json.encode rejects sparse arrays.
 --
@@ -49,9 +50,12 @@ local vim_schedule = vim.schedule_wrap
 ---@field latest table<string, PackagePerfEntry>
 ---@field installed table<string, PackagePerfEntry>
 
+---@class MeasureToken
+---@field name string
+---@field start integer nanosecond hrtime at start
+
 local M = {
     stats = nil, -- will be initialized in setup
-    _measure_stack = {}, -- stack to support nested/concurrent measurements
 }
 
 -- ============================================================================
@@ -331,25 +335,28 @@ function M.handle_debug(msg, level)
 end
 
 --- Start measuring an operation.
---- Pushes onto a stack so nested/concurrent measurements don't overwrite each other.
+--- Returns a token that must be handed back to end_measure. Concurrent/nested
+--- measurements each carry their own token, so a lookup that finishes out of order
+--- (10 in flight at once) is always attributed to the RIGHT operation — there is no
+--- shared LIFO stack to corrupt, and an early return simply drops the token (no leak).
 ---@param name string
+---@return MeasureToken
 function M.start_measure(name)
-    M._measure_stack[#M._measure_stack + 1] = {
+    return {
         name = name,
         start = vim.uv.hrtime(),
     }
 end
 
 --- End measuring and record duration.
---- Pops the most recent measurement from the stack.
+---@param token? MeasureToken
 ---@return number
-function M.end_measure()
-    if #M._measure_stack == 0 then
+function M.end_measure(token)
+    if not token then
         return 0
     end
 
-    local measure = table.remove(M._measure_stack)
-    local duration = (vim.uv.hrtime() - measure.start) / 1e6
+    local duration = (vim.uv.hrtime() - token.start) / 1e6
 
     if not M.stats then
         return duration
@@ -361,7 +368,7 @@ function M.end_measure()
         table.remove(times, 1)
     end
 
-    local name = measure.name
+    local name = token.name
     if name then
         -- Route to the correct by_package sub-table:
         --   "latest:lookup:<pkg>"    → by_package.latest    (HTTP, slow)
@@ -565,6 +572,41 @@ local function prepare_for_json(val)
     end
 end
 
+--- Rebuild a live stats table from JSON-decoded data. Undoes prepare_for_json's string-key
+--- coercion where the live schema uses numeric keys (by_level is keyed on vim.log.levels),
+--- and merges onto a fresh create_stats() skeleton so any field absent from the file keeps
+--- its default shape instead of leaving a hole the report/handlers would crash on.
+---@param data table
+---@return MetricsStats
+local function restore_from_json(data)
+    local stats = create_stats()
+    for section, value in pairs(data) do
+        if type(value) == "table" and type(stats[section]) == "table" then
+            for k, v in pairs(value) do
+                stats[section][k] = v
+            end
+        else
+            stats[section] = value
+        end
+    end
+
+    -- by_level is keyed on vim.log.levels (0,1,2,4); JSON encode turned those into "0".."4".
+    if type(data.by_level) == "table" then
+        local restored = {
+            [LOG_LEVELS.DEBUG] = 0,
+            [LOG_LEVELS.INFO] = 0,
+            [LOG_LEVELS.WARN] = 0,
+            [LOG_LEVELS.ERROR] = 0,
+        }
+        for k, v in pairs(data.by_level) do
+            restored[tonumber(k) or k] = v
+        end
+        stats.by_level = restored
+    end
+
+    return stats
+end
+
 ---@param filepath? string
 function M.save(filepath)
     filepath = filepath or vim.fn.stdpath("data") .. "/lvim-dependencies-metrics.json"
@@ -613,7 +655,7 @@ function M.load(filepath)
 
     local ok, data = pcall(vim.json.decode, content)
     if ok and type(data) == "table" then
-        M.stats = data
+        M.stats = restore_from_json(data)
         notify(string_format(" Metrics loaded from %s", filepath), vim.log.levels.INFO)
     else
         notify(string_format(" Failed to parse metrics: %s", tostring(data)), vim.log.levels.ERROR)

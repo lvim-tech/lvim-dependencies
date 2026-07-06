@@ -39,7 +39,6 @@ local VT_NAMESPACE_ID = api.nvim_create_namespace(NAMESPACE_VIRTUAL_TEXT)
 
 local EVENT_BUFFER_OPENED = const.EVENTS.BUFFER_OPENED
 local EVENT_BUFFER_SAVED = const.EVENTS.BUFFER_SAVED
-local EVENT_BUFFER_MODIFIED = const.EVENTS.BUFFER_MODIFIED
 local EVENT_BUFFER_CLOSED = const.EVENTS.BUFFER_CLOSED
 local EVENT_BUFFER_ENTERED = const.EVENTS.BUFFER_ENTERED
 local EVENT_BUFFER_FILETYPE_CHANGED = const.EVENTS.BUFFER_FILETYPE_CHANGED
@@ -53,7 +52,6 @@ local DEFAULT_HANDLERS = {
         return nil
     end,
     move_virt_texts_only = function() end,
-    check_for_new_packages = function() end,
     display_loading = function() end,
     update_package = function() end,
     display_loading_for_package = function() end,
@@ -112,11 +110,9 @@ local function get_or_create_buffer_state(buf)
             filetype = "",
             count_open = 0,
             count_save = 0,
-            count_modification = 0,
             count_filetype_changes = 0,
             count_enter = 0,
             is_open = false,
-            modified = false,
             initial_load_complete = false,
         }
         M._state.buffers[buf] = state
@@ -456,16 +452,6 @@ local function check_for_package_changes_on_save(buf, manifest_type)
     M._handlers.move_virt_texts_only(buf)
 end
 
----@param buf integer
-local function schedule_modified_handling(buf)
-    vim.schedule(function()
-        if utils_buffer.is_valid(buf) then
-            M._handlers.move_virt_texts_only(buf)
-            M._handlers.check_for_new_packages(buf)
-        end
-    end)
-end
-
 -- ============================================================================
 -- Event handlers
 -- ============================================================================
@@ -510,7 +496,6 @@ local function handle_saved_event(buf, buffer_state, buffer_info, event_data)
 
     buffer_state.last_saved = event_data.timestamp
     buffer_state.count_save = (buffer_state.count_save or 0) + 1
-    buffer_state.modified = false
 
     local manifest_type = registry.determine_manifest_type(buffer_info.filename)
     if not manifest_type or not utils_buffer.is_valid(buf) then
@@ -538,18 +523,6 @@ local function handle_saved_event(buf, buffer_state, buffer_info, event_data)
             close_timer(timer)
         end)
     )
-end
-
----@param buf integer
----@param buffer_state StateBufferData
----@param buffer_info table
----@param event_data BufferEventData
----@diagnostic disable-next-line: unused-local
-local function handle_modified_event(buf, buffer_state, buffer_info, event_data)
-    buffer_state.last_modified = event_data.timestamp
-    buffer_state.count_modification = (buffer_state.count_modification or 0) + 1
-    buffer_state.modified = true
-    schedule_modified_handling(buf)
 end
 
 ---@param buf integer
@@ -606,7 +579,6 @@ end
 local EVENT_HANDLERS = {
     [EVENT_BUFFER_OPENED] = handle_opened_event,
     [EVENT_BUFFER_SAVED] = handle_saved_event,
-    [EVENT_BUFFER_MODIFIED] = handle_modified_event,
     [EVENT_BUFFER_CLOSED] = handle_closed_event,
     [EVENT_BUFFER_FILETYPE_CHANGED] = handle_filetype_changed,
     [EVENT_BUFFER_ENTERED] = handle_entered_event,

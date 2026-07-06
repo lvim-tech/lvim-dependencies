@@ -1,6 +1,7 @@
 -- lvim-dependencies.managers.composer.data.installed: reports the versions actually INSTALLED,
--- read straight from composer.lock each call (no local cache — the lock file is the source of
--- truth). Composer stores "v"-prefixed versions, which are normalised. Platform requirements
+-- read from composer.lock (parsed once per mtime, then served to every declared package so a
+-- project-wide open doesn't re-decode the whole lock N times). Composer stores "v"-prefixed
+-- versions, which are normalised. Platform requirements
 -- (php / ext-* / lib-* / composer-*) are never in the lock, so their composer.json constraint
 -- is returned as the "installed" value instead.
 --
@@ -26,12 +27,25 @@ local function find_lock_file()
     return found and found[1] or nil
 end
 
---- Read and parse composer.lock
+--- Parsed composer.lock cache keyed by path + mtime + size. A project-wide open resolves each
+--- declared package through get_package_installed separately; without this every one re-read and
+--- re-json_decoded the whole lock. Parse once per signature and serve all packages from it.
+---@type table<string, { sig: string, data: table|false }>
+local lock_cache = {}
+
+--- Read and parse composer.lock (cached by path + mtime + size).
 ---@return table|nil
 local function read_lock()
     local path = find_lock_file()
     if not path then
         return nil
+    end
+
+    local stat = vim.uv.fs_stat(path)
+    local sig = string.format("%d:%d", stat and stat.mtime and stat.mtime.sec or 0, stat and stat.size or 0)
+    local cached = lock_cache[path]
+    if cached and cached.sig == sig then
+        return cached.data or nil
     end
 
     local f = io.open(path, "r")
@@ -48,8 +62,10 @@ local function read_lock()
     local ok, data = pcall(vim.json.decode, content)
     if not ok or type(data) ~= "table" then
         debug("composer: failed to parse composer.lock", vim.log.levels.WARN)
+        lock_cache[path] = { sig = sig, data = false }
         return nil
     end
+    lock_cache[path] = { sig = sig, data = data }
     return data
 end
 
@@ -135,8 +151,8 @@ function M.get_data(declared_packages)
 end
 
 function M.clear_cache()
-    -- No local cache — reads lock file directly each time
-    debug("composer: installed cache cleared (no-op)", vim.log.levels.DEBUG)
+    lock_cache = {}
+    debug("composer: installed lock cache cleared", vim.log.levels.DEBUG)
 end
 
 return M

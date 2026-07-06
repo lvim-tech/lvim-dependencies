@@ -15,6 +15,7 @@ local state = require("lvim-dependencies.core.state")
 local cache = require("lvim-dependencies.core.cache")
 local latest = require("lvim-dependencies.core.hub.latest")
 local vt = require("lvim-dependencies.managers.composer.virtual_text")
+local manifest = require("lvim-dependencies.managers.composer.manifest")
 
 local config_groups = config.groups
 local debug = utils.debug
@@ -97,6 +98,16 @@ function M.poll_for_outdated(bufnr, name, callback)
     if type(callback) == "table" then
         opts = callback
         user_callback = opts.callback
+    end
+
+    -- Platform requirements (php / ext-* / …) have no packagist entry, so get_package_latest
+    -- returns nil forever — polling would burn every attempt for nothing. Terminate immediately.
+    if not manifest.is_package_actionable(name) then
+        reset_buffer_loading_state(bufnr)
+        if user_callback then
+            user_callback()
+        end
+        return
     end
 
     local poll_count = 0

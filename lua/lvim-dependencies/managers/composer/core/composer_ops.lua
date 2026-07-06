@@ -22,6 +22,7 @@ local indicators = require("lvim-dependencies.managers.composer.utils.indicators
 local parser = require("lvim-dependencies.managers.composer.parser")
 local package_loader = require("lvim-dependencies.core.package_loader")
 local manifest = require("lvim-dependencies.managers.composer.manifest")
+local installed_data = require("lvim-dependencies.managers.composer.data.installed")
 
 local debug = utils.debug
 local api = vim.api
@@ -272,41 +273,30 @@ function M.run_composer_update(path, name, version, opts, callback)
             callback_called = true
 
             local code = res and res.code or -1
-            local stderr = (res and res.stderr) or ""
-            local stdout = (res and res.stdout) or ""
 
-            -- composer may exit non-zero due to PHP Warnings while the update succeeded.
-            -- Treat as success if exit=0 OR if stderr contains only PHP Warnings.
-            local only_warnings = code ~= 0
-                and not stderr:match("[Ee]rror")
-                and not stderr:match("[Ff]atal")
-                and not stderr:match("[Ee]xception")
-                and not stderr:match("Your requirements could not be resolved")
-                and not stderr:match("Installation failed")
-            debug(string.format("composer: stderr_first_200=%s", stderr:sub(1, 200)), vim.log.levels.DEBUG)
-            debug(
-                string.format(
-                    "composer: has_requirements=%s has_installation=%s",
-                    tostring(stderr:match("Your requirements could not be resolved") ~= nil),
-                    tostring(stderr:match("Installation failed") ~= nil)
-                ),
-                vim.log.levels.DEBUG
-            )
+            -- Decide success against composer.lock (the source of truth) rather than scraping
+            -- stderr for keywords. Composer exits 0 on mere PHP warnings, so a keyword blacklist
+            -- both mislabels warnings and — worse — reports a QUIET failure as success and seeds a
+            -- version that was never installed. Re-read the lock and trust what is actually there;
+            -- platform requirements (php / ext-*) never appear in the lock, so trust the exit code.
+            installed_data.clear_cache()
+            local actual_version
+            installed_data.get_package_installed(name, function(_, v)
+                actual_version = v
+            end)
 
-            if code == 0 or only_warnings then
-                if only_warnings then
-                    debug(
-                        string.format("composer: non-zero exit for %s but only warnings — treating as success", name),
-                        vim.log.levels.WARN
-                    )
-                end
-                seed_installed_version(name, version)
-                handle_success(name, version, bufnr, saved_cursor)
-                vim.g.lvim_deps_last_updated = name .. "@" .. tostring(version)
+            local is_platform = not manifest.is_package_actionable(name)
+            local succeeded = (is_platform and code == 0) or actual_version ~= nil
+
+            if succeeded then
+                local seeded = actual_version or version
+                seed_installed_version(name, seeded)
+                handle_success(name, seeded, bufnr, saved_cursor)
+                vim.g.lvim_deps_last_updated = name .. "@" .. tostring(seeded)
                 if callback then
                     callback({
                         success = true,
-                        message = string.format("updated %s@%s", name, version),
+                        message = string.format("updated %s@%s", name, seeded),
                         packages = { name },
                     })
                 end

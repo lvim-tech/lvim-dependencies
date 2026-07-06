@@ -31,7 +31,6 @@ return {
     --- Debounce settings (delay execution until activity stops)
     debounce = {
         save = 200, -- Debounce for save events (ms)
-        move = 50, -- Debounce for virtual text movement (ms)
     },
     --- Throttle settings (limit execution rate)
     throttle = {

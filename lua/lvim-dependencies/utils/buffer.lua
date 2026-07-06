@@ -29,11 +29,9 @@ local M = {}
 ---@field last_accessed integer Last access timestamp
 ---@field count_open integer Number of times buffer was opened
 ---@field count_save integer Number of times buffer was saved
----@field count_modification integer Number of modifications
 ---@field count_filetype_changes integer Number of filetype changes
 ---@field count_enter integer Number of times buffer was entered
 ---@field is_open boolean Whether buffer is currently open
----@field modified boolean Current modified state
 ---@field last_event string Last event type
 
 --- Check if buffer is valid (safe for fast events)
@@ -104,11 +102,9 @@ local function create_default_state(buf)
         last_accessed = now,
         count_open = 0,
         count_save = 0,
-        count_modification = 0,
         count_filetype_changes = 0,
         count_enter = 0,
         is_open = false,
-        modified = false,
         last_event = "",
     }
 end

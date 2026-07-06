@@ -56,19 +56,23 @@ local function evict_detection_cache()
     end
 end
 
---- Build a stable cache key from a dependency value
+--- Build a stable, STRUCTURAL cache key from a dependency value.
+--- Recurses into nested tables — a bare `tostring(v)` on a table yields its ADDRESS, so two
+--- structurally-identical deps produced permanent cache misses (different addresses) and, worse,
+--- a reused address could produce a stale hit. Serialising the shape (sorted keys, recursed
+--- values) makes the key depend only on content. Manifest values are acyclic (JSON/TOML/YAML).
 ---@param value any
 ---@return string
 local function make_cache_key(value)
-    if type(value) == "table" then
-        local items = {}
-        for k, v in pairs(value) do
-            items[#items + 1] = string.format("%s=%s", k, tostring(v))
-        end
-        table.sort(items)
-        return "table:" .. table.concat(items, "|")
+    if type(value) ~= "table" then
+        return type(value) .. ":" .. tostring(value)
     end
-    return type(value) .. ":" .. tostring(value)
+    local items = {}
+    for k, v in pairs(value) do
+        items[#items + 1] = string.format("%s=%s", tostring(k), make_cache_key(v))
+    end
+    table.sort(items)
+    return "table:{" .. table.concat(items, "|") .. "}"
 end
 
 -- ============================================================================

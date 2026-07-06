@@ -305,7 +305,9 @@ end
 -- Dependency type definitions
 -- ============================================================================
 
----@type table<string, DependencyTypeDef>
+-- The `detection_order` key is a string[] (deterministic detect order), the rest are
+-- DependencyTypeDef — hence the union value type.
+---@type table<string, DependencyTypeDef|string[]>
 M.dependency_types = {
     detection_order = { "workspace", "git", "path", "registry" },
 

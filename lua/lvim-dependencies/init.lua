@@ -72,7 +72,6 @@ function M.setup(user_config)
         get_loaded_packages = virtual_text.get_loaded_packages,
         find_package_line = virtual_text.find_package_line,
         move_virt_texts_only = virtual_text.move_virt_texts_only,
-        check_for_new_packages = virtual_text.check_for_new_packages,
         display_loading = virtual_text.display_loading,
         update_package = virtual_text.update_package,
         display_loading_for_package = virtual_text.display_loading_for_package,

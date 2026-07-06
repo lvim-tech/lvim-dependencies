@@ -28,32 +28,12 @@ local notify = utils.notify
 -- ============================================================================
 local NAMESPACE_VIRTUAL_TEXT = const.NAMESPACES.VIRTUAL_TEXT
 local VT_POSITION = (config.ui and config.ui.virtual_text and config.ui.virtual_text.position) or "eol"
-local MOVE_DEBOUNCE_MS = config.async.debounce.move or 50
 
 -- Cache for vt modules
 local vt_module_cache = {}
 
 ---@type VirtualTexts
 local virt_texts = {}
-
--- Debounce for move operations
-local move_debounce = {}
-
---- Safely stop and close a uv timer
----@param timer any
-local function close_timer(timer)
-    if not timer then
-        return
-    end
-    pcall(function()
-        if timer:is_active() then
-            timer:stop()
-        end
-        if not timer:is_closing() then
-            timer:close()
-        end
-    end)
-end
 
 ---@class VirtualTextDef
 local M = {
@@ -68,7 +48,6 @@ local M = {
             return nil
         end,
         move_virt_texts_only = function() end,
-        check_for_new_packages = function() end,
         display_loading = function() end,
         update_package = function() end,
         display_loading_for_package = function() end,
@@ -441,55 +420,6 @@ function M.move_virt_texts_only(buf)
     M._moving[buf] = nil
 end
 
---- Move virtual texts with debounce
----@param buf integer
-function M.move_virt_texts_debounced(buf)
-    close_timer(move_debounce[buf])
-    move_debounce[buf] = vim.defer_fn(function()
-        move_debounce[buf] = nil
-        M.move_virt_texts_only(buf)
-    end, MOVE_DEBOUNCE_MS)
-end
-
---- Check for newly added package lines and notify via on_new_packages handler
----@param buf integer
-function M.check_for_new_packages(buf)
-    if vim.in_fast_event() or not M.virt_texts[buf] or M._moving[buf] then
-        return
-    end
-
-    local ok, lines = pcall(api.nvim_buf_get_lines, buf, 0, -1, false)
-    if not ok or not lines then
-        return
-    end
-
-    local manifest_type = M.virt_texts[buf].manifest_type
-    local vt_module = get_vt_module(manifest_type)
-    local declared_packages = M.virt_texts[buf].declared or {}
-    local found_packages = {}
-
-    for i, line in ipairs(lines) do
-        -- Delegate line parsing to the manager module (or universal fallback)
-        local pkg = find_pkg_in_line(vt_module, line)
-        if pkg and declared_packages[pkg] and not found_packages[pkg] then
-            found_packages[pkg] = i - 1
-        end
-    end
-
-    local new_packages = {}
-    for pkg, line in pairs(found_packages) do
-        if not M.virt_texts[buf][pkg] then
-            new_packages[#new_packages + 1] = { name = pkg, line = line }
-        end
-    end
-
-    if #new_packages > 0 and M._handlers and M._handlers.on_new_packages then
-        vim.schedule(function()
-            M._handlers.on_new_packages(buf, new_packages)
-        end)
-    end
-end
-
 --- Get loaded packages with their version data
 ---@param buf integer
 ---@return table<string, {declared: any, installed: string|nil, latest: table|nil}>
@@ -564,8 +494,6 @@ function M.clear_buffer(buf)
         pcall(api.nvim_buf_del_extmark, buf, M.namespace, em[1])
     end
     M.virt_texts[buf] = nil
-    close_timer(move_debounce[buf])
-    move_debounce[buf] = nil
 end
 
 --- Display loading indicators for all packages in a manifest
@@ -575,7 +503,7 @@ end
 ---@param is_initial? boolean
 function M.display_loading(buf, manifest_type, packages, is_initial)
     local _ = is_initial
-    metrics.start_measure("vt:display_loading:" .. manifest_type)
+    local measure_token = metrics.start_measure("vt:display_loading:" .. manifest_type)
 
     if vim.in_fast_event() then
         vim.schedule(function()
@@ -610,7 +538,7 @@ function M.display_loading(buf, manifest_type, packages, is_initial)
         end
     end
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(measure_token)
     metrics.record_operation("vt_display_loading", duration)
 
     if count > 0 then
@@ -676,7 +604,7 @@ function M.update_package(buf, package_data)
         return
     end
 
-    metrics.start_measure("vt:update:" .. package_data.package)
+    local measure_token = metrics.start_measure("vt:update:" .. package_data.package)
 
     if not api.nvim_buf_is_valid(buf) or not M.virt_texts[buf] then
         debug("Cannot update package: buffer invalid or no virtual text", vim.log.levels.WARN)
@@ -728,7 +656,7 @@ function M.update_package(buf, package_data)
     local chunks = get_package_chunks(vt_module, record, nil)
     set_extmark(buf, pkg, line_num, chunks, record)
 
-    local duration = metrics.end_measure()
+    local duration = metrics.end_measure(measure_token)
     metrics.record_operation("vt_update", duration)
 
     debug(string.format("Updated virtual text for %s", pkg), vim.log.levels.DEBUG)
@@ -800,9 +728,6 @@ function M.on_buffer_close(buf)
     if M.virt_texts[buf] then
         M.clear_buffer(buf)
     end
-    -- clear_buffer already handles move_debounce; guard in case it wasn't set
-    close_timer(move_debounce[buf])
-    move_debounce[buf] = nil
 end
 
 --- Clear vt module cache
