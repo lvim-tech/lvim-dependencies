@@ -60,7 +60,7 @@ function M.find_last_section_index(lines, sections)
     local last_idx = 0
     for i, line in ipairs(lines) do
         for _, sec in ipairs(sections) do
-            if line:match("^%s*%[" .. sec .. "%]") then
+            if line:match("^%s*%[" .. vim.pesc(sec) .. "%]") then
                 last_idx = i
                 break
             end
@@ -162,14 +162,8 @@ function M.find_package_section(pkg_name)
     local manifest = M.get_manifest()
     local sections = M.get_dependency_sections()
 
-    if manifest and manifest.special_keys then
-        for _, key in ipairs(manifest.special_keys) do
-            for _, line in ipairs(lines) do
-                if line:match("^%s*" .. key .. "%s*=") then
-                    return nil
-                end
-            end
-        end
+    if manifest and manifest.special_keys and vim.tbl_contains(manifest.special_keys, pkg_name) then
+        return nil
     end
 
     for _, section in ipairs(sections) do

@@ -49,11 +49,13 @@ local function parse_version(version_str, clean_pattern, component_pattern)
         return nil
     end
 
+    local no_build = clean:gsub("%+.*$", "")
+
     return {
         major = tonumber(major) or 0,
         minor = tonumber(minor) or 0,
         patch = tonumber(patch) or 0,
-        prerelease = clean:match("%-(.+)") or "",
+        prerelease = no_build:match("%-(.+)") or "",
         build = clean:match("%+(.+)") or "",
         original = version_str,
     }
@@ -84,13 +86,42 @@ local function compare_parsed(v1, v2)
         return -1
     end
 
-    -- Lexicographic prerelease comparison
+    -- Semver prerelease comparison: dot-separated identifiers, numeric identifiers sort numerically and
+    -- before non-numeric identifiers.
     if v1_has_pre and v2_has_pre then
-        if v1.prerelease > v2.prerelease then
-            return 1
+        local a_parts, b_parts = {}, {}
+        for part in v1.prerelease:gmatch("[^%.]+") do
+            a_parts[#a_parts + 1] = part
         end
-        if v1.prerelease < v2.prerelease then
-            return -1
+        for part in v2.prerelease:gmatch("[^%.]+") do
+            b_parts[#b_parts + 1] = part
+        end
+        local max_len = math.max(#a_parts, #b_parts)
+        for i = 1, max_len do
+            local a, b = a_parts[i], b_parts[i]
+            if a == nil then
+                return -1
+            end
+            if b == nil then
+                return 1
+            end
+            local an, bn = tonumber(a), tonumber(b)
+            if an and bn then
+                if an > bn then
+                    return 1
+                end
+                if an < bn then
+                    return -1
+                end
+            elseif an then
+                return -1
+            elseif bn then
+                return 1
+            elseif a > b then
+                return 1
+            elseif a < b then
+                return -1
+            end
         end
     end
 
@@ -223,7 +254,16 @@ end
 ---@type table<string, fun(v: ParsedVersion, t: ParsedVersion): boolean>
 local CONSTRAINT_OPS = {
     ["^"] = function(v, t)
-        return v.major == t.major and v.minor >= t.minor
+        if compare_parsed(v, t) < 0 then
+            return false
+        end
+        if t.major > 0 then
+            return v.major == t.major
+        end
+        if t.minor > 0 then
+            return v.major == 0 and v.minor == t.minor
+        end
+        return v.major == 0 and v.minor == 0 and v.patch == t.patch
     end,
     ["~"] = function(v, t)
         return v.major == t.major and v.minor == t.minor and v.patch >= t.patch

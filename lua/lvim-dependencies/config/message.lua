@@ -14,7 +14,7 @@ return {
         timeout = 10000,
     },
     debug = {
-        enabled = true,
+        enabled = false,
         min_level = vim.log.levels.DEBUG,
         file = utils_file_system.get_state_file("debug.log"),
     },

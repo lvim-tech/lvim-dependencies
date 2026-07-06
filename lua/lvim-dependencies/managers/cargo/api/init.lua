@@ -283,7 +283,7 @@ function M.fetch_versions_async(name, callback)
                 for _, v in ipairs(parsed.versions) do
                     if type(v) == "string" then
                         table.insert(versions, v)
-                    elseif type(v) == "table" and v.num then
+                    elseif type(v) == "table" and v.num and v.yanked ~= true and v.yanked ~= vim.NIL then
                         table.insert(versions, v.num)
                     end
                 end

@@ -13,7 +13,7 @@ local M = {}
 function M.get(url, callback, timeout)
     timeout = timeout or 10
 
-    local cmd = { "curl", "-s", "-L", "--max-time", tostring(timeout), url }
+    local cmd = { "curl", "-f", "-s", "-L", "--max-time", tostring(timeout), url }
 
     vim.system(cmd, { text = true }, function(obj)
         if obj.code == 0 then

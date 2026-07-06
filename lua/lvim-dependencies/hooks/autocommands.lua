@@ -34,17 +34,10 @@ local AUTOCMD_DEFS = {
         state_event = "saved",
     },
     {
-        events = "BufLeave",
+        events = { "BufWipeout", "BufDelete" },
         state_event = "",
         handler = function(args)
-            local bufnr = args.buf
-            local wins = vim.fn.win_findbuf(bufnr)
-
-            if #wins == 0 then
-                state.handle_buffer_event(bufnr, "closed")
-            else
-                debug(string.format("Buffer %d lost focus but still visible", bufnr), vim.log.levels.DEBUG)
-            end
+            state.handle_buffer_event(args.buf, "closed", { force = true })
         end,
     },
     {

@@ -7,7 +7,7 @@
 --
 ---@module "lvim-dependencies.core.async_util"
 
-local uv = vim.loop
+local uv = vim.uv
 local schedule = vim.schedule
 local defer_fn = vim.defer_fn
 local system = vim.system
@@ -58,11 +58,24 @@ function M.await(fn, ...)
     local co = assert_coroutine("await")
     local args = { ... }
     local arg_count = select("#", ...)
+    local done = false
+    local results
+    local result_count = 0
+    local yielded = false
 
     fn(unpack(args, 1, arg_count), function(...)
-        safe_resume(co, ...)
+        done = true
+        results = { ... }
+        result_count = select("#", ...)
+        if yielded then
+            safe_resume(co, ...)
+        end
     end)
 
+    if done then
+        return unpack(results, 1, result_count)
+    end
+    yielded = true
     return coroutine_yield()
 end
 
@@ -70,8 +83,7 @@ end
 ---@param fn function Async function accepting a callback as last argument
 ---@param timeout_ms? integer Optional timeout in milliseconds (uses config if nil)
 ---@param ... any Additional arguments for fn
----@return any ... Callback results
----@return string|nil error Timeout error if occurs
+---@return any ... Callback results, or `nil, "timeout"` on timeout
 function M.await_with_timeout(fn, timeout_ms, ...)
     -- Fall back to config value if not provided
     timeout_ms = timeout_ms or config.async.defaults.timeout
@@ -81,10 +93,19 @@ function M.await_with_timeout(fn, timeout_ms, ...)
     local arg_count = select("#", ...)
     local timed_out = false
     local timer
+    local done = false
+    local results
+    local result_count = 0
+    local yielded = false
 
     timer = defer_fn(function()
         timed_out = true
-        safe_resume(co, nil, "timeout")
+        done = true
+        results = { nil, "timeout" }
+        result_count = 2
+        if yielded then
+            safe_resume(co, nil, "timeout")
+        end
     end, timeout_ms)
 
     fn(unpack(args, 1, arg_count), function(...)
@@ -100,10 +121,19 @@ function M.await_with_timeout(fn, timeout_ms, ...)
             timer = nil
         end
         if not timed_out then
-            safe_resume(co, ...)
+            done = true
+            results = { ... }
+            result_count = select("#", ...)
+            if yielded then
+                safe_resume(co, ...)
+            end
         end
     end)
 
+    if done then
+        return unpack(results, 1, result_count)
+    end
+    yielded = true
     return coroutine_yield()
 end
 

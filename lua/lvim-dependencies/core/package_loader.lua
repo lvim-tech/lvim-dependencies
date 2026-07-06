@@ -264,7 +264,7 @@ function M.load_multiple_packages_with_timeout(manifest_type, package_names, tim
     local results = {}
     local remaining = count
     local timed_out = false
-    local timer = vim.loop.new_timer()
+    local timer = vim.uv.new_timer()
 
     if not timer then
         callback({}, false)

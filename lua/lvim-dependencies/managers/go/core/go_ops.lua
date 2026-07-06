@@ -141,7 +141,7 @@ local function find_package_line(bufnr, name)
     local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
     local escaped = vim.pesc(name)
     for i, line in ipairs(lines) do
-        if line:match("^%s*" .. escaped .. "%s+v") then
+        if line:match("^%s*" .. escaped .. "%s+v") or line:match("^%s*require%s+" .. escaped .. "%s+v") then
             return i - 1
         end
     end

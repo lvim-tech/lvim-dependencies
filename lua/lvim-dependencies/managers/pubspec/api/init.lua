@@ -175,6 +175,7 @@ local function prepare_yaml_changes(name, version, disk_lines, scope, sections)
             local section_end = yaml_ops.find_section_end(disk_lines, last_dep_section_idx)
             table.insert(disk_lines, section_end + 1, "")
             section_idx = section_end + 2
+            table.insert(disk_lines, section_idx, scope .. ":")
         else
             table.insert(disk_lines, 1, "")
             table.insert(disk_lines, 2, scope .. ":")

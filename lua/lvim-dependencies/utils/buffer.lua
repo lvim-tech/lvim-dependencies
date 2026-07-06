@@ -44,10 +44,6 @@ function M.is_valid(buf)
         return false
     end
 
-    if vim.in_fast_event() then
-        return true
-    end
-
     return api.nvim_buf_is_valid(buf)
 end
 
@@ -71,9 +67,9 @@ local function get_full_info(buf)
     local ok, result = pcall(function()
         return {
             filename = api.nvim_buf_get_name(buf),
-            filetype = api.nvim_buf_get_option(buf, "filetype"),
+            filetype = vim.bo[buf].filetype,
             lines = api.nvim_buf_line_count(buf),
-            modified = api.nvim_buf_get_option(buf, "modified"),
+            modified = vim.bo[buf].modified,
         }
     end)
 
@@ -219,7 +215,9 @@ function M.set_option(buf, option, value)
         return false
     end
 
-    local ok = pcall(api.nvim_buf_set_option, buf, option, value)
+    local ok = pcall(function()
+        vim.bo[buf][option] = value
+    end)
     return ok
 end
 

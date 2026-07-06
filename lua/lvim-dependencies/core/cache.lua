@@ -403,18 +403,13 @@ end
 --- Clean up all expired cache entries
 ---@return integer
 function M.cleanup_expired()
-    if
-        not config
-        or not config.cache
-        or not config.cache.cleanup
-        or not config.cache.stats
-        or not config.cache.stats.collect
-    then
+    if not config or not config.cache or not config.cache.cleanup then
         return 0
     end
 
     local cleaned = 0
-    local metrics = get_metrics()
+    local collect_stats = config.cache.stats and config.cache.stats.collect
+    local metrics = collect_stats and get_metrics() or nil
 
     ---@diagnostic disable-next-line: unused-local
     for cache_type_name, cache_table in pairs(cache) do
@@ -460,7 +455,7 @@ function M.start_cleanup_timer()
     end
 
     local interval = config.cache.cleanup.interval
-    cleanup_timer = vim.loop.new_timer()
+    cleanup_timer = vim.uv.new_timer()
     if cleanup_timer then
         cleanup_timer:start(
             interval,

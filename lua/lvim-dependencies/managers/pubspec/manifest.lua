@@ -48,7 +48,6 @@ M.special_keys = {
     "branch",
     "path",
     "sdk",
-    "flutter",
     "dependencies",
     "dev_dependencies",
     "dependency_overrides",
@@ -68,13 +67,12 @@ M.special_keys = {
     "windows",
     "linux",
     "web",
-    "flutter_test",
     "flutter_localizations",
-    "flutter_web_plugins",
 }
 
 M.package_patterns = {
-    simple = "^%s*([%w_%-]+)%s*:%s*[%^~=<>]?[%d%.]+",
+    simple = "^%s*([%w_%-]+)%s*:%s*[\"']?[%^~=<>]?[%d%.]+",
+    any = "^%s*([%w_%-]+)%s*:%s*[\"']?any[\"']?%s*$",
     complex = "^%s*([%w_%-]+)%s*:%s*{",
     git = "^%s*([%w_%-]+)%s*:%s*git:",
     path = "^%s*([%w_%-]+)%s*:%s*path:",

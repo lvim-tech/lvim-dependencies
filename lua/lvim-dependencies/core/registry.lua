@@ -14,7 +14,7 @@ local config = require("lvim-dependencies.config")
 
 local utils_module = utils.module
 local debug = utils.debug
-local now = vim.loop.now
+local now = vim.uv.now
 
 -- ============================================================================
 -- Constants
@@ -56,6 +56,13 @@ local M = {
     manager_hover = {},
     manager_actions = {},
 }
+
+---@param filename string
+---@param pattern string
+---@return boolean
+local function filename_matches(filename, pattern)
+    return vim.fs.basename(filename) == pattern
+end
 
 ---@type table<string, boolean>
 local initialized_managers = {}
@@ -294,7 +301,7 @@ function M.determine_manifest_type(filename)
     local result = nil
     for manager_key, patterns in pairs(M.file_patterns) do
         for _, pattern in ipairs(patterns) do
-            if filename:match(pattern) then
+            if filename_matches(filename, pattern) then
                 result = manager_key
                 break
             end
@@ -353,7 +360,7 @@ function M.is_manifest_file(filename)
         return false
     end
     for _, pattern in ipairs(M.file_patterns_all) do
-        if filename:match(pattern) then
+        if filename_matches(filename, pattern) then
             return true
         end
     end

@@ -137,7 +137,7 @@ end
 --- Get all available manager types (with time-based caching)
 ---@return string[]
 function M.get_available_managers()
-    local now = vim.loop.now()
+    local now = vim.uv.now()
 
     if available_managers_cache and (now - available_managers_timestamp) < AVAILABLE_MANAGERS_TTL then
         return available_managers_cache

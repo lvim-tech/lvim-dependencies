@@ -24,7 +24,7 @@ local detection_cache_count = 0 ---@type integer  live entry count (kept in sync
 --- Evict expired entries and, if still over the size limit, the oldest-accessed quarter.
 ---@return nil
 local function evict_detection_cache()
-    local now = vim.loop.now()
+    local now = vim.uv.now()
     local to_delete = {}
 
     for k, v in pairs(detection_cache) do
@@ -81,7 +81,7 @@ end
 ---@return string|nil type_name, table|nil extracted_data
 function M.detect_dependency_type(value, dep_types)
     local cache_key = make_cache_key(value)
-    local now = vim.loop.now()
+    local now = vim.uv.now()
 
     local cached = detection_cache[cache_key]
     if cached and (now - cached.timestamp) < DETECTION_CACHE_TTL then
@@ -89,7 +89,25 @@ function M.detect_dependency_type(value, dep_types)
         return cached.type_name, cached.extracted
     end
 
-    for type_name, type_def in pairs(dep_types) do
+    local function store_result(type_name, extracted)
+        if not cached then
+            if detection_cache_count >= DETECTION_CACHE_MAX then
+                evict_detection_cache()
+            end
+            detection_cache_count = detection_cache_count + 1
+        end
+
+        detection_cache[cache_key] = {
+            type_name = type_name,
+            extracted = extracted,
+            timestamp = now,
+            last_access = now,
+        }
+    end
+
+    local seen = {}
+    local function try_detect(type_name, type_def)
+        seen[type_name] = true
         if type_def and type_def.detect then
             local ok, detected = pcall(type_def.detect, value)
 
@@ -99,24 +117,26 @@ function M.detect_dependency_type(value, dep_types)
                     pcall(type_def.extract, value, extracted)
                 end
 
-                -- Evict before inserting if at limit
-                if not cached then
-                    if detection_cache_count >= DETECTION_CACHE_MAX then
-                        evict_detection_cache()
-                    end
-                    detection_cache_count = detection_cache_count + 1
-                end
-
-                detection_cache[cache_key] = {
-                    type_name = type_name,
-                    extracted = extracted,
-                    timestamp = now,
-                    last_access = now,
-                }
-
-                return type_name, extracted
+                store_result(type_name, extracted)
+                return true, extracted
             elseif not ok then
                 debug(string.format("Detector error for %s: %s", type_name, detected), vim.log.levels.WARN)
+            end
+        end
+    end
+
+    for _, type_name in ipairs(dep_types.detection_order or { "workspace", "git", "path", "sdk", "registry" }) do
+        local detected, extracted = try_detect(type_name, dep_types[type_name])
+        if detected then
+            return type_name, extracted
+        end
+    end
+
+    for type_name, type_def in pairs(dep_types) do
+        if not seen[type_name] then
+            local detected, extracted = try_detect(type_name, type_def)
+            if detected then
+                return type_name, extracted
             end
         end
     end

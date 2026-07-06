@@ -303,7 +303,7 @@ local function create_record(pkg, declared_data, manifest_type, existing)
         declared = declared_data,
         declared_version = extract_declared_version(declared_data),
         is_transient = true,
-        created_at = vim.loop.now(),
+        created_at = vim.uv.now(),
     }
 end
 
@@ -323,14 +323,26 @@ local function set_extmark(buf, package_name, line_num, chunks, record)
     end
 
     M.virt_texts[buf] = M.virt_texts[buf] or {}
+    local line_count = api.nvim_buf_line_count(buf)
+    if line_num < 0 or line_num >= line_count then
+        local fresh_line = M.find_package_line(buf, package_name)
+        if not fresh_line or fresh_line < 0 or fresh_line >= line_count then
+            return record.extmark_id or 0
+        end
+        line_num = fresh_line
+    end
 
     local ok, extmark_id = pcall(api.nvim_buf_set_extmark, buf, M.namespace, line_num, 0, opts)
     if not ok or not extmark_id then
         delete_extmarks_on_line(buf, line_num)
-        extmark_id = api.nvim_buf_set_extmark(buf, M.namespace, line_num, 0, {
+        local retry_ok, retry_id = pcall(api.nvim_buf_set_extmark, buf, M.namespace, line_num, 0, {
             virt_text = chunks,
             virt_text_pos = VT_POSITION,
         })
+        if not retry_ok or not retry_id then
+            return record.extmark_id or 0
+        end
+        extmark_id = retry_id
     end
 
     record.extmark_id = extmark_id
@@ -671,8 +683,6 @@ function M.update_package(buf, package_data)
         return
     end
 
-    local saved_view = vim.fn.winsaveview()
-
     local pkg = package_data.package
     local record = M.virt_texts[buf][pkg]
 
@@ -717,12 +727,6 @@ function M.update_package(buf, package_data)
     local vt_module = get_vt_module(record.manifest_type)
     local chunks = get_package_chunks(vt_module, record, nil)
     set_extmark(buf, pkg, line_num, chunks, record)
-
-    vim.schedule(function()
-        if api.nvim_win_is_valid(0) then
-            pcall(vim.fn.winrestview, saved_view)
-        end
-    end)
 
     local duration = metrics.end_measure()
     metrics.record_operation("vt_update", duration)

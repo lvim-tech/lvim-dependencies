@@ -53,11 +53,16 @@ local function find_first_existing_file(patterns)
     local root_dir = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir
     local search_path = root_dir and vim.fn.expand(root_dir) or "."
     for _, pattern in ipairs(patterns) do
-        local full_path = search_path .. "/" .. pattern
+        local found = vim.fs.find(pattern, { upward = true, path = search_path, type = "file" })
+        local full_path = found and found[1]
+        if not full_path then
+            goto continue
+        end
         local content = read_file(full_path)
         if content then
             return content, full_path
         end
+        ::continue::
     end
     return nil, nil
 end

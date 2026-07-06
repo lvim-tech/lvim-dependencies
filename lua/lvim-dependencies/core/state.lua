@@ -20,7 +20,7 @@ local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 
 -- Seed random once per session for shuffle()
-math.randomseed(os.time() + math.floor(vim.loop.hrtime() / 1e6))
+math.randomseed(os.time() + math.floor(vim.uv.hrtime() / 1e6))
 
 local utils_buffer = utils.buffer
 local debug = utils.debug
@@ -234,7 +234,12 @@ local function load_manifest_packages(buf, manifest_type, is_initial)
             local key = make_key(manifest_type, pkg_name)
 
             if pending_loads[key] then
-                debug(string.format("%s already pending, skipping", pkg_name), vim.log.levels.DEBUG)
+                debug(string.format("%s already pending, attaching waiter", pkg_name), vim.log.levels.DEBUG)
+                add_waiter(key, function(_, package_data)
+                    if utils_buffer.is_valid(buf) then
+                        M._handlers.update_package(buf, package_data)
+                    end
+                end)
             else
                 pending_loads[key] = true
 
@@ -341,10 +346,12 @@ local function handle_changed_packages(buf, manifest_type, changed_packages)
 
     async.run(function()
         local tasks = {}
+        local task_packages = {}
         for _, pkg in ipairs(changed_packages) do
             local key = make_key(manifest_type, pkg.name)
             if not pending_loads[key] then
                 tasks[#tasks + 1] = make_package_task(manifest_type, pkg.name, false)
+                task_packages[#task_packages + 1] = pkg
             else
                 local new_version = pkg.new_version
                 add_waiter(key, function(_, result)
@@ -367,7 +374,7 @@ local function handle_changed_packages(buf, manifest_type, changed_packages)
 
         for i, package_data in ipairs(all_results) do
             if type(package_data) == "table" and package_data.package then
-                package_data.declared = changed_packages[i].new_version
+                package_data.declared = task_packages[i] and task_packages[i].new_version
                 M._handlers.update_package(buf, package_data)
             end
         end
@@ -513,7 +520,7 @@ local function handle_saved_event(buf, buffer_state, buffer_info, event_data)
     close_timer(save_timers[buf])
     save_timers[buf] = nil
 
-    local timer = vim.loop.new_timer()
+    local timer = vim.uv.new_timer()
     if not timer then
         return
     end
@@ -551,8 +558,9 @@ end
 ---@param event_data BufferEventData
 ---@diagnostic disable-next-line: unused-local
 local function handle_closed_event(buf, buffer_state, buffer_info, event_data)
-    local windows = vim.fn.win_findbuf(buf)
-    if #windows > 0 then
+    local force = type(event_data.extra) == "table" and event_data.extra.force
+    local windows = not force and vim.fn.win_findbuf(buf) or {}
+    if not force and #windows > 0 then
         debug(
             string.format("Buffer %d still visible in %d window(s), not closing", buf, #windows),
             vim.log.levels.DEBUG
@@ -617,11 +625,20 @@ function M.handle_buffer_event(buf, event_type, data)
         return nil
     end
 
-    local buffer_state = get_or_create_buffer_state(buf)
     local buffer_info = utils_buffer.get_info(buf)
     if not buffer_info then
         return nil
     end
+    local is_manifest = buffer_info.filename ~= ""
+        and require("lvim-dependencies.core.registry").is_manifest_file(buffer_info.filename)
+    if event_type == EVENT_BUFFER_CLOSED then
+        if not M._state.buffers[buf] then
+            return nil
+        end
+    elseif event_type ~= EVENT_BUFFER_FILETYPE_CHANGED and not is_manifest then
+        return nil
+    end
+    local buffer_state = get_or_create_buffer_state(buf)
 
     ---@type BufferEventData
     local event_data = {
@@ -702,8 +719,13 @@ function M.setup()
     debug("Initializing state module", vim.log.levels.DEBUG)
     M._state.buffers = {}
     M._state._event_handlers = {}
+    for key, waiters in pairs(pending_waiters) do
+        for _, waiter in ipairs(waiters) do
+            pcall(waiter, "aborted")
+        end
+        pending_waiters[key] = nil
+    end
     pending_loads = {}
-    pending_waiters = {}
 
     for buf, timer in pairs(save_timers) do
         close_timer(timer)

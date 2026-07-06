@@ -29,6 +29,7 @@ function M.find_pubspec_path()
     local patterns = get_file_patterns()
     -- Use root_dir from config if provided, otherwise fall back to cwd
     local cwd = config.pubspec.file_ops.root_dir or vim.fn.getcwd()
+    cwd = vim.fn.expand(cwd)
 
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = cwd, type = "file" })

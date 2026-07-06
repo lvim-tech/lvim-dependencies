@@ -238,9 +238,18 @@ function M.update_features(package_name, opts, callback)
         saved_view = vim.fn.winsaveview()
     end
 
-    local new_features = opts.features ~= nil and opts.features or current.features
-    local new_default_features = opts.default_features ~= nil and opts.default_features or current.default_features
-    local new_optional = opts.optional ~= nil and opts.optional or current.optional
+    local new_features = opts.features
+    if new_features == nil then
+        new_features = current.features
+    end
+    local new_default_features = opts.default_features
+    if new_default_features == nil then
+        new_default_features = current.default_features
+    end
+    local new_optional = opts.optional
+    if new_optional == nil then
+        new_optional = current.optional
+    end
 
     local new_line =
         M.build_dependency_line(package_name, current.version, new_features, new_default_features, new_optional)

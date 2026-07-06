@@ -307,12 +307,16 @@ end
 
 ---@type table<string, DependencyTypeDef>
 M.dependency_types = {
+    detection_order = { "workspace", "git", "path", "registry" },
 
     --- Standard semver version: "^1.0.0", "~2.3.4", "1.2.3", "*"
     registry = {
         type = "registry",
         detect = function(v)
             if type(v) == "string" then
+                if v:match("^workspace:") or v:match("^git+") or v:match("^file:") or v:match("^%.?%.?/") then
+                    return false
+                end
                 return true
             end
             if type(v) == "table" and v.version ~= nil then

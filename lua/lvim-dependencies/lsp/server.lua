@@ -134,7 +134,7 @@ function M.start()
 
             -- Enable omnifunc for completion
             if config_lsp.completion then
-                vim.api.nvim_buf_set_option(bufnr, "omnifunc", "v:lua.vim.lsp.omnifunc")
+                vim.bo[bufnr].omnifunc = "v:lua.vim.lsp.omnifunc"
             end
         end,
     })

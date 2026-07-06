@@ -336,7 +336,7 @@ end
 function M.start_measure(name)
     M._measure_stack[#M._measure_stack + 1] = {
         name = name,
-        start = vim.loop.hrtime(),
+        start = vim.uv.hrtime(),
     }
 end
 
@@ -349,7 +349,7 @@ function M.end_measure()
     end
 
     local measure = table.remove(M._measure_stack)
-    local duration = (vim.loop.hrtime() - measure.start) / 1e6
+    local duration = (vim.uv.hrtime() - measure.start) / 1e6
 
     if not M.stats then
         return duration
@@ -431,12 +431,18 @@ end
 ---@param active integer
 ---@param with_vt integer
 function M.update_buffers(active, with_vt)
+    if not M.stats then
+        M.stats = create_stats()
+    end
     M.stats.buffers.active = active
     M.stats.buffers.with_virtual_text = with_vt
 end
 
 --- Reset all statistics
 function M.reset()
+    if not M.stats then
+        M.stats = create_stats()
+    end
     local original_start = M.stats.timestamps.start
     M.stats = create_stats()
     M.stats.timestamps.start = original_start
@@ -878,7 +884,7 @@ function M.show_live(refresh_interval)
         return buf, win
     end
 
-    local timer = vim.loop.new_timer()
+    local timer = vim.uv.new_timer()
     if not timer then
         return buf, win
     end
@@ -920,11 +926,10 @@ local _auto_save_timer = nil
 
 --- Initialize stats, subscribe to debug events, and start the auto-save timer.
 function M.setup()
+    M.stats = create_stats()
     if not config.metrics.enabled then
         return
     end
-
-    M.stats = create_stats()
     events.on(const.EVENTS.DEBUG, M.handle_debug)
 
     local auto_save_interval = config.metrics.auto_save_interval or 3600000
@@ -936,7 +941,7 @@ function M.setup()
         end)
     end
 
-    _auto_save_timer = vim.loop.new_timer()
+    _auto_save_timer = vim.uv.new_timer()
     if _auto_save_timer then
         _auto_save_timer:start(
             auto_save_interval,

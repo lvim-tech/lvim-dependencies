@@ -95,7 +95,7 @@ function M.find_package_line(buf, package_name)
 
     local escaped = vim.pesc(package_name)
     for i, line in ipairs(lines) do
-        if line:match("^%s*" .. escaped .. "%s+v") then
+        if line:match("^%s*" .. escaped .. "%s+v") or line:match("^%s*require%s+" .. escaped .. "%s+v") then
             return i - 1
         end
     end

@@ -190,7 +190,7 @@ function M.file_mtime(path)
         return nil, "Invalid path"
     end
 
-    local stat = vim.loop.fs_stat(path)
+    local stat = vim.uv.fs_stat(path)
     if not stat then
         return nil, "Failed to stat file"
     end

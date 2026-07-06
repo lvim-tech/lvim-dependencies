@@ -27,6 +27,7 @@ end
 function M.find_cargo_toml_path()
     local patterns = get_file_patterns()
     local cwd = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir or vim.fn.getcwd()
+    cwd = vim.fn.expand(cwd)
 
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = cwd, type = "file" })
