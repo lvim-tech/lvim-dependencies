@@ -193,29 +193,41 @@ local function read_from_pnpm_lock(pkg_name)
     --           specifier: 7.29.0
     --           version: 7.29.0
     --
-    -- We look for the package key then grab the next "version:" line.
+    -- We look for the package key then grab the next "version:" line — but ONLY inside the top-level
+    -- `importers:` section. The `snapshots:` section lists every package's transitive deps INLINE as
+    -- `name: version` (e.g. `      ms: 2.1.2`), whose key matches the same unanchored pattern; a section-blind
+    -- scan could bind to one of those (a transitive dep reused as a direct name, or a workspace where the
+    -- direct entry lives in another importer) and return the wrong version. Track section state: a top-level
+    -- header (column-0, ending in `:`) flips us in/out of `importers`; matching stops the moment it ends.
+    local in_importers = false
     local in_pkg = false
     for line in content:gmatch("[^\n]+") do
-        if not in_pkg then
-            if line:match(key_pattern) then
-                in_pkg = true
-            end
-        else
-            -- "        version: 7.29.0" or "        version: 7.18.6(@babel/core@7.29.0)"
-            local ver = line:match("^%s+version:%s+(.+)$")
-            if ver then
-                -- Strip peer dependency suffix: "7.18.6(@babel/core@7.29.0)" → "7.18.6"
-                ver = ver:match("^([^%(]+)") or ver
-                ver = ver:match("^%s*(.-)%s*$") -- trim
-                if ver ~= "" then
-                    return ver
+        if line:match("^%S.*:%s*$") then
+            -- A top-level section header (`importers:`, `packages:`, `snapshots:`, `settings:` …).
+            in_importers = line:match("^importers:") ~= nil
+            in_pkg = false
+        elseif in_importers then
+            if not in_pkg then
+                if line:match(key_pattern) then
+                    in_pkg = true
                 end
-            end
-            -- If we hit another key at the same or lower indent level, stop
-            if line:match("^%s+specifier:") then
-                -- still in our block, skip
-            elseif line:match("^%s+[%w]") and not line:match("^%s+version:") then
-                in_pkg = false
+            else
+                -- "        version: 7.29.0" or "        version: 7.18.6(@babel/core@7.29.0)"
+                local ver = line:match("^%s+version:%s+(.+)$")
+                if ver then
+                    -- Strip peer dependency suffix: "7.18.6(@babel/core@7.29.0)" → "7.18.6"
+                    ver = ver:match("^([^%(]+)") or ver
+                    ver = ver:match("^%s*(.-)%s*$") -- trim
+                    if ver ~= "" then
+                        return ver
+                    end
+                end
+                -- If we hit another key at the same or lower indent level, stop
+                if line:match("^%s+specifier:") then
+                    -- still in our block, skip
+                elseif line:match("^%s+[%w]") and not line:match("^%s+version:") then
+                    in_pkg = false
+                end
             end
         end
     end
