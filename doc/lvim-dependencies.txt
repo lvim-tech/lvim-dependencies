@@ -111,6 +111,14 @@ options into it in place. Top-level keys:
 managers    per-manager enable + behaviour.
 groups      highlight group names for the virtual-text components.
 ui          panel / virtual-text appearance.
+dock        the info panel's dock-stack integration (`dock_stack`, per-layout
+            `force` geometry). The panel routes through the shared lvim-utils dock,
+            which keys entries by (id, LAYOUT): the base id "lvim-dependencies" is
+            the stable identity, so the SAME panel opened in a DIFFERENT layout is a
+            SEPARATE entry in that layout's stack — the info panel can be docked in
+            float, bottom AND area AT ONCE (one entry per stack, present in multiple
+            stacks simultaneously), while re-opening the same (id, layout) re-shows
+            the one entry (never a duplicate). Cyclable <Leader>n/p, kill <Leader>x.
 lsp         `{ enabled = true }` — hover + code actions.
 cache       TTL + negative-cache window for the declared/installed/latest layers.
 async       concurrency, dynamic throttle, retry + jitter.

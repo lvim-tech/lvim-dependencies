@@ -18,6 +18,7 @@ local config_cargo = require("lvim-dependencies.config.cargo")
 local config_npm = require("lvim-dependencies.config.npm")
 local config_composer = require("lvim-dependencies.config.composer")
 local config_go = require("lvim-dependencies.config.go")
+local config_dock = require("lvim-dependencies.config.dock")
 
 ---@class Config
 local M = {}
@@ -40,6 +41,8 @@ M.cargo = config_cargo
 M.npm = config_npm
 M.composer = config_composer
 M.go = config_go
+-- Dock-stack integration (namespaced to avoid colliding with the highlight-override `M.force`).
+M.dock = config_dock
 
 --- Get all configuration values as a single table
 ---@return table
@@ -60,6 +63,7 @@ function M.get_all()
         npm = M.npm,
         composer = M.composer,
         go = M.go,
+        dock = M.dock,
     }
 end
 

@@ -308,6 +308,27 @@ require("lvim-dependencies").setup({
     },
 
     -- -----------------------------------------------------------------------
+    -- Dock stack (the info panel: registry / manager / cache / state / metrics)
+    -- -----------------------------------------------------------------------
+    -- The info panel routes through the shared lvim-utils dock stack, which keys
+    -- every entry by (id, LAYOUT). The base id ("lvim-dependencies") is the stable
+    -- identity, so the SAME panel opened in a DIFFERENT layout is a SEPARATE entry
+    -- in that layout's stack — the info panel can be docked in float, bottom AND
+    -- area AT ONCE (one entry per stack, all visible together), while re-opening the
+    -- same (id, layout) re-shows the one entry (never a duplicate). Each entry is
+    -- cyclable (<Leader>n/p), killable (<Leader>x) and one-visible-per-layout.
+    dock = {
+        -- true  = managed dock-STACK consumer (cyclable, one-visible-per-layout, no
+        --         overlap, :LvimDock); false = geometry-only, opens standalone.
+        dock_stack = true,
+        -- Per-layout ANCHORED geometry overrides, deep-merged per field over the
+        -- global lvim-utils dock geometry; empty {} = inherit unchanged. Each may
+        -- carry: height, height_auto, backdrop = { enabled, mode, dim = { amount },
+        -- darken = { amount } }, auto_hide, keep_focus. FLOAT also: width, width_auto.
+        force = { float = {}, area = {}, bottom = {} },
+    },
+
+    -- -----------------------------------------------------------------------
     -- LSP integration
     -- -----------------------------------------------------------------------
     lsp = {
