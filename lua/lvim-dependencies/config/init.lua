@@ -21,7 +21,16 @@ local config_go = require("lvim-dependencies.config.go")
 local config_dock = require("lvim-dependencies.config.dock")
 
 ---@class Config
+---@field title     string  Info-panel border-title FALLBACK text (used when a view passes no title of its own)
+---@field title_pos "left"|"center"|"right"  Info-panel border-title alignment — every layout the same (default "center")
 local M = {}
+
+-- ── presentation (top-level — the title is not layout/dock-specific) ─────────
+-- The MAIN info panel's border-title. Each view passes its OWN title text ("LvimDeps Help",
+-- "LvimDeps Registry", …) — `title` is the FALLBACK when a view passes none. `title_pos` aligns
+-- EVERY info-panel title identically in float / area / bottom.
+M.title = "Lvim Dependencies"
+M.title_pos = "center"
 
 -- Existing modules
 M.notify = config_message.notify
@@ -48,6 +57,8 @@ M.dock = config_dock
 ---@return table
 function M.get_all()
     return {
+        title = M.title,
+        title_pos = M.title_pos,
         notify = M.notify,
         debug = M.debug,
         metrics = M.metrics,

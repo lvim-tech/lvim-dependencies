@@ -108,6 +108,10 @@ The live config is `require("lvim-dependencies.config")`; setup() merges your
 options into it in place. Top-level keys:
 
                                                      *lvim-dependencies-opt-managers*
+title       info-panel border-title FALLBACK text ("Lvim Dependencies") — used
+            when a view passes no title of its own ("LvimDeps Help", …).
+title_pos   info-panel border-title alignment: "left" | "center" (default) |
+            "right" — layout-independent (float / area / bottom the same).
 managers    per-manager enable + behaviour.
 groups      highlight group names for the virtual-text components.
 ui          panel / virtual-text appearance.

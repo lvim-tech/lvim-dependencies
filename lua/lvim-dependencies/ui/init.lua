@@ -173,14 +173,16 @@ end
 ---@return integer? buf, integer? win
 local function render(ps, slot, managed)
     close_window(ps) -- a content swap / re-show replaces any existing panel window (no double float)
+    local cfg = require("lvim-dependencies.config")
     local opts = {
         close_keys = { "q", "<ESC>" },
         filetype = "LvimDepsInfo",
         markview = true,
+        -- The border-title: the view's own text, or the configured fallback when it passes none;
+        -- `config.title_pos` aligns it identically in every layout (float / area / bottom).
+        title = ps.title or cfg.title,
+        title_pos = cfg.title_pos,
     }
-    if ps.title then
-        opts.title = ps.title
-    end
     for k, v in pairs(slot_size_opts(slot)) do
         opts[k] = v
     end

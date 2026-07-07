@@ -226,6 +226,15 @@ Pass any subset of the options below to `setup()` — only the keys you provide 
 require("lvim-dependencies").setup({
 
     -- -----------------------------------------------------------------------
+    -- Info-panel border-title
+    -- Each view passes its own title text ("LvimDeps Help", "LvimDeps Registry", …);
+    -- `title` is the fallback when a view passes none. `title_pos` aligns every
+    -- info-panel title identically in float / area / bottom.
+    -- -----------------------------------------------------------------------
+    title = "Lvim Dependencies",
+    title_pos = "center", -- "left" | "center" | "right"
+
+    -- -----------------------------------------------------------------------
     -- Notifications
     -- -----------------------------------------------------------------------
     notify = {
