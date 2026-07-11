@@ -27,7 +27,7 @@ local notify = utils.notify
 -- Constants
 -- ============================================================================
 local NAMESPACE_VIRTUAL_TEXT = const.NAMESPACES.VIRTUAL_TEXT
-local VT_POSITION = (config.ui and config.ui.virtual_text and config.ui.virtual_text.position) or "eol"
+local VT_POSITION = config.ui.virtual_text.position
 
 -- Cache for vt modules
 local vt_module_cache = {}

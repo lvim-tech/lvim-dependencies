@@ -12,9 +12,9 @@ return {
     visual_delay_min = 100,
     visual_delay_max = 900,
     virtual_text = {
-        --- Position of virtual text relative to the line (default: "eol")
+        --- Position of virtual text relative to the line.
         --- Valid values: "eol", "overlay", "right_align", "inline"
-        position = nil,
+        position = "eol",
         status = {
             enabled = { default = true },
             file = utils_file_system.get_state_file("vt"),
