@@ -1,8 +1,9 @@
 -- lvim-dependencies.lsp.action: LSP code actions for dependency management.
--- Exposes the same set of package actions two ways: M.show() drives a synchronous
--- vim.ui.select picker, while M.handle() answers a textDocument/codeAction LSP request
--- (each action encoded as an LSP command so the editor round-trips it back through the
--- vim.lsp.commands handlers registered in M.setup()).
+-- Exposes the same set of package actions two ways: M.show() drives the canonical lvim-ui
+-- picker (the plugin's private lvim-ui instance via lvim-dependencies.ui.select — centred,
+-- themed, cursor-managed like every other chooser in the suite), while M.handle() answers a
+-- textDocument/codeAction LSP request (each action encoded as an LSP command so the editor
+-- round-trips it back through the vim.lsp.commands handlers registered in M.setup()).
 --
 ---@module "lvim-dependencies.lsp.action"
 
@@ -12,6 +13,7 @@ local cache = require("lvim-dependencies.core.cache")
 local init = require("lvim-dependencies.core.init")
 local operation = require("lvim-dependencies.core.operation")
 local operator = require("lvim-dependencies.core.operator")
+local ui = require("lvim-dependencies.ui")
 
 local config = require("lvim-dependencies.config")
 
@@ -168,7 +170,8 @@ local function is_actionable(manifest_type, pkg)
     return true
 end
 
---- Build the action list for the package under the cursor and present it via vim.ui.select.
+--- Build the action list for the package under the cursor and present it via the canonical
+--- lvim-ui picker (lvim-dependencies.ui.select).
 function M.show()
     if not is_enabled() then
         notify("Code actions disabled", vim.log.levels.WARN)
@@ -230,18 +233,18 @@ function M.show()
         return
     end
 
-    vim.ui.select(
-        vim.tbl_map(function(v)
-            return v.text
-        end, items),
-        { prompt = string.format("Actions - %s (%s)", pkg, manifest), kind = "codeaction" },
-        function(_, idx)
-            if not idx then
-                return
-            end
-            execute_action(items[idx], pkg, manifest, buf)
+    -- The labels are a plain string list parallel to `items`; the callback maps the chosen index
+    -- back to the original action table (same pattern as the manager version/section pickers).
+    local labels = vim.tbl_map(function(v)
+        return v.text
+    end, items)
+
+    ui.select(string.format("Actions - %s (%s)", pkg, manifest), nil, nil, labels, function(confirmed, idx)
+        if not confirmed or not idx then
+            return
         end
-    )
+        execute_action(items[idx], pkg, manifest, buf)
+    end)
 end
 
 --- Answer a textDocument/codeAction request: returns LSP actions encoded as commands.
