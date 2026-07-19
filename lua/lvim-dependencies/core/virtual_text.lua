@@ -502,15 +502,17 @@ end
 ---@param packages table<string, any>
 ---@param is_initial? boolean
 function M.display_loading(buf, manifest_type, packages, is_initial)
-    local _ = is_initial
-    local measure_token = metrics.start_measure("vt:display_loading:" .. manifest_type)
-
+    -- Guard the fast-event reschedule FIRST — before start_measure — so a rescheduled call does not
+    -- open a second measure token (double-counting the operation) while the first is dropped; and
+    -- forward is_initial so the rescheduled call carries the same intent.
     if vim.in_fast_event() then
         vim.schedule(function()
-            M.display_loading(buf, manifest_type, packages)
+            M.display_loading(buf, manifest_type, packages, is_initial)
         end)
         return
     end
+    local _ = is_initial
+    local measure_token = metrics.start_measure("vt:display_loading:" .. manifest_type)
 
     if not api.nvim_buf_is_valid(buf) then
         debug("Cannot display loading: buffer invalid", vim.log.levels.WARN)

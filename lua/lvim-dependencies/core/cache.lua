@@ -144,14 +144,23 @@ function M.get_installed(manager_type, keys)
     local metrics = get_metrics()
     local result = {}
     for _, pkg in ipairs(keys) do
-        if not is_expired(entry, const.CACHE_TYPES.INSTALLED, pkg) then
-            result[pkg] = entry[const.CACHE_FIELDS.DATA][pkg]
+        -- Branch on PRESENCE first: an absent pkg has no expiry entry, so is_expired returns false and
+        -- the old code recorded a HIT for a cold miss (inflating the hit ratio the metrics report shows).
+        -- Also deepcopy the value — the keyed path used to hand out a LIVE reference (the unkeyed path
+        -- deepcopies), so a consumer mutation corrupted the cache.
+        local v = entry[const.CACHE_FIELDS.DATA][pkg]
+        if v ~= nil and not is_expired(entry, const.CACHE_TYPES.INSTALLED, pkg) then
+            result[pkg] = deepcopy(v)
             if metrics then
                 metrics.record_cache_event(manager_type, true)
             end
-        else
+        elseif v ~= nil then
             if metrics then
                 metrics.record_cache_expiry(manager_type)
+            end
+        else
+            if metrics then
+                metrics.record_cache_event(manager_type, false)
             end
         end
     end
@@ -171,14 +180,21 @@ function M.get_latest(manager_type, keys)
     local metrics = get_metrics()
     local result = {}
     for _, pkg in ipairs(keys) do
-        if not is_expired(entry, const.CACHE_TYPES.LATEST, pkg) then
-            result[pkg] = entry[const.CACHE_FIELDS.DATA][pkg]
+        -- present-first branch + deepcopy — see get_installed for the why (no false HIT on a cold miss,
+        -- no live reference handed out).
+        local v = entry[const.CACHE_FIELDS.DATA][pkg]
+        if v ~= nil and not is_expired(entry, const.CACHE_TYPES.LATEST, pkg) then
+            result[pkg] = deepcopy(v)
             if metrics then
                 metrics.record_cache_event(manager_type, true)
             end
-        else
+        elseif v ~= nil then
             if metrics then
                 metrics.record_cache_expiry(manager_type)
+            end
+        else
+            if metrics then
+                metrics.record_cache_event(manager_type, false)
             end
         end
     end

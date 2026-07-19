@@ -187,7 +187,7 @@ function M.load_package_data(manifest_type, package_name, opts)
     local ok, err = pcall(M.load_package_data_async, manifest_type, package_name, function(res)
         result = res
         has_result = true
-        coroutine.resume(co)
+        async.safe_resume(co) -- not a bare coroutine.resume: rethrow a resumed caller's error (module convention)
     end, opts)
 
     if not ok then

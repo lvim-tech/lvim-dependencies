@@ -176,6 +176,10 @@ function M.read_file_async(path, timeout_ms, callback)
 
     uv.fs_open(path, "r", 438, function(open_err, fd)
         if timed_out then
+            -- the timeout already resolved the callback; still close the fd we just opened, or it leaks
+            if fd then
+                uv.fs_close(fd, function() end)
+            end
             return
         end
         if timer then
@@ -189,6 +193,7 @@ function M.read_file_async(path, timeout_ms, callback)
 
         uv.fs_fstat(fd, function(stat_err, stat)
             if timed_out then
+                uv.fs_close(fd, function() end) -- close before bailing on the late timeout
                 return
             end
 
@@ -201,6 +206,7 @@ function M.read_file_async(path, timeout_ms, callback)
 
             uv.fs_read(fd, stat.size, 0, function(read_err, data)
                 if timed_out then
+                    uv.fs_close(fd, function() end) -- close before bailing on the late timeout
                     return
                 end
 
@@ -379,6 +385,7 @@ function M.race(...)
 
     local completed = false
     local errors = {}
+    local err_count = 0 -- a COUNTER, not #errors: out-of-order failures make `errors` sparse and #errors undefined
 
     for i, task in ipairs(tasks) do
         schedule(function()
@@ -392,8 +399,11 @@ function M.race(...)
                 end
 
                 if err then
+                    if errors[i] == nil then
+                        err_count = err_count + 1
+                    end
                     errors[i] = err
-                    if #errors == #tasks then
+                    if err_count == #tasks then
                         safe_resume(co, nil, table.concat(errors, ", "))
                     end
                     return
@@ -534,5 +544,9 @@ function M.throttle(fn, limit_ms)
         end
     end
 end
+
+-- Exported so other core modules resume coroutines through the SAME error-rethrow guard instead of a
+-- bare coroutine.resume (which swallows a resumed caller's error).
+M.safe_resume = safe_resume
 
 return M
