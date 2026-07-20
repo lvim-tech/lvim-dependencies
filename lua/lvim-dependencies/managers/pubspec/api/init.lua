@@ -397,16 +397,13 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    local okw, werr = file_ops.write_lines(path, new_lines)
+    -- One write that also syncs the open buffer (see file_ops.write_and_sync): writing behind nvim's back and
+    -- patching the buffer afterwards left the recorded mtime stale, so the next `checktime` reloaded the file
+    -- we had just written — a second rewrite that reset the view.
+    local okw, werr = file_ops.write_and_sync(path, new_lines, change)
     if not okw then
         callback({ success = false, message = "failed to write: " .. tostring(werr), packages = {} })
         return
-    end
-
-    if change then
-        file_ops.apply_buffer_change(path, change)
-    else
-        file_ops.force_refresh_buffer(path, new_lines)
     end
 
     parser.clear_cache()
@@ -510,12 +507,7 @@ function M._delete_package(name, opts, callback)
             return
         end
 
-        file_ops.write_lines(path, new_lines)
-        if change then
-            file_ops.apply_buffer_change(path, change)
-        else
-            file_ops.force_refresh_buffer(path, new_lines)
-        end
+        file_ops.write_and_sync(path, new_lines, change)
 
         local bufnr = vim.fn.bufnr(path)
         if bufnr ~= -1 then
@@ -532,10 +524,10 @@ function M._delete_package(name, opts, callback)
                     callback({ success = true, message = "removed successfully", packages = { name } })
                 else
                     local err_msg = res and pub_ops.extract_pub_error(res) or "remove failed"
-                    file_ops.write_lines(path, lines)
+                    -- Roll the manifest back through the buffer, so the restore does not leave a stale
+                    -- mtime behind for the next checktime to "discover".
+                    file_ops.write_and_sync(path, lines)
                     if bufnr ~= -1 and api.nvim_buf_is_valid(bufnr) then
-                        api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-                        vim.bo[bufnr].modified = false
                         vt.move_virt_texts_only(bufnr)
                     end
                     callback({ success = false, message = err_msg, packages = {}, no_retry = true })
@@ -545,16 +537,13 @@ function M._delete_package(name, opts, callback)
         return
     end
 
-    local okw, werr = file_ops.write_lines(path, new_lines)
+    -- One write that also syncs the open buffer (see file_ops.write_and_sync): writing behind nvim's back and
+    -- patching the buffer afterwards left the recorded mtime stale, so the next `checktime` reloaded the file
+    -- we had just written — a second rewrite that reset the view.
+    local okw, werr = file_ops.write_and_sync(path, new_lines, change)
     if not okw then
         callback({ success = false, message = "failed to write: " .. tostring(werr), packages = {} })
         return
-    end
-
-    if change then
-        file_ops.apply_buffer_change(path, change)
-    else
-        file_ops.force_refresh_buffer(path, new_lines)
     end
 
     clear_package_caches(name)

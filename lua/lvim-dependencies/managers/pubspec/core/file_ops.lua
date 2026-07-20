@@ -1,8 +1,13 @@
 -- lvim-dependencies.managers.pubspec.core.file_ops: filesystem + buffer plumbing for pubspec.yaml.
--- Locates the file (upward search from root_dir/cwd), reads and writes it, and reflects on-disk
--- edits into an open buffer either as a minimal ranged change (apply_buffer_change) or a full
--- replace (force_refresh_buffer). Both paths save and restore the cursor so an install/update
--- never jumps the user's cursor, and clear the buffer 'modified' flag after writing.
+-- Locates the file (upward search from root_dir/cwd), reads it, and applies edits.
+--
+-- `write_and_sync` is the ONE path every install/update/rollback writes through: it puts the lines in the
+-- open buffer and lets the BUFFER write itself, so nvim records the file time and the `checktime` that
+-- follows is a no-op. Writing the file directly and patching the buffer afterwards (the old write_lines +
+-- apply_buffer_change / force_refresh_buffer pair) left the recorded time stale, so that checktime reloaded
+-- the file that had just been written — a second rewrite that reset the view. `write_lines` remains for a
+-- manifest with no buffer open; `apply_buffer_change` / `force_refresh_buffer` remain as the buffer-only
+-- primitives. All of them save and restore the cursor, so an install never jumps it.
 --
 ---@module "lvim-dependencies.managers.pubspec.core.file_ops"
 
@@ -178,6 +183,67 @@ function M.force_refresh_buffer(path, fresh_lines)
 
     vim.bo[bufnr].modified = false
     debug(string.format("Refreshed buffer %d", bufnr), vim.log.levels.DEBUG)
+end
+
+--- Write `lines` to `path` AND leave an open buffer exactly in sync with what landed on disk.
+---
+--- The manifest used to be written behind nvim's back (`write_lines`), the buffer then patched to the same
+--- content, and `modified` cleared by hand — which left the buffer's RECORDED file time older than the file
+--- it already matched. The `checktime` that follows an install/update therefore saw "changed on disk" and
+--- reloaded the whole file: a second, redundant rewrite that resets the view (topline, folds, extmarks)
+--- while only the cursor line/col was ever restored. That was the "the buffer reloads two-three times and
+--- jumps" report.
+---
+--- Writing THROUGH the buffer fixes it at the source: nvim records the mtime itself, `modified` clears on
+--- its own, and a later `checktime` is a genuine no-op unless an external tool really did touch the file.
+--- `noautocmd` keeps the write invisible to BufWritePre/Post (no formatter, no other manager's hooks).
+--- With no buffer open there is nothing to sync, so it is a plain write.
+---@param path string
+---@param lines string[]
+---@param change FileChange|nil  a minimal ranged edit; falls back to a full replace when absent
+---@return boolean success
+---@return string|nil error
+function M.write_and_sync(path, lines, change)
+    if type(lines) ~= "table" then
+        return false, "Lines must be a table"
+    end
+
+    local bufnr = vim.fn.bufnr(path)
+    if not bufnr or bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+        return M.write_lines(path, lines)
+    end
+
+    local saved_cursor = save_cursor_position(bufnr)
+
+    if change and type(change.start0) == "number" and type(change.end0) == "number" then
+        api.nvim_buf_set_lines(bufnr, change.start0, change.end0, false, change.lines or {})
+    else
+        api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+    end
+
+    local ok, err = pcall(api.nvim_buf_call, bufnr, function()
+        vim.cmd("silent noautocmd write")
+    end)
+    if not ok then
+        -- The buffer refused the write ('readonly', a permission error…). Fall back to the direct write so
+        -- the operation still lands on disk; the buffer is left holding the same content either way.
+        debug(
+            string.format("Buffer write failed (%s) — falling back to a direct write", tostring(err)),
+            vim.log.levels.WARN
+        )
+        local okw, werr = M.write_lines(path, lines)
+        if not okw then
+            return false, werr
+        end
+    end
+
+    if saved_cursor then
+        local line_count = api.nvim_buf_line_count(bufnr)
+        pcall(api.nvim_win_set_cursor, 0, { math.min(saved_cursor[1], line_count), saved_cursor[2] })
+    end
+
+    debug(string.format("Wrote %d lines to %s through buffer %d", #lines, path, bufnr), vim.log.levels.DEBUG)
+    return true, nil
 end
 
 --- Check if buffer has unsaved changes

@@ -54,18 +54,26 @@ local function find_package(bufnr, manifest_type, cursor_line)
 
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor_line, cursor_line + 1, false)[1] or ""
 
+    -- Validating a name against the DECLARED set keeps a random `key: value` line from posing as a package.
+    -- But `deps` comes from the declared CACHE alone (utils_lsp.parse_dependencies reads nothing else), and an
+    -- update clears that cache — so while it is cold the validation cannot reject a wrong answer, it can only
+    -- reject the RIGHT one, and `find_package` returning nil means the whole codeAction request answers with
+    -- ZERO actions. That is the "the package suddenly has no code action" report. With an EMPTY cache there is
+    -- nothing to validate against, so trust the manifest's own line matcher instead of denying the package.
+    local no_declared = next(deps) == nil
+
     -- Try manager's find_package_in_line and validate against declared deps
     local vt_mod_ok, vt_mod = pcall(require, string.format("lvim-dependencies.managers.%s.virtual_text", manifest_type))
     if vt_mod_ok and vt_mod and vt_mod.find_package_in_line then
         local pkg = vt_mod.find_package_in_line(line)
-        if pkg and deps[pkg] then
+        if pkg and (deps[pkg] or no_declared) then
             return pkg
         end
     end
 
     -- Fallback: simple key pattern, validated against declared deps
     local pkg = line:match("^%s*([%w_%-%.]+)%s*[=:]")
-    if pkg and deps[pkg] then
+    if pkg and (deps[pkg] or no_declared) then
         return pkg
     end
 

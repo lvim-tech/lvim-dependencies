@@ -356,13 +356,13 @@ end
 local function handle_failure(name, err, bufnr, original_lines, path)
     debug(string.format("Operation failed for %s: %s", name, err), vim.log.levels.ERROR)
 
+    -- Roll back through the buffer (one rewrite, mtime recorded by nvim) rather than writing the file and
+    -- then patching the buffer to match — that pair is what made the following checktime reload the file.
     if original_lines then
-        file_ops.write_lines(path, original_lines)
+        file_ops.write_and_sync(path, original_lines)
     end
 
     if bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
-        file_ops.force_refresh_buffer(path, original_lines)
-        vim.bo[bufnr].modified = false
         state.clear_pending_state(bufnr)
     end
 
@@ -428,23 +428,16 @@ function M.run_pub_get(path, name, version, opts, callback)
         saved_cursor = api.nvim_win_get_cursor(0)
     end
 
-    -- Write file without backup/formatting
-    local ok_write, werr = file_ops.write_lines(path, pending_lines)
+    -- ONE write that also syncs the open buffer: the lines land in the buffer and the buffer writes itself,
+    -- so nvim records the mtime and the `checktime` in handle_success stays a no-op instead of reloading the
+    -- file we just wrote (that reload was a second rewrite and it reset the view).
+    local ok_write, werr = file_ops.write_and_sync(path, pending_lines, change)
     if not ok_write then
         debug(string.format("Write failed: %s", werr), vim.log.levels.ERROR)
         if callback then
             callback({ success = false, message = "Failed to write: " .. tostring(werr), packages = {} })
         end
         return
-    end
-
-    if bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
-        if change then
-            file_ops.apply_buffer_change(path, change)
-        else
-            file_ops.force_refresh_buffer(path, pending_lines)
-        end
-        vim.bo[bufnr].modified = false
     end
 
     local lnum0 = find_package_line(bufnr, name)
