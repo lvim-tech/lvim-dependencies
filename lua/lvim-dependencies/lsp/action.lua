@@ -17,6 +17,18 @@ local ui = require("lvim-dependencies.ui")
 
 local config = require("lvim-dependencies.config")
 
+--- Open a URL with the system handler, warning when nothing could open it. `vim.ui.open` returns
+--- `nil, err` for a missing handler instead of raising, so calling it bare opened nothing and said
+--- nothing on a machine without an opener.
+---@param target string?
+---@return nil
+local function open_url(target)
+    local ok, why = require("lvim-utils.utils").open_url(target or "")
+    if not ok then
+        vim.notify(("lvim-dependencies: could not open %s (%s)"):format(target or "?", why or "?"), vim.log.levels.WARN)
+    end
+end
+
 local utils_lsp = utils.lsp
 local notify = utils.notify
 
@@ -154,7 +166,7 @@ local function execute_action(sel, pkg, manifest, buf)
             notify("Unknown command: " .. tostring(cmd_name), vim.log.levels.ERROR)
         end
     elseif sel.url then
-        vim.ui.open(sel.url)
+        open_url(sel.url)
         notify(string.format("Opening %s", sel.url), vim.log.levels.INFO)
     end
 end
@@ -397,7 +409,7 @@ function M.setup()
             local args = command.arguments or {}
             local url = args[1] and tostring(args[1]) or nil
             if url then
-                vim.ui.open(url)
+                open_url(url)
             end
         end
     end
