@@ -117,10 +117,10 @@ local function get_manager_actions(manifest_type, pkg, bufnr, params)
     return {}
 end
 
+--- Run an installer operation, reporting its own failure message (the operation always supplies one).
 ---@param op_fn fun(cb: InstallerCallback)
 ---@param success_msg string
----@param error_msg string
-local function run_operation(op_fn, success_msg, error_msg)
+local function run_operation(op_fn, success_msg)
     op_fn(function(result)
         if result and result.success then
             notify(success_msg, vim.log.levels.INFO)
@@ -139,12 +139,12 @@ local function execute_action(sel, pkg, manifest, buf)
         run_operation(function(cb)
             local op = operation.update(manifest, { pkg }, {}, cb)
             operator.execute(op)
-        end, string.format("Update completed for %s", pkg), string.format("Update failed for %s", pkg))
+        end, string.format("Update completed for %s", pkg))
     elseif sel.id == "delete" then
         run_operation(function(cb)
             local op = operation.delete(manifest, { pkg }, {}, cb)
             operator.execute(op)
-        end, string.format("Deleted %s", pkg), string.format("Delete failed for %s", pkg))
+        end, string.format("Deleted %s", pkg))
     elseif sel.action and type(sel.action) == "function" then
         vim.schedule(function()
             sel.action()

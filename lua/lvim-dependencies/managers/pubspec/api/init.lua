@@ -231,12 +231,7 @@ function M.get_package_at_cursor(opts)
         return nil
     end
 
-    local cursor_line
-    if opts.cursor_line ~= nil then
-        cursor_line = opts.cursor_line
-    else
-        cursor_line = api.nvim_win_get_cursor(0)[1] - 1
-    end
+    local cursor_line = opts.cursor_line or (api.nvim_win_get_cursor(0)[1] - 1)
 
     local line = api.nvim_buf_get_lines(bufnr, cursor_line, cursor_line + 1, false)[1]
     if not line then

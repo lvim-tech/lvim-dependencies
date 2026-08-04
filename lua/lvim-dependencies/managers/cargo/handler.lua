@@ -111,11 +111,10 @@ local function show_version_selection(package, versions_data, callback)
 end
 
 --- Show features selection UI
----@param package string
 ---@param features_data table|nil nil/without `available` means no features to offer
 ---@param current_features string[]
 ---@param callback fun(selected_features: string[], default_features: boolean, optional: boolean)
-local function show_features_selection(package, features_data, current_features, callback)
+local function show_features_selection(features_data, current_features, callback)
     if not features_data or not features_data.available then
         -- No features available, proceed without features
         callback({}, true, false)
@@ -188,28 +187,23 @@ local function complete_install_flow(package, callback)
             fetch_features(package, function(features_data)
                 -- Step 4: Show features selection
                 -- TODO: Get current features from package if it exists
-                show_features_selection(
-                    package,
-                    features_data,
-                    {},
-                    function(selected_features, default_features, optional)
-                        -- Step 5: Install with selected options
-                        vim.schedule(function()
-                            api.update_async(package, {
-                                version = selected_version,
-                                from_ui = true,
-                                features = selected_features,
-                                default_features = default_features,
-                                optional = optional,
-                            }, function(result)
-                                if result and not result.success then
-                                    result.no_retry = true
-                                end
-                                callback(result)
-                            end)
+                show_features_selection(features_data, {}, function(selected_features, default_features, optional)
+                    -- Step 5: Install with selected options
+                    vim.schedule(function()
+                        api.update_async(package, {
+                            version = selected_version,
+                            from_ui = true,
+                            features = selected_features,
+                            default_features = default_features,
+                            optional = optional,
+                        }, function(result)
+                            if result and not result.success then
+                                result.no_retry = true
+                            end
+                            callback(result)
                         end)
-                    end
-                )
+                    end)
+                end)
             end)
         end)
     end)
@@ -240,7 +234,6 @@ local function complete_update_flow(package, callback)
 
                 -- Step 5: Show features selection
                 show_features_selection(
-                    package,
                     features_data,
                     current.features,
                     function(selected_features, default_features, optional)
@@ -406,10 +399,7 @@ local function handle_features(cmd, callback)
     end
 
     -- Fetch available features
-    fetch_features(package, function(features_data)
-        -- Get current features from package
-        local current = features.get_current_features(package)
-
+    fetch_features(package, function()
         -- Show features UI
         features.show_ui(package, vim.api.nvim_get_current_buf())
 

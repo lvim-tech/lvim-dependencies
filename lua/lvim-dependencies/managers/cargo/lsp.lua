@@ -7,7 +7,6 @@
 
 local actions = require("lvim-dependencies.managers.cargo.api")
 local cache = require("lvim-dependencies.core.cache")
-local const = require("lvim-dependencies.core.const")
 local features = require("lvim-dependencies.managers.cargo.features")
 
 ---@class CargoLsp

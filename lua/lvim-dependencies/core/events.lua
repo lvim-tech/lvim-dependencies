@@ -8,14 +8,14 @@
 local _unpack = table.unpack or unpack
 local notify = require("lvim-dependencies.utils.notify")
 
----@type table<string, EventHandler[]>
+---@type table<string, DependencyEventHandler[]>
 local handlers = {}
 
 local M = {}
 
 --- Register an event handler
 ---@param event PreDefinedEvents|string The event name to listen for
----@param handler EventHandler Function to call when event is emitted
+---@param handler DependencyEventHandler Function to call when event is emitted
 function M.on(event, handler)
     local event_handlers = handlers[event]
     if not event_handlers then
@@ -44,7 +44,7 @@ end
 
 --- Remove a specific handler from an event
 ---@param event PreDefinedEvents|string The event name
----@param handler EventHandler The handler to remove
+---@param handler DependencyEventHandler The handler to remove
 ---@return boolean success True if handler was found and removed
 function M.off(event, handler)
     local event_handlers = handlers[event]
@@ -99,7 +99,7 @@ end
 
 --- Emit event once and then remove handler
 ---@param event PreDefinedEvents|string
----@param handler EventHandler
+---@param handler DependencyEventHandler
 function M.once(event, handler)
     local once_handler
     once_handler = function(...)

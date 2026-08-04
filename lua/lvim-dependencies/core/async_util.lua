@@ -219,7 +219,7 @@ function M.read_file_async(path, timeout_ms, callback)
 end
 
 --- Async command execution wrapper around vim.system
----@param cmd string|table Command to execute
+---@param cmd string[] Command argv (vim.system takes a list, never a shell string)
 ---@param opts? SystemOpts|function System options or callback
 ---@param callback? fun(obj: SystemCompleted) Completion callback
 function M.system_async(cmd, opts, callback)
@@ -227,6 +227,7 @@ function M.system_async(cmd, opts, callback)
         callback = opts
         opts = {}
     end
+    ---@cast opts SystemOpts?
     system(cmd, opts or {}, callback or function() end)
 end
 

@@ -17,7 +17,6 @@ local config = require("lvim-dependencies.config")
 local vt = require("lvim-dependencies.core.virtual_text")
 local hub_declared = require("lvim-dependencies.core.hub.declared")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
-local hub_latest = require("lvim-dependencies.core.hub.latest")
 local package_loader = require("lvim-dependencies.core.package_loader")
 
 local notify = utils.notify

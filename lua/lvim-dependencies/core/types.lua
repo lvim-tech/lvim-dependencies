@@ -37,7 +37,7 @@
 ---@field stdout string
 ---@field stderr string
 
----@class SystemOpts
+---@class SystemOpts: vim.SystemOpts
 ---@field cwd? string
 ---@field env? table<string, string>
 ---@field stdin? string
@@ -76,7 +76,7 @@
 -- Event bus types
 -- ============================================================================
 
----@alias EventHandler fun(...: any)
+---@alias DependencyEventHandler fun(...: any)
 
 ---@alias PreDefinedEvents
 ---| "declared:updated"

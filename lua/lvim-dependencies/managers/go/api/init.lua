@@ -13,7 +13,6 @@ local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
-local utils = require("lvim-dependencies.utils")
 local state = require("lvim-dependencies.core.state")
 local init = require("lvim-dependencies.core.init")
 local ui = require("lvim-dependencies.ui")
@@ -24,7 +23,6 @@ local go_ops = require("lvim-dependencies.managers.go.core.go_ops")
 local data_installed = require("lvim-dependencies.managers.go.data.installed")
 local data_latest = require("lvim-dependencies.managers.go.data.latest")
 
-local debug = utils.debug
 local api = vim.api
 
 local CACHE_TYPE_INSTALLED = const.CACHE_TYPES.INSTALLED

@@ -319,7 +319,7 @@ M.dependency_types = {
             end
             return vt
         end,
-        format_hover = function(dep, _latest, metadata)
+        format_hover = function(dep, _, metadata)
             local lines = { "**Platform requirement**" }
             if dep.declared then
                 lines[#lines + 1] = string.format("**Constraint:** `%s`", dep.declared)
@@ -352,7 +352,7 @@ M.dependency_types = {
             add_installed(vt, dep.installed)
             return vt
         end,
-        format_hover = function(dep, _latest, metadata)
+        format_hover = function(dep, _, metadata)
             local lines = {}
             if dep.vcs then
                 lines[#lines + 1] = string.format("**Branch:** `%s`", dep.vcs.ref)

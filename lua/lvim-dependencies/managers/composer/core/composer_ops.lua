@@ -334,7 +334,6 @@ function M.run_composer_remove(path, name, opts, callback)
     vim.system(cmd, { cwd = cwd, text = true }, function(res)
         vim.schedule(function()
             local code = res and res.code or -1
-            local stderr = (res and res.stderr) or ""
 
             if code == 0 then
                 parser.clear_cache()

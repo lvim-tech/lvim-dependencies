@@ -151,7 +151,11 @@ end
 --- Stop the in-process LSP client if running.
 function M.stop()
     if M.client_id then
-        vim.lsp.stop_client(M.client_id)
+        -- `vim.lsp.stop_client` is deprecated; the client object owns `stop()` now.
+        local client = vim.lsp.get_client_by_id(M.client_id)
+        if client then
+            client:stop()
+        end
         M.client_id = nil
         debug("LSP server stopped", vim.log.levels.INFO)
     end
