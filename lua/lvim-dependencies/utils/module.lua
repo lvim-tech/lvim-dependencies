@@ -50,10 +50,17 @@ end
 
 --- Extract module name from file path
 --- Assumes path contains "/lua/" followed by module path and .lua extension
+---
+--- The leading `.*` is what makes the match land on the LAST "/lua/", and that is the whole
+--- point: a plugin checked out under a directory that happens to be called `lua` (a dev root
+--- such as ~/development/lua/lvim-dependencies) has TWO of them in its paths, and anchoring on
+--- the first turned every manifest into "lvim-dependencies.lua.lvim-dependencies.managers.…" —
+--- a module name that requires nothing, so the registry discovered no managers at all and no
+--- manifest file was ever recognised.
 ---@param normalized_path string Normalized file path
 ---@return string|nil Module name (dots separated) or nil if not found
 local function extract_module_name(normalized_path)
-    return normalized_path:match("/lua/(.+)%.lua$")
+    return normalized_path:match(".*/lua/(.+)%.lua$")
 end
 
 --- Convert dots to slashes in module path
