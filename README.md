@@ -365,7 +365,6 @@ require("lvim-dependencies").setup({
             collect = true,
             warn_threshold = 500,
         },
-        managers_cache_ttl = 5000, -- ms
         manifest_type_cache_ttl = 5000, -- ms
     },
 

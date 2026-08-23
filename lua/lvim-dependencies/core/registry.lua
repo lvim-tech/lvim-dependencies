@@ -267,6 +267,11 @@ local function clear_state()
     M.manager_hover = {}
     M.manager_actions = {}
     initialized_managers = {}
+    -- Cleared with the rest: this set is what makes register_all_extensions skip a manager it has
+    -- already run for, and the tables that pass fills (commands, LSP handlers, hover, actions) are
+    -- wiped right above. Leaving it behind meant a reload emptied them and then declined to fill
+    -- them again, so hover and code actions were gone until the next Neovim start.
+    loaded_extensions = {}
     manifest_type_cache = {}
     manifest_type_cache_count = 0
 end

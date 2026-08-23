@@ -1,13 +1,12 @@
 -- lvim-dependencies.core: per-manager module loader. Lazily requires a manager's
 -- submodules (declared, latest, manifest, virtual_text) through ONE failure-caching
 -- layer — a failed require is memoised as `false` so a broken/absent module is never
--- pcall'd again, and the available-manager list is scanned from package.path with a
--- short TTL so directory reads don't happen on every lookup.
+-- pcall'd again. WHICH managers exist is not decided here: core.registry owns that list
+-- (it discovers them off the runtimepath and honours the config's enable flags).
 --
 ---@module "lvim-dependencies.core"
 
 local const = require("lvim-dependencies.core.const")
-local config = require("lvim-dependencies.config")
 
 -- ============================================================================
 -- Constants
@@ -27,8 +26,6 @@ local REQUIRED_MODULES = {
     const.MODULE_TYPES.VIRTUAL_TEXT,
 }
 
-local AVAILABLE_MANAGERS_TTL = config.cache.managers_cache_ttl or 5000
-
 local M = {}
 
 -- ============================================================================
@@ -40,9 +37,6 @@ local M = {}
 ---@type table<string, table|false>
 -- false = already attempted and failed (so we don't retry)
 local module_load_cache = {}
-
-local available_managers_cache = nil
-local available_managers_timestamp = 0
 
 -- ============================================================================
 -- Internal helpers
@@ -134,49 +128,6 @@ function M.has_all_modules(manager_type)
     return true
 end
 
---- Get all available manager types (with time-based caching)
----@return string[]
-function M.get_available_managers()
-    local now = vim.uv.now()
-
-    if available_managers_cache and (now - available_managers_timestamp) < AVAILABLE_MANAGERS_TTL then
-        return available_managers_cache
-    end
-
-    local managers = {}
-    local scan_paths = {}
-    local seen_dirs = {}
-    local seen_managers = {}
-
-    for path in package.path:gmatch("[^;]+") do
-        if path:match("lvim%-dependencies") then
-            local dir = path:gsub("/[^/]+$", "") .. "/managers"
-            if not seen_dirs[dir] and vim.fn.isdirectory(dir) == 1 then
-                seen_dirs[dir] = true
-                table.insert(scan_paths, dir)
-            end
-        end
-    end
-
-    for _, path in ipairs(scan_paths) do
-        local entries = vim.fn.readdir(path)
-        if entries then
-            for _, entry in ipairs(entries) do
-                local full = path .. "/" .. entry
-                if vim.fn.isdirectory(full) == 1 and not seen_managers[entry] then
-                    seen_managers[entry] = true
-                    table.insert(managers, entry)
-                end
-            end
-        end
-    end
-
-    table.sort(managers)
-    available_managers_cache = managers
-    available_managers_timestamp = now
-    return managers
-end
-
 --- Get a lazy-loaded manager proxy object
 ---@param manager_type string
 ---@return table
@@ -198,7 +149,6 @@ function M.get_manager(manager_type)
 end
 
 --- Clear module cache for a specific manager or all managers.
---- Also resets the available_managers_cache when clearing all.
 ---@param manager_type? string
 function M.clear_cache(manager_type)
     if manager_type then
@@ -210,8 +160,6 @@ function M.clear_cache(manager_type)
         end
     else
         module_load_cache = {}
-        available_managers_cache = nil
-        available_managers_timestamp = 0
     end
 end
 

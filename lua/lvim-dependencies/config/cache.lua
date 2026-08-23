@@ -23,7 +23,6 @@ return {
         collect = true, -- Whether to collect cache statistics
         warn_threshold = 500, -- Warn when cache exceeds this many entries
     },
-    managers_cache_ttl = 5000, -- 5 seconds
     manifest_type_cache_ttl = 5000, -- 5 seconds
     manifest_type_cache_max = 200, -- Max entries in the manifest-type cache before eviction
 }
