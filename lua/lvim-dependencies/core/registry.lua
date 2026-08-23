@@ -154,6 +154,20 @@ local function extract_manager_key(modpath)
     return modpath:match(MANAGER_KEY_PATTERN)
 end
 
+--- Is this manager switched on in the config?
+---
+--- Opt-OUT: only an explicit `enabled = false` disables one, so a manager the config table does
+--- not mention still registers. `config.managers` is read on every call rather than captured at
+--- require time — setup() merges the user's options into the live table, and M.reload() is meant
+--- to pick up a change made after that.
+---@param manager_key string
+---@return boolean
+local function manager_enabled(manager_key)
+    local managers = config.managers
+    local entry = managers and managers[manager_key]
+    return not (entry and entry.enabled == false)
+end
+
 local function initialize_manager(manager_key)
     if initialized_managers[manager_key] then
         return
@@ -171,6 +185,14 @@ local function register_manager(modpath)
     local key = manifest_module.key or extract_manager_key(modpath)
     if not key then
         debug(string.format("No manager key for: %s", modpath), vim.log.levels.ERROR)
+        return false
+    end
+
+    -- Kept out of M.manifests rather than filtered later: everything downstream — the file
+    -- patterns, determine_manifest_type, the extension pass that loads commands/LSP/hover — reads
+    -- that table, so a disabled manager simply never exists for any of them.
+    if not manager_enabled(key) then
+        debug(string.format("Skipping %s (disabled in config.managers)", key), vim.log.levels.INFO)
         return false
     end
 

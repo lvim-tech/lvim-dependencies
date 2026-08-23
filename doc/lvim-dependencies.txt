@@ -112,7 +112,14 @@ title       info-panel border-title FALLBACK text ("Lvim Dependencies") — used
             when a view passes no title of its own ("LvimDeps Help", …).
 title_pos   info-panel border-title alignment: "left" | "center" (default) |
             "right" — layout-independent (float / area / bottom the same).
-managers    per-manager enable + behaviour.
+managers    per-manager on/off switches, keyed by manager name (`pubspec`,
+            `cargo`, `npm`, `composer`, `go`): >lua
+                managers = { go = { enabled = false } }
+<           An opt-OUT — every manager ships enabled and one left out of the
+            table stays enabled. A disabled manager is never registered at
+            all: its files stop being recognised, no virtual text is drawn
+            for them, and its commands, LSP handlers and hover providers are
+            not loaded.
 groups      highlight group names for the virtual-text components.
 ui          panel / virtual-text appearance.
 dock        the info panel's dock-stack integration (`dock_stack`, per-layout

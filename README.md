@@ -209,6 +209,21 @@ require("lvim-dependencies").setup({
     title_pos = "center", -- "left" | "center" | "right"
 
     -- -----------------------------------------------------------------------
+    -- Package managers
+    -- An opt-out: every manager ships enabled, and one left out of this table
+    -- stays enabled. A disabled manager is never registered — its files stop
+    -- being recognised, no virtual text is drawn for them, and its commands,
+    -- LSP handlers and hover providers are not loaded.
+    -- -----------------------------------------------------------------------
+    managers = {
+        pubspec = { enabled = true },
+        cargo = { enabled = true },
+        npm = { enabled = true },
+        composer = { enabled = true },
+        go = { enabled = true },
+    },
+
+    -- -----------------------------------------------------------------------
     -- Notifications
     -- -----------------------------------------------------------------------
     notify = {
