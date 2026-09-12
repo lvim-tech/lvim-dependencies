@@ -38,7 +38,7 @@ View outdated packages, update to specific versions, and manage dependencies dir
 
 ## Requirements
 
-- Neovim >= 0.10.0
+- Neovim >= 0.12
 - [lvim-utils](https://github.com/lvim-tech/lvim-utils) (palette, highlights, dock) and [lvim-ui](https://github.com/lvim-tech/lvim-ui) (pickers, info panel) — both required
 - `curl` (for HTTP requests to package registries)
 - The package managers you actually use (`npm`, `cargo`, `go`, `composer`, `flutter`/`dart`). Without a manager's CLI its `install` / `update` / `delete` commands fail; virtual text, hover and latest-version lookups still work.
@@ -47,7 +47,7 @@ View outdated packages, update to specific versions, and manage dependencies dir
 
 ## Installation
 
-Requires Neovim >= 0.10, [lvim-utils](https://github.com/lvim-tech/lvim-utils) and [lvim-ui](https://github.com/lvim-tech/lvim-ui).
+Requires Neovim >= 0.12, [lvim-utils](https://github.com/lvim-tech/lvim-utils) and [lvim-ui](https://github.com/lvim-tech/lvim-ui).
 
 ### lvim-installer (recommended)
 

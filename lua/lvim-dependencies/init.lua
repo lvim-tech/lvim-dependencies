@@ -25,12 +25,12 @@ local M = {}
 
 --- Configure and start lvim-dependencies. Merges `user_config` into the live config in
 --- place, registers highlights (and a colorscheme-change hook), then brings up metrics,
---- registry, state, LSP, autocmds and commands. No-op with an error notice on Neovim < 0.10.
+--- registry, state, LSP, autocmds and commands. No-op with an error notice on Neovim < 0.12.
 ---@param user_config? table  user overrides merged into the live config
 ---@return nil
 function M.setup(user_config)
-    if vim.fn.has("nvim-0.10") == 0 then
-        vim.notify("lvim-dependencies requires Neovim >= 0.10", vim.log.levels.ERROR)
+    if vim.fn.has("nvim-0.12") == 0 then
+        vim.notify("lvim-dependencies requires Neovim >= 0.12", vim.log.levels.ERROR)
         return
     end
     if user_config ~= nil then

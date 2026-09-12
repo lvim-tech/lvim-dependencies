@@ -34,7 +34,7 @@ request, and a failed package-manager command is retried (`async.operator`).
 ==============================================================================
 2. REQUIREMENTS                                *lvim-dependencies-requirements*
 
-  - Neovim >= 0.10
+  - Neovim >= 0.12
   - lvim-utils (palette / highlights / dock) and lvim-ui (pickers / info panel)
     — both REQUIRED; the plugin does not load without them.
   - `curl` (registry / latest-version lookups)
