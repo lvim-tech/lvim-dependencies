@@ -106,6 +106,7 @@ end
 --- Walk versions array (crates.io: newest-first) and return the first acceptable version.
 --- With include_prerelease=true: returns the absolute newest (first entry).
 --- With include_prerelease=false: returns the first non-prerelease entry.
+--- Yanked releases are skipped — crates.io lists them, but nobody can depend on them.
 --- Accepts arbitrary decoded-JSON input (from traverse_path); validated internally.
 ---@param arr any
 ---@return string|nil
@@ -117,7 +118,7 @@ local function version_from_array(arr)
         local ver = nil
         if is_valid_string(entry) then
             ver = entry
-        elseif type(entry) == "table" then
+        elseif type(entry) == "table" and entry.yanked ~= true then
             ver = entry.num or entry.version
         end
         if ver then
@@ -160,9 +161,16 @@ end
 
 local function extract_with_paths(data, response_config)
     local version = nil
-    if response_config.version_path and #response_config.version_path > 0 then
+    -- The manifest's version_path is crate.max_version, which crates.io defines as the highest
+    -- version INCLUDING pre-releases — so with include_prerelease=false (the default) a crate
+    -- with a newer beta showed that beta as "latest" and flagged every stable install outdated.
+    -- Prefer crates.io's own max_stable_version then, and fall back to the versions walk.
+    if not include_prerelease() and data.crate and is_valid_string(data.crate.max_stable_version) then
+        version = data.crate.max_stable_version
+    end
+    if not version and response_config.version_path and #response_config.version_path > 0 then
         local val = traverse_path(data, response_config.version_path)
-        if is_valid_string(val) then
+        if is_valid_string(val) and (include_prerelease() or not is_prerelease(val)) then
             version = val
         end
     end
