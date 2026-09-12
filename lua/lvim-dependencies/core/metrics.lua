@@ -972,6 +972,9 @@ function M.setup()
     if not config.metrics.enabled then
         return
     end
+    -- A second setup() (config reload) must not stack a second subscriber, or every debug
+    -- message is counted twice from then on.
+    events.off(const.EVENTS.DEBUG, M.handle_debug)
     events.on(const.EVENTS.DEBUG, M.handle_debug)
 
     local auto_save_interval = config.metrics.auto_save_interval or 3600000
