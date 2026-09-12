@@ -45,10 +45,12 @@ local function attach_lsp_to_buffer(bufnr)
         return false
     end
 
-    -- Check if buffer already has LSP client
+    -- Check if buffer already has our in-process client (matched by id — the client is named
+    -- "lvim-deps", so a name comparison against the plugin name never matched and every
+    -- BufReadPost went through a redundant start/attach)
     local clients = vim.lsp.get_clients({ bufnr = bufnr })
     for _, client in ipairs(clients) do
-        if client.name == "lvim-dependencies" then
+        if server.client_id and client.id == server.client_id then
             debug(string.format("LSP client already attached to buffer %d", bufnr), vim.log.levels.DEBUG)
             return true
         end
