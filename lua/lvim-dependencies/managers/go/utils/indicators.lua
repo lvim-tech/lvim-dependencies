@@ -171,8 +171,10 @@ function M.poll_for_outdated(bufnr, name, callback)
 
     local function poll()
         poll_count = poll_count + 1
-        latest.get_package_latest("go", name, function(_, version)
-            if version ~= nil or poll_count >= max_polls then
+        latest.get_package_latest("go", name, function(err, version)
+            -- An error is final for this poll: the hub does not cache errors, so every further
+            -- attempt would re-fetch (up to max_polls registry requests in a few seconds).
+            if err or version ~= nil or poll_count >= max_polls then
                 debug(
                     string.format("go: poll completed for %s after %d attempts", name, poll_count),
                     vim.log.levels.INFO
