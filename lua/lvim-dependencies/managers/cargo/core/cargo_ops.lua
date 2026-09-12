@@ -240,6 +240,9 @@ local function handle_success(name, version, bufnr, saved_cursor)
     pcall(function()
         vim.bo[bufnr].modified = false
         vim.bo[bufnr].buflisted = true
+        -- The reload picks up cargo's rewrite of Cargo.toml; the declared set was just re-read
+        -- above, so the "opened" handler must not start a full reload of every package on top.
+        state.get_buffer_state(bufnr).skip_next_check = true
         api.nvim_buf_call(bufnr, function()
             vim.cmd("checktime")
         end)
