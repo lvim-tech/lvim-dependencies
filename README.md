@@ -17,10 +17,8 @@ View outdated packages, update to specific versions, and manage dependencies dir
 - **LSP integration**: Hover documentation and code actions via any LSP client
 - **Install / Update / Delete**: Full lifecycle management via `:LvimDeps` commands or LSP code actions
 - **Async & non-blocking**: All network requests and package manager commands run in the background
-- **Smart multi-layer cache**: Declared, Installed, Latest, and Virtual Text caches with configurable TTL
-- **Dynamic throttle**: Automatically reduces concurrency after repeated registry failures
-- **Retry logic with jitter**: Configurable retries for flaky registries
-- **Negative cache**: Skips re-fetching known-missing packages within a configurable window
+- **Multi-layer cache**: Declared, Installed and Latest caches with configurable TTL; concurrent lookups of the same package share one registry request
+- **Retried operations**: A failed package-manager command is retried (`async.operator`), except deterministic failures such as resolver conflicts
 - **Working indicator**: Shows a spinner on the dependency line while an operation is in progress
 - **Cargo feature management**: Interactive UI for managing Cargo crate features
 
@@ -33,22 +31,23 @@ View outdated packages, update to specific versions, and manage dependencies dir
 | npm/yarn/pnpm | `package.json`  | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | registry.npmjs.org    |
 | Cargo         | `Cargo.toml`    | `Cargo.lock`                                       | crates.io             |
 | Go modules    | `go.mod`        | `go.sum`                                           | proxy.golang.org      |
-| Composer      | `composer.json` | `composer.lock`                                    | repo.packagist.org    |
-| pub           | `pubspec.yaml`  | `pubspec.lock`                                     | pub.dartlang.org      |
+| Composer      | `composer.json` | `composer.lock`                                    | packagist.org         |
+| pub           | `pubspec.yaml`  | `pubspec.lock`                                     | pub.dev               |
 
 ---
 
 ## Requirements
 
 - Neovim >= 0.10.0
+- [lvim-utils](https://github.com/lvim-tech/lvim-utils) (palette, highlights, dock) and [lvim-ui](https://github.com/lvim-tech/lvim-ui) (pickers, info panel) — both required
 - `curl` (for HTTP requests to package registries)
-- The package managers you actually use (`npm`, `cargo`, `go`, `composer`, `flutter`/`dart`)
+- The package managers you actually use (`npm`, `cargo`, `go`, `composer`, `flutter`/`dart`). Without a manager's CLI its `install` / `update` / `delete` commands fail; virtual text, hover and latest-version lookups still work.
 
 ---
 
 ## Installation
 
-Requires Neovim >= 0.10 and [lvim-utils](https://github.com/lvim-tech/lvim-utils) (palette / merge / UI helpers).
+Requires Neovim >= 0.10, [lvim-utils](https://github.com/lvim-tech/lvim-utils) and [lvim-ui](https://github.com/lvim-tech/lvim-ui).
 
 ### lvim-installer (recommended)
 
@@ -65,6 +64,7 @@ lvim-installer installs plugins through Neovim's built-in `vim.pack`, so no exte
 ```lua
 vim.pack.add({
     { src = "https://github.com/lvim-tech/lvim-utils" },
+    { src = "https://github.com/lvim-tech/lvim-ui" },
     { src = "https://github.com/lvim-tech/lvim-dependencies" },
 })
 require("lvim-dependencies").setup({})
@@ -237,36 +237,19 @@ require("lvim-dependencies").setup({
     -- Debug logging (written to a state file)
     -- -----------------------------------------------------------------------
     debug = {
-        enabled = true,
+        enabled = false,
         min_level = vim.log.levels.DEBUG,
         -- file = <state dir>/debug.log
     },
 
     -- -----------------------------------------------------------------------
-    -- Highlight colors
-    -- Used to derive all LvimDeps* highlight groups (see Highlight Groups).
+    -- Highlights
+    -- The LvimDeps* groups are built from the shared lvim-utils palette and
+    -- re-applied on every colorscheme change. `force = true` makes them win
+    -- over whatever the colorscheme defines; to change colours override the
+    -- groups themselves (see Highlight Groups) or the lvim-utils palette.
     -- -----------------------------------------------------------------------
-    highlight = {
-        colors = {
-            bg = "#1a1f21",
-            fg = "#646c62",
-            separator = "#486b4c",
-            declared = "#bb755e",
-            installed = "#f0c776",
-            loading = "#6e8068",
-            working = "#6e8068",
-            error = "#ce5f57", -- also used for outdated versions
-            success = "#3a6479", -- also used for up-to-date versions
-            title = "#7954c6",
-            sub_title = "#7954c6",
-            subject = "#f0c776",
-            info = "#545ec6",
-            navigation = "#6e8068",
-            line_active = "#4b809b",
-            line_inactive = "#43728a",
-            input = "#43728a",
-        },
-    },
+    force = false,
 
     -- -----------------------------------------------------------------------
     -- UI
@@ -297,9 +280,7 @@ require("lvim-dependencies").setup({
             },
         },
         popup = {
-            width = "auto",
-            height = "auto",
-            max_height = 0.8,
+            -- size caps, close keys and position come from the shared lvim-ui `config.ui`
             current = "➤", -- marker for the currently installed version
             max_items = 20,
         },
@@ -366,6 +347,7 @@ require("lvim-dependencies").setup({
             warn_threshold = 500,
         },
         manifest_type_cache_ttl = 5000, -- ms
+        manifest_type_cache_max = 200, -- entries in the filename → manager cache before eviction
     },
 
     -- -----------------------------------------------------------------------
@@ -517,7 +499,7 @@ require("lvim-dependencies").setup({
         },
         api = {
             timeout = 10,
-            registry_base = nil, -- nil = "https://repo.packagist.org/p2"
+            registry_base = nil, -- nil = "https://packagist.org"
             endpoint = nil,
         },
         file_ops = {
@@ -549,7 +531,7 @@ require("lvim-dependencies").setup({
         },
         api = {
             timeout = 10,
-            registry_base = nil, -- nil = "https://pub.dartlang.org/api"
+            registry_base = nil, -- nil = "https://pub.dev/api"
             endpoint = nil,
         },
         file_ops = {
@@ -565,7 +547,7 @@ require("lvim-dependencies").setup({
             order = { "dependencies", "dev_dependencies", "dependency_overrides" },
             default = "dependencies",
         },
-        sdk_packages = {}, -- additional SDK package names to skip registry lookup
+        sdk_packages = {}, -- additional SDK package names (name = true) that skip the registry lookup
         virtual_text = {
             position = nil,
             priority = nil,
@@ -651,7 +633,7 @@ lvim-dependencies/
 │   ├── cargo/               — Cargo.toml → crates.io (+ features UI + LSP)
 │   ├── go/                  — go.mod → proxy.golang.org
 │   ├── composer/            — composer.json → packagist.org
-│   └── pubspec/             — pubspec.yaml → pub.dartlang.org
+│   └── pubspec/             — pubspec.yaml → pub.dev
 │
 │   Each manager contains:
 │   ├── manifest.lua         — key, file_patterns, dependency_types, VT format helpers

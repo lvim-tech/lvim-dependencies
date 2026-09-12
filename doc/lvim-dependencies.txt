@@ -27,18 +27,21 @@ across five package managers:
 For each dependency it shows a 3-component virtual text — Declared → Installed |
 Latest — each with its own highlight, and lets you install / update (to a chosen
 version) / delete via commands or LSP code actions. All network + package-manager
-work is async; results are cached (declared / installed / latest / virtual-text)
-with configurable TTL, dynamic throttle, retry-with-jitter and a negative cache.
+work is async; results are cached (declared / installed / latest) with
+configurable TTL, concurrent lookups of one package share a single registry
+request, and a failed package-manager command is retried (`async.operator`).
 
 ==============================================================================
 2. REQUIREMENTS                                *lvim-dependencies-requirements*
 
   - Neovim >= 0.10
+  - lvim-utils (palette / highlights / dock) and lvim-ui (pickers / info panel)
+    — both REQUIRED; the plugin does not load without them.
   - `curl` (registry / latest-version lookups)
   - The CLI of each manager you use: `npm`/`yarn`/`pnpm`, `cargo`, `go`,
-    `composer`, `dart`/`flutter`. A missing CLI only disables THAT manager.
-  - lvim-utils (OPTIONAL) — palette-driven theming of the panels / virtual text.
-    Without it the plugin falls back to plain highlight groups.
+    `composer`, `dart`/`flutter`. Without a manager's CLI its install / update /
+    delete commands fail; recognition, virtual text, hover and latest-version
+    lookups for its files still work.
 
 Run |:checkhealth| lvim-dependencies to verify the above.
 
@@ -50,8 +53,8 @@ Run |:checkhealth| lvim-dependencies to verify the above.
     })
 <
 setup() merges your options into the live config, self-themes from the lvim-utils
-palette (when present), and installs the autocommands, `:LvimDeps` command and
-LSP handlers. It is safe to open a manifest file before or after setup().
+palette, and installs the autocommands, `:LvimDeps` command and LSP handlers.
+It is safe to open a manifest file before or after setup().
 
 ==============================================================================
 4. COMMANDS                                       *lvim-dependencies-commands*
@@ -70,10 +73,12 @@ Core subcommands (always available): >
     show-registry       show-manager         state
     metrics             help
 <
-Package operations (install / update / update-direct / delete) and the
-virtual-text toggles (show / hide / toggle) act on the dependency under the
-cursor in the CURRENT manifest buffer. The same operations are also available
-as LSP code actions on the dependency line (|lvim-dependencies-lsp|).
+Package operations (install / update / update-direct / delete) act on the
+dependency under the cursor in the CURRENT manifest buffer (`install` with no
+package under the cursor prompts for a name; `update-direct` needs both the
+package and the version); the virtual-text toggles (show / hide / toggle) act
+on the whole buffer. The same operations are also available as LSP code
+actions on the dependency line (|lvim-dependencies-lsp|).
 
 Manager subcommands are contributed by the manager of the current manifest, so
 completion only offers what applies to that file; currently the only one is
@@ -131,9 +136,11 @@ dock        the info panel's dock-stack integration (`dock_stack`, per-layout
             stacks simultaneously), while re-opening the same (id, layout) re-shows
             the one entry (never a duplicate). Cyclable <Leader>n/p, kill <Leader>x.
 lsp         `{ enabled = true }` — hover + code actions.
-cache       TTL + negative-cache window for the declared/installed/latest layers.
-async       concurrency, dynamic throttle, retry + jitter.
-metrics     operation metrics (view via the manager UI).
+cache       TTLs (seconds) for the installed / latest layers, the manifest-type
+            lookup cache, and the stats switch.
+async       concurrency, timeouts, retry/backoff for package-manager commands
+            (`async.operator`), the save debounce.
+metrics     operation metrics (`:LvimDeps metrics`).
 notify      notification routing/levels.
 debug       debug logging.
 cargo / npm / composer / go / pubspec
@@ -144,9 +151,9 @@ Every field is optional; omit the argument to setup() for defaults.
 ==============================================================================
 8. HEALTH                                            *lvim-dependencies-health*
 
-|:checkhealth| lvim-dependencies verifies the Neovim version, `curl`, each
-manager's CLI (a missing one disables only that manager), and whether lvim-utils
-is available for palette theming.
+|:checkhealth| lvim-dependencies verifies the Neovim version, lvim-utils and
+lvim-ui, `curl`, and each manager's CLI (a missing one only breaks that
+manager's install / update / delete commands).
 
 ==============================================================================
 vim:tw=78:ts=8:et:ft=help:norl:

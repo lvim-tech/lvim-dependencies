@@ -13,10 +13,10 @@ local COMMAND_SECTIONS = {
     {
         section = "Package Operations",
         commands = {
-            { cmd = "install", desc = "Install all packages" },
-            { cmd = "update", desc = "Update all packages" },
-            { cmd = "update-direct <package>", desc = "Update specific package" },
-            { cmd = "delete", desc = "Delete all packages" },
+            { cmd = "install", desc = "Install a new package (prompts for a name, or uses the one under the cursor)" },
+            { cmd = "update [package]", desc = "Pick a version for the package under the cursor" },
+            { cmd = "update-direct <package> <version>", desc = "Update a package straight to a version" },
+            { cmd = "delete [package]", desc = "Remove the package under the cursor (with confirmation)" },
         },
     },
     {
@@ -30,10 +30,7 @@ local COMMAND_SECTIONS = {
     {
         section = "Cache Management",
         commands = {
-            { cmd = "show-declared", desc = "Show declared cache" },
-            { cmd = "show-installed", desc = "Show installed cache" },
-            { cmd = "show-latest", desc = "Show latest cache" },
-            { cmd = "show-all-caches", desc = "Show all caches" },
+            { cmd = "cache [type]", desc = "Inspect a cache (all, declared, installed, latest, manifest, virtual_text)" },
             { cmd = "clear-declared", desc = "Clear declared cache" },
             { cmd = "clear-installed", desc = "Clear installed cache" },
             { cmd = "clear-latest", desc = "Clear latest cache" },
@@ -41,16 +38,24 @@ local COMMAND_SECTIONS = {
         },
     },
     {
-        section = "Registry",
+        section = "Registry & Diagnostics",
         commands = {
             { cmd = "show-registry", desc = "Show registered managers" },
             { cmd = "show-manager <name>", desc = "Show manager details" },
+            { cmd = "state", desc = "Show the current buffer's state" },
+            { cmd = "metrics", desc = "Show cache / performance metrics" },
+        },
+    },
+    {
+        section = "Manager Commands (offered for the matching manifest only)",
+        commands = {
+            { cmd = "features [package]", desc = "Cargo: manage a crate's features" },
         },
     },
     {
         section = "Other",
         commands = {
-            { cmd = "help", desc = "Show this help" },
+            { cmd = "help [command]", desc = "Show this help, or a command's page" },
         },
     },
 }
@@ -59,11 +64,11 @@ local COMMAND_SECTIONS = {
 ---@type {name: string, commands: string}[]
 local SHORT_CATEGORIES = {
     { name = "Package Ops", commands = "`install`, `update`, `delete`" },
-    { name = "Update Direct", commands = "`update-direct [pkg]`" },
+    { name = "Update Direct", commands = "`update-direct <pkg> <version>`" },
     { name = "Virtual Text", commands = "`show`, `hide`, `toggle`" },
-    { name = "Cache Show", commands = "`show-{declared,installed,latest,all-caches}`" },
-    { name = "Cache Clear", commands = "`clear-{declared,installed,latest,all-caches}`" },
-    { name = "Registry", commands = "`show-registry`, `show-manager`" },
+    { name = "Cache", commands = "`cache [type]`, `clear-{declared,installed,latest,all-caches}`" },
+    { name = "Registry", commands = "`show-registry`, `show-manager`, `state`, `metrics`" },
+    { name = "Cargo", commands = "`features [pkg]`" },
     { name = "Help", commands = "`help`" },
 }
 
@@ -72,28 +77,30 @@ local SHORT_CATEGORIES = {
 local COMMAND_HELP = {
     install = {
         title = ":LvimDeps install",
-        desc = "Install all packages.",
-        details = "Runs the package manager's install command.",
+        desc = "Install a new package.",
+        details = "With a package under the cursor, opens the version picker for it.\nOtherwise prompts for a package name, then (pubspec) a section and a version, and runs the manager's add/get command.",
         usage = ":LvimDeps install",
     },
     update = {
         title = ":LvimDeps update",
-        desc = "Update all packages.",
-        details = "Updates all packages to their latest versions.",
-        usage = ":LvimDeps update",
+        desc = "Update one package through the version picker.",
+        details = "Uses the named package, or the one under the cursor, fetches its versions from the registry and writes the chosen one to the manifest.",
+        usage = ":LvimDeps update [package]",
+        examples = { ":LvimDeps update", ":LvimDeps update http" },
     },
     ["update-direct"] = {
         title = ":LvimDeps update-direct",
-        desc = "Update specific package.",
-        details = "If package name is provided, updates that package.\nIf no package is provided, attempts to get package name from cursor position.",
-        usage = ":LvimDeps update-direct [package]",
-        examples = { ":LvimDeps update-direct", ":LvimDeps update-direct http" },
+        desc = "Update a package straight to a version, without the picker.",
+        details = "Both the package and the version are required (a manager may fill them from the cursor line when it provides a cursor helper).",
+        usage = ":LvimDeps update-direct <package> <version>",
+        examples = { ":LvimDeps update-direct http 1.2.0" },
     },
     delete = {
         title = ":LvimDeps delete",
-        desc = "Delete all packages.",
-        details = "Removes all installed packages.",
-        usage = ":LvimDeps delete",
+        desc = "Remove one package.",
+        details = "Removes the named package, or the one under the cursor, after a confirmation dialog.",
+        usage = ":LvimDeps delete [package]",
+        examples = { ":LvimDeps delete", ":LvimDeps delete http" },
     },
     show = {
         title = ":LvimDeps show",
@@ -113,29 +120,31 @@ local COMMAND_HELP = {
         details = "Shows virtual text if hidden, hides it if shown.",
         usage = ":LvimDeps toggle",
     },
-    ["show-declared"] = {
-        title = ":LvimDeps show-declared",
-        desc = "Show declared cache.",
-        details = "Displays all cached declared versions.",
-        usage = ":LvimDeps show-declared",
+    cache = {
+        title = ":LvimDeps cache",
+        desc = "Inspect a cache.",
+        details = "Opens the cache contents in the info panel. Types: all (default), declared, installed, latest, manifest, virtual_text.",
+        usage = ":LvimDeps cache [type]",
+        examples = { ":LvimDeps cache", ":LvimDeps cache latest" },
     },
-    ["show-installed"] = {
-        title = ":LvimDeps show-installed",
-        desc = "Show installed cache.",
-        details = "Displays all cached installed versions.",
-        usage = ":LvimDeps show-installed",
+    state = {
+        title = ":LvimDeps state",
+        desc = "Show the current buffer's state.",
+        details = "Displays the plugin's bookkeeping for the current buffer (open/save counts, pending operation) and which virtual-text handlers are wired.",
+        usage = ":LvimDeps state",
     },
-    ["show-latest"] = {
-        title = ":LvimDeps show-latest",
-        desc = "Show latest cache.",
-        details = "Displays all cached latest versions.",
-        usage = ":LvimDeps show-latest",
+    metrics = {
+        title = ":LvimDeps metrics",
+        desc = "Show cache / performance metrics.",
+        details = "Opens the metrics report (cache hit ratio, slowest lookups, errors). In the panel: r reload, y copy, R reset, s save, l load.",
+        usage = ":LvimDeps metrics",
     },
-    ["show-all-caches"] = {
-        title = ":LvimDeps show-all-caches",
-        desc = "Show all caches.",
-        details = "Displays declared, installed and latest caches.",
-        usage = ":LvimDeps show-all-caches",
+    features = {
+        title = ":LvimDeps features",
+        desc = "Manage a crate's features (Cargo.toml only).",
+        details = "Fetches the crate's feature list from crates.io and opens a multi-select to rewrite the dependency's `features`.",
+        usage = ":LvimDeps features [package]",
+        examples = { ":LvimDeps features", ":LvimDeps features serde" },
     },
     ["clear-declared"] = {
         title = ":LvimDeps clear-declared",
@@ -254,8 +263,9 @@ function M.get_main_help()
     table.insert(lines, "`:LvimDeps show`")
     table.insert(lines, "`:LvimDeps hide`")
     table.insert(lines, "`:LvimDeps toggle`")
-    table.insert(lines, "`:LvimDeps update-direct`")
-    table.insert(lines, "`:LvimDeps update-direct http`")
+    table.insert(lines, "`:LvimDeps update`")
+    table.insert(lines, "`:LvimDeps update-direct http 1.2.0`")
+    table.insert(lines, "`:LvimDeps cache latest`")
     table.insert(lines, "`:LvimDeps show-registry`")
     table.insert(lines, "`:LvimDeps show-manager pubspec`")
     table.insert(lines, "`:LvimDeps clear-all-caches`")
