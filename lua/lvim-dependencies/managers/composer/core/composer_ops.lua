@@ -282,6 +282,10 @@ function M.run_composer_update(path, name, version, opts, callback)
             -- both mislabels warnings and — worse — reports a QUIET failure as success and seeds a
             -- version that was never installed. Re-read the lock and trust what is actually there;
             -- platform requirements (php / ext-*) never appear in the lock, so trust the exit code.
+            -- "In the lock" is not enough on its own: an UPDATE of a package that is already
+            -- installed leaves its old entry in the lock when composer refuses the new version
+            -- (a solver conflict), and that old version was reported as "updated". The lock has to
+            -- carry the version that was asked for (Composer stores it "v"-prefixed).
             installed_data.clear_cache()
             local actual_version
             installed_data.get_package_installed(name, function(_, v)
@@ -289,7 +293,8 @@ function M.run_composer_update(path, name, version, opts, callback)
             end)
 
             local is_platform = not manifest.is_package_actionable(name)
-            local succeeded = (is_platform and code == 0) or actual_version ~= nil
+            local requested = (version or ""):gsub("^v", "")
+            local succeeded = code == 0 or (not is_platform and actual_version ~= nil and actual_version == requested)
 
             if succeeded then
                 local seeded = actual_version or version
