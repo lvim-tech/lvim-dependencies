@@ -204,12 +204,7 @@ function M.create_utils(clean_pattern, component_pattern)
     return {
         parse = parse,
         compare = compare,
-        satisfies = function(version, constraint)
-            if constraint:match("^%d") then
-                return compare(version, constraint) == 0
-            end
-            return version == constraint
-        end,
+        satisfies = M.satisfies,
     }
 end
 
@@ -282,33 +277,46 @@ local CONSTRAINT_OPS = {
     end,
 }
 
---- Check if a version satisfies a range constraint
+--- Check if a version satisfies a constraint. A constraint is one or more whitespace-separated
+--- comparators that must ALL hold (`>=1.2.3 <2.0.0`); each is an operator (`^ ~ >= > <= < =`,
+--- none = exact) and a version that may be partial (`~1.2` is `>=1.2.0 <1.3.0`, `^1.2` is
+--- `>=1.2.0 <2.0.0`). "||" alternatives are not supported.
 ---@param version string Version to check
----@param constraint string Constraint (e.g., "^1.2.3", "~1.2.3", ">=1.2.3")
+---@param constraint string Constraint (e.g., "^1.2.3", "~1.2", ">=1.2.3 <2.0.0")
 ---@return boolean
 function M.satisfies(version, constraint)
     if not is_nonempty_string(version) or not is_nonempty_string(constraint) then
         return false
     end
 
-    -- Exact match when no operator present
-    if not constraint:match("[%^~><=]") then
-        return M.compare_semver(version, constraint) == 0
-    end
-
-    local operator, target = constraint:match("^([%^~><=]+)%s*(.+)$")
-    if not operator or not target then
+    local v_parsed = parse_version(version)
+    if not v_parsed then
         return false
     end
 
-    local v_parsed = M.parse_semver(version)
-    local t_parsed = M.parse_semver(target)
-    if not v_parsed or not t_parsed then
-        return false
+    local any = false
+    for comparator in constraint:gmatch("%S+") do
+        any = true
+        local operator, target = comparator:match("^([%^~><=]*)(.+)$")
+        if not target or target == "" then
+            return false
+        end
+        local t_parsed = parse_version(target)
+        if not t_parsed then
+            return false
+        end
+        if operator == "" or operator == "=" then
+            if compare_parsed(v_parsed, t_parsed) ~= 0 then
+                return false
+            end
+        else
+            local handler = CONSTRAINT_OPS[operator]
+            if not handler or not handler(v_parsed, t_parsed) then
+                return false
+            end
+        end
     end
-
-    local handler = CONSTRAINT_OPS[operator]
-    return handler ~= nil and handler(v_parsed, t_parsed)
+    return any
 end
 
 -- ============================================================================
