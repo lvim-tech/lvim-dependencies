@@ -7,7 +7,7 @@
 
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -31,11 +31,12 @@ local function get_manifest()
     return m
 end
 
---- Locate the nearest package.json searching upward from the configured root or cwd.
+--- Locate the nearest package.json searching upward from the project root (the manifest
+--- buffer's own directory — a workspace package must read ITS package.json, not the root's).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_package_json()
-    local root_dir = config.npm and config.npm.file_ops and config.npm.file_ops.root_dir
-    local search = root_dir and vim.fn.expand(root_dir) or vim.fn.getcwd()
+local function find_package_json(opts)
+    local search = project.search_root("npm", opts)
 
     local found = vim.fs.find("package.json", { upward = true, path = search, type = "file" })
     return found and found[1] or nil
@@ -96,21 +97,23 @@ function M.clear_cache()
     debug("npm parser cache cleared", vim.log.levels.INFO)
 end
 
+--- package.json of the CURRENT manifest's project (the buffer being edited, else cwd).
 ---@return string|nil
 function M.find_package_json_path()
-    return find_package_json()
+    return find_package_json({ root = project.current_root("npm") })
 end
 
 --- Get all dependencies from package.json
+---@param opts? { root?: string }  project root (defaults per core.project.search_root)
 ---@return table<string, any>
-function M.get_dependencies()
+function M.get_dependencies(opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         debug("No npm manifest data", vim.log.levels.ERROR)
         return {}
     end
 
-    local path = find_package_json()
+    local path = find_package_json(opts)
     if not path then
         debug("No package.json found", vim.log.levels.WARN)
         return {}

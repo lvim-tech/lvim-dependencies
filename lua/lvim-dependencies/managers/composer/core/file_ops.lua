@@ -6,29 +6,20 @@
 ---@module "lvim-dependencies.managers.composer.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
 ---@class ComposerFileOps
 local M = {}
 
+--- composer.json searched upward from `bufnr`'s directory, else from the current manifest's
+--- project (core.project.current_root — config root_dir, the current buffer when it is a
+--- composer.json, else cwd).
 ---@param bufnr? integer
 ---@return string|nil
 function M.find_composer_json_path(bufnr)
-    local start_path
-
-    local root_dir = config.composer and config.composer.file_ops and config.composer.file_ops.root_dir
-    if root_dir then
-        start_path = vim.fn.expand(root_dir)
-    elseif bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-        local buf_path = vim.api.nvim_buf_get_name(bufnr)
-        if buf_path ~= "" then
-            start_path = vim.fn.fnamemodify(buf_path, ":h")
-        end
-    else
-        start_path = vim.fn.getcwd()
-    end
+    local start_path = project.buffer_root(bufnr) or project.current_root("composer")
 
     local found = vim.fs.find("composer.json", {
         upward = true,

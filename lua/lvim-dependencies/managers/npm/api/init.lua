@@ -57,13 +57,18 @@ local function refresh_buffer_state(bufnr)
     end)
 end
 
---- Detect which package manager to use for this project
+--- Detect which package manager to use for this project (lock file next to the manifest —
+--- for a workspace package that is the workspace root, found by the upward search).
+---@param manifest_path string  the package.json being acted on
 ---@return string executable, string type
-local function detect_package_manager()
-    local cwd = vim.fn.getcwd()
+local function detect_package_manager(manifest_path)
+    local function has_lock(name)
+        local found = vim.fs.find(name, { upward = true, path = vim.fs.dirname(manifest_path), type = "file" })
+        return found and found[1] ~= nil
+    end
 
     -- pnpm-lock.yaml → pnpm
-    if vim.fn.filereadable(cwd .. "/pnpm-lock.yaml") == 1 then
+    if has_lock("pnpm-lock.yaml") then
         local pnpm = vim.fn.exepath("pnpm")
         if pnpm ~= "" then
             return pnpm, "pnpm"
@@ -71,7 +76,7 @@ local function detect_package_manager()
     end
 
     -- yarn.lock → yarn
-    if vim.fn.filereadable(cwd .. "/yarn.lock") == 1 then
+    if has_lock("yarn.lock") then
         local yarn = vim.fn.exepath("yarn")
         if yarn ~= "" then
             return yarn, "yarn"
@@ -308,14 +313,14 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    local exe, pm_type = detect_package_manager()
+    local exe, pm_type = detect_package_manager(path)
     if not exe or exe == "" then
         callback({ success = false, message = "no package manager found", packages = {} })
         return
     end
 
     -- Determine section for this package
-    local all_deps = parser.get_dependencies()
+    local all_deps = parser.get_dependencies({ root = vim.fs.dirname(path) })
     local pkg_raw = all_deps[name]
     local section = type(pkg_raw) == "table" and pkg_raw.section or "dependencies"
 
@@ -394,7 +399,7 @@ function M.delete(name, opts, callback)
                 return
             end
 
-            local exe, pm_type = detect_package_manager()
+            local exe, pm_type = detect_package_manager(path)
             local cmd = build_remove_cmd(exe, pm_type, name)
             local cwd = vim.fn.fnamemodify(path, ":h")
             local bufnr = vim.fn.bufnr(path)

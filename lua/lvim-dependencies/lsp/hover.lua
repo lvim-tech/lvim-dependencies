@@ -101,6 +101,9 @@ function M.handle(params, bufnr)
         return nil
     end
 
+    -- The declared cache holds one project per manager; make sure it is THIS buffer's before
+    -- reading it (a no-op when it already is, a re-parse when another workspace member loaded last).
+    require("lvim-dependencies.core.hub.declared").get_data(manifest_type, { bufnr = bufnr })
     local deps = utils_lsp.parse_dependencies(manifest_type, cache)
     if not deps or vim.tbl_isempty(deps) then
         debug("No dependencies", vim.log.levels.DEBUG)

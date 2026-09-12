@@ -7,7 +7,7 @@
 local toml = require("lvim-dependencies.libs.toml")
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -44,14 +44,15 @@ local function read_file(filename)
     return content
 end
 
---- Return the content + path of the first existing file among the given patterns,
---- searched relative to the configured root_dir (or cwd).
+--- Return the content + path of the first existing file among the given patterns, searched
+--- upward from the project root (the manifest buffer's own directory — a workspace member
+--- must read ITS Cargo.toml, not the workspace root's).
 ---@param patterns string[]
+---@param opts? { root?: string }
 ---@return string|nil content
 ---@return string|nil path
-local function find_first_existing_file(patterns)
-    local root_dir = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir
-    local search_path = root_dir and vim.fn.expand(root_dir) or "."
+local function find_first_existing_file(patterns, opts)
+    local search_path = project.search_root("cargo", opts)
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = search_path, type = "file" })
         local full_path = found and found[1]
@@ -121,8 +122,9 @@ function M.clear_cache()
 end
 
 --- Get all dependencies from Cargo.toml
+---@param opts? { root?: string }  project root (defaults per core.project.search_root)
 ---@return table<string, any>
-function M.get_dependencies()
+function M.get_dependencies(opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         debug("No manifest data, returning empty dependencies", vim.log.levels.ERROR)
@@ -130,7 +132,7 @@ function M.get_dependencies()
     end
 
     local patterns = manifest_data.file_patterns or { "Cargo.toml" }
-    local content, found_path = find_first_existing_file(patterns)
+    local content, found_path = find_first_existing_file(patterns, opts)
 
     if not content then
         debug("No Cargo.toml file found", vim.log.levels.WARN)

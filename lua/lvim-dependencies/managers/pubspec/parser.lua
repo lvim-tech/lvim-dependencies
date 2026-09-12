@@ -11,7 +11,7 @@
 local tinyyaml = require("lvim-dependencies.libs.tinyyaml")
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -49,12 +49,13 @@ local function read_file(filename)
     return content
 end
 
---- Find first existing pubspec file
+--- Find first existing pubspec file, searching upward from the project root (the manifest
+--- buffer's own directory — a workspace member must read ITS pubspec, not the cwd's).
 ---@param patterns string[]
+---@param opts? { root?: string }
 ---@return string|nil content, string|nil path
-local function find_first_existing_file(patterns)
-    local root_dir = config.pubspec and config.pubspec.file_ops and config.pubspec.file_ops.root_dir
-    local search_path = root_dir and vim.fn.expand(root_dir) or "."
+local function find_first_existing_file(patterns, opts)
+    local search_path = project.search_root("pubspec", opts)
 
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = search_path, type = "file" })
@@ -115,8 +116,9 @@ function M.clear_cache()
 end
 
 --- Get all dependencies from pubspec.yaml
+---@param opts? { root?: string }  project root (defaults per core.project.search_root)
 ---@return table<string, any>
-function M.get_dependencies()
+function M.get_dependencies(opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         debug("No manifest data, returning empty dependencies", vim.log.levels.ERROR)
@@ -124,7 +126,7 @@ function M.get_dependencies()
     end
 
     local patterns = manifest_data.file_patterns or { "pubspec.yaml", "pubspec.yml" }
-    local content, found_path = find_first_existing_file(patterns)
+    local content, found_path = find_first_existing_file(patterns, opts)
 
     if not content then
         debug("No pubspec.yaml file found", vim.log.levels.WARN)

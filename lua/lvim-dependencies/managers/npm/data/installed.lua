@@ -7,6 +7,7 @@
 ---@module "lvim-dependencies.managers.npm.data.installed"
 
 local utils = require("lvim-dependencies.utils")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -17,13 +18,14 @@ local M = {}
 -- Lock file readers
 -- ============================================================================
 
---- Search upward from cwd for a lock file by name.
+--- Search upward from the project root (core.project) for a lock file by name.
 ---@param lock_file string
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_lock_file(lock_file)
+local function find_lock_file(lock_file, opts)
     local found = vim.fs.find(lock_file, {
         upward = true,
-        path = vim.fn.getcwd(),
+        path = project.search_root("npm", opts),
         type = "file",
     })
     return found and found[1] or nil
@@ -55,9 +57,10 @@ local lock_cache = {}
 
 --- Load a lock file, cached by path + mtime + size so it is read at most once per change.
 ---@param lock_file string
+---@param opts? { root?: string, bufnr?: integer }
 ---@return NpmLockCacheEntry|nil
-local function load_lock(lock_file)
-    local path = find_lock_file(lock_file)
+local function load_lock(lock_file, opts)
+    local path = find_lock_file(lock_file, opts)
     if not path then
         return nil
     end
@@ -88,9 +91,10 @@ end
 
 --- Read installed version from package-lock.json (npm)
 ---@param pkg_name string
+---@param opts? { root?: string }
 ---@return string|nil
-local function read_from_npm_lock(pkg_name)
-    local entry = load_lock("package-lock.json")
+local function read_from_npm_lock(pkg_name, opts)
+    local entry = load_lock("package-lock.json", opts)
     if not entry then
         return nil
     end
@@ -123,9 +127,10 @@ end
 --- Read installed version from yarn.lock (yarn classic v1)
 --- Format: "pkg@^1.0.0":\n  version "1.2.3"
 ---@param pkg_name string
+---@param opts? { root?: string }
 ---@return string|nil
-local function read_from_yarn_lock(pkg_name)
-    local entry = load_lock("yarn.lock")
+local function read_from_yarn_lock(pkg_name, opts)
+    local entry = load_lock("yarn.lock", opts)
     local content = entry and entry.content
     if not content then
         return nil
@@ -165,9 +170,10 @@ end
 ---   v5 (pnpm 6-):  packages section "/pkg/1.2.3:"
 ---
 ---@param pkg_name string
+---@param opts? { root?: string }
 ---@return string|nil
-local function read_from_pnpm_lock(pkg_name)
-    local entry = load_lock("pnpm-lock.yaml")
+local function read_from_pnpm_lock(pkg_name, opts)
+    local entry = load_lock("pnpm-lock.yaml", opts)
     local content = entry and entry.content
     if not content then
         return nil
@@ -256,14 +262,15 @@ end
 -- ============================================================================
 
 --- Determine lock file priority based on which package manager is active.
---- Mirrors the detect_package_manager() logic: pnpm > yarn > npm.
+--- Mirrors the detect_package_manager() logic: pnpm > yarn > npm. The lock is searched
+--- upward from the project root (a workspace package's lock sits at the workspace root).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string[]
-local function detect_lock_file_order()
-    local cwd = vim.fn.getcwd()
-    if vim.fn.filereadable(cwd .. "/pnpm-lock.yaml") == 1 then
+local function detect_lock_file_order(opts)
+    if find_lock_file("pnpm-lock.yaml", opts) then
         return { "pnpm-lock.yaml", "yarn.lock", "package-lock.json" }
     end
-    if vim.fn.filereadable(cwd .. "/yarn.lock") == 1 then
+    if find_lock_file("yarn.lock", opts) then
         return { "yarn.lock", "package-lock.json", "pnpm-lock.yaml" }
     end
     return { "package-lock.json", "yarn.lock", "pnpm-lock.yaml" }
@@ -273,8 +280,9 @@ end
 --- Tries lock files in priority order matching the active package manager.
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
-function M.get_package_installed(package_name, callback)
-    local lock_files = detect_lock_file_order()
+---@param opts? { root?: string }  project root the lock is looked up from
+function M.get_package_installed(package_name, callback, opts)
+    local lock_files = detect_lock_file_order(opts)
 
     local readers = {
         ["package-lock.json"] = read_from_npm_lock,
@@ -285,7 +293,7 @@ function M.get_package_installed(package_name, callback)
     for _, lock_file in ipairs(lock_files) do
         local reader = readers[lock_file]
         if reader then
-            local version = reader(package_name)
+            local version = reader(package_name, opts)
             if version then
                 debug(
                     string.format("npm installed: %s = %s (from %s)", package_name, version, lock_file),
@@ -303,12 +311,13 @@ end
 
 --- Bulk installed lookup
 ---@param declared_packages? table
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table<string, string|nil>
-function M.get_data(declared_packages)
+function M.get_data(declared_packages, opts)
     if not declared_packages then
         return {}
     end
-    local readers_ordered = detect_lock_file_order()
+    local readers_ordered = detect_lock_file_order(opts)
     local readers = {
         ["package-lock.json"] = read_from_npm_lock,
         ["yarn.lock"] = read_from_yarn_lock,
@@ -317,7 +326,7 @@ function M.get_data(declared_packages)
     local result = {}
     for name in pairs(declared_packages) do
         for _, lock_file in ipairs(readers_ordered) do
-            local version = readers[lock_file](name)
+            local version = readers[lock_file](name, opts)
             if version then
                 result[name] = version
                 break

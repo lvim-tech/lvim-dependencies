@@ -7,7 +7,7 @@
 ---@module "lvim-dependencies.managers.go.parser"
 
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -24,13 +24,12 @@ local cached_result = nil
 -- Helpers
 -- ============================================================================
 
---- Locate the nearest go.mod by walking upward from the configured root (or cwd).
+--- Locate the nearest go.mod by walking upward from the project root (the manifest buffer's
+--- own directory — a module in a multi-module repo must read ITS go.mod, not the cwd's).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_go_mod()
-    local root_dir = config.go and config.go.file_ops and config.go.file_ops.root_dir
-    local search = root_dir and vim.fn.expand(root_dir) or vim.fn.getcwd()
-
-    local found = vim.fs.find("go.mod", { upward = true, path = search, type = "file" })
+local function find_go_mod(opts)
+    local found = vim.fs.find("go.mod", { upward = true, path = project.search_root("go", opts), type = "file" })
     return found and found[1] or nil
 end
 
@@ -114,15 +113,17 @@ function M.clear_cache()
     debug("go parser cache cleared", vim.log.levels.INFO)
 end
 
+--- go.mod of the CURRENT manifest's project (the buffer being edited, else cwd).
 ---@return string|nil
 function M.find_go_mod_path()
-    return find_go_mod()
+    return find_go_mod({ root = project.current_root("go") })
 end
 
 --- Get all dependencies from go.mod
+---@param opts? { root?: string }  project root (defaults per core.project.search_root)
 ---@return table<string, any>
-function M.get_dependencies()
-    local path = find_go_mod()
+function M.get_dependencies(opts)
+    local path = find_go_mod(opts)
     if not path then
         debug("No go.mod found", vim.log.levels.WARN)
         return {}

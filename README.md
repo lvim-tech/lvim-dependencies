@@ -76,6 +76,8 @@ require("lvim-dependencies").setup({})
 
 1. Open any manifest file (`package.json`, `Cargo.toml`, `go.mod`, `composer.json`, `pubspec.yaml`)
 2. Virtual text appears automatically next to each dependency showing its full version status
+   (the manifest and lock are read from the buffer's own directory upward, so every package of a
+   workspace / monorepo gets its own versions, whatever the cwd)
 3. Place the cursor on a dependency and run `:LvimDeps update` to open the version picker
 4. Run `:LvimDeps install` to add a new package
 5. Run `:LvimDeps delete` to remove the package under the cursor

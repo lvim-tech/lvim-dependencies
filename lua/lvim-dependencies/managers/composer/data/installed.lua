@@ -10,18 +10,20 @@
 local utils = require("lvim-dependencies.utils")
 local manifest = require("lvim-dependencies.managers.composer.manifest")
 local parser = require("lvim-dependencies.managers.composer.parser")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
 ---@class ComposerInstalled
 local M = {}
 
---- Find composer.lock path relative to composer.json
+--- Find composer.lock, searching upward from the project root (core.project).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_lock_file()
+local function find_lock_file(opts)
     local found = vim.fs.find("composer.lock", {
         upward = true,
-        path = vim.fn.getcwd(),
+        path = project.search_root("composer", opts),
         type = "file",
     })
     return found and found[1] or nil
@@ -34,9 +36,10 @@ end
 local lock_cache = {}
 
 --- Read and parse composer.lock (cached by path + mtime + size).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table|nil
-local function read_lock()
-    local path = find_lock_file()
+local function read_lock(opts)
+    local path = find_lock_file(opts)
     if not path then
         return nil
     end
@@ -95,18 +98,19 @@ end
 --- Get installed version for a single package
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
-function M.get_package_installed(package_name, callback)
+---@param opts? { root?: string }  project root the lock is looked up from
+function M.get_package_installed(package_name, callback, opts)
     -- Platform packages are not tracked in composer.lock
     -- Return their constraint from composer.json as the "installed" value
     if is_platform_package(package_name) then
-        local all = parser.get_dependencies()
+        local all = parser.get_dependencies(opts)
         local pkg = all[package_name]
         local constraint = pkg and pkg.version or nil
         callback(nil, constraint)
         return
     end
 
-    local data = read_lock()
+    local data = read_lock(opts)
     if not data then
         callback(nil, nil)
         return
@@ -128,13 +132,14 @@ end
 
 --- Bulk installed lookup
 ---@param declared_packages? table
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table<string, string|nil>
-function M.get_data(declared_packages)
+function M.get_data(declared_packages, opts)
     if not declared_packages then
         return {}
     end
 
-    local data = read_lock()
+    local data = read_lock(opts)
     if not data then
         return {}
     end

@@ -8,7 +8,7 @@
 local utils = require("lvim-dependencies.utils")
 local toml = require("lvim-dependencies.libs.toml")
 local init = require("lvim-dependencies.core.init")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -27,25 +27,14 @@ local function get_manifest()
     return m
 end
 
---- Find lock file by searching upward
+--- Find lock file by searching upward from the project root (core.project: config root_dir,
+--- else the manifest buffer's directory, else cwd). Cargo.lock sits at the WORKSPACE root, so
+--- the upward search from a member finds it either way.
 ---@param lock_file string
----@param bufnr? integer
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_lock_file(lock_file, bufnr)
-    local start_path
-
-    local root_dir = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir
-    if root_dir then
-        start_path = vim.fn.expand(root_dir)
-    elseif bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-        local buf_path = vim.api.nvim_buf_get_name(bufnr)
-        if buf_path ~= "" then
-            start_path = vim.fn.fnamemodify(buf_path, ":h")
-        end
-    else
-        start_path = vim.fn.getcwd()
-    end
-
+local function find_lock_file(lock_file, opts)
+    local start_path = project.search_root("cargo", opts)
     local found = vim.fs.find(lock_file, { upward = true, path = start_path, type = "file" })
     return found and found[1] or nil
 end
@@ -58,10 +47,10 @@ local lock_cache = {}
 
 --- Read and parse a lock file (cached by path + mtime + size).
 ---@param lock_file string
----@param bufnr? integer
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table|nil
-local function read_and_parse_lock(lock_file, bufnr)
-    local lock_path = find_lock_file(lock_file, bufnr)
+local function read_and_parse_lock(lock_file, opts)
+    local lock_path = find_lock_file(lock_file, opts)
     if not lock_path then
         return nil
     end
@@ -115,13 +104,13 @@ end
 
 --- Load all lock file data
 ---@param manifest_data CargoManifest
----@param bufnr integer
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table<string, table>
-local function load_all_lock_data(manifest_data, bufnr)
+local function load_all_lock_data(manifest_data, opts)
     local lock_files = manifest_data.lock_files or { "Cargo.lock" }
     local result = {}
     for _, lock_file in ipairs(lock_files) do
-        local data = read_and_parse_lock(lock_file, bufnr)
+        local data = read_and_parse_lock(lock_file, opts)
         if data and data.package then
             result[lock_file] = data
             debug(
@@ -141,19 +130,19 @@ end
 --- hub/installed.lua owns the version cache — this just reads lock files.
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
-function M.get_package_installed(package_name, callback)
+---@param opts? { root?: string }  project root the lock is looked up from
+function M.get_package_installed(package_name, callback, opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         callback("No manifest data for cargo", nil)
         return
     end
 
-    local bufnr = vim.api.nvim_get_current_buf()
     local version = nil
     local lock_files = manifest_data.lock_files or { "Cargo.lock" }
 
     for _, lock_file in ipairs(lock_files) do
-        local data = read_and_parse_lock(lock_file, bufnr)
+        local data = read_and_parse_lock(lock_file, opts)
         if data then
             version = find_package_in_lock(data, package_name)
             if version then
@@ -173,8 +162,9 @@ end
 
 --- Get all installed data for declared packages (bulk lookup).
 ---@param declared_packages? table
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table<string, string|nil>
-function M.get_data(declared_packages)
+function M.get_data(declared_packages, opts)
     if not declared_packages then
         return {}
     end
@@ -185,8 +175,7 @@ function M.get_data(declared_packages)
         return {}
     end
 
-    local bufnr = vim.api.nvim_get_current_buf()
-    local lock_data = load_all_lock_data(manifest_data, bufnr)
+    local lock_data = load_all_lock_data(manifest_data, opts or { bufnr = vim.api.nvim_get_current_buf() })
     local result = {}
 
     for package_name in pairs(declared_packages) do

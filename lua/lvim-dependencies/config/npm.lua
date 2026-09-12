@@ -36,7 +36,7 @@ return {
     },
     --- File operation settings
     file_ops = {
-        --- Root directory to start searching for package.json (nil = use current working directory)
+        --- Root directory to start searching for package.json (nil = the manifest buffer\'s own directory, else cwd)
         --- Example: "~/projects/myapp"
         root_dir = nil,
     },

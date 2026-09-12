@@ -11,6 +11,7 @@ local utils = require("lvim-dependencies.utils")
 local const = require("lvim-dependencies.core.const")
 local metrics = require("lvim-dependencies.core.metrics")
 local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 local now = os.time
@@ -79,12 +80,23 @@ end
 -- Public API
 -- ============================================================================
 
---- Get the installed version of a package (cache-first, TTL'd on miss).
+--- Get the installed version of a package (cache-first, TTL'd on miss). The cache holds ONE
+--- project per manager: a lookup for a different root (another workspace member) drops the
+--- previous project's entries first, so a lock file is never answered from another project.
 ---@param manager_type string
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
-function M.get_package_installed(manager_type, package_name, callback)
+---@param opts? { root?: string, bufnr?: integer }
+function M.get_package_installed(manager_type, package_name, callback, opts)
     local entry = cache.ensure(manager_type, CACHE_TYPE_INSTALLED)
+    local root = project.search_root(manager_type, opts)
+    if entry.root ~= nil and entry.root ~= root then
+        debug(string.format("Installed data for %s belongs to %s, resetting for %s", manager_type, entry.root, root), vim.log.levels.INFO)
+        entry[const.CACHE_FIELDS.DATA] = {}
+        entry[const.CACHE_FIELDS.EXPIRY] = {}
+        entry[const.CACHE_FIELDS.METADATA] = {}
+    end
+    entry.root = root
     local cached = entry[const.CACHE_FIELDS.DATA][package_name]
 
     if cached ~= nil and not is_expired(entry, package_name) then
@@ -166,7 +178,7 @@ function M.get_package_installed(manager_type, package_name, callback)
         end
 
         callback(nil, version_str)
-    end)
+    end, { root = root })
 end
 
 --- All cached installed versions for a manager (name → version string).

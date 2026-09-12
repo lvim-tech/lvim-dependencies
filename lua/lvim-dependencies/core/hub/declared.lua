@@ -10,6 +10,7 @@ local cache = require("lvim-dependencies.core.cache")
 local utils = require("lvim-dependencies.utils")
 local const = require("lvim-dependencies.core.const")
 local metrics = require("lvim-dependencies.core.metrics")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 local deepcopy = vim.deepcopy
@@ -58,8 +59,9 @@ end
 --- Load fresh declared data from the loader module into the cache entry
 ---@param manager_type string
 ---@param entry table
+---@param root string  directory the manifest search starts from
 ---@return table<string, any>
-local function load_fresh_data(manager_type, entry)
+local function load_fresh_data(manager_type, entry, root)
     local loader = load_declared_module(manager_type)
     if not loader or not loader.get_data then
         debug(string.format("No valid declared module for %s", manager_type), vim.log.levels.ERROR)
@@ -68,7 +70,7 @@ local function load_fresh_data(manager_type, entry)
 
     local load_token = metrics.start_measure("declared:load:" .. manager_type)
 
-    local ok, data = pcall(loader.get_data)
+    local ok, data = pcall(loader.get_data, { root = root })
 
     if not ok then
         metrics.end_measure(load_token)
@@ -89,6 +91,10 @@ local function load_fresh_data(manager_type, entry)
     if data then
         entry[const.CACHE_FIELDS.DATA] = data
     end
+    -- Remember which project the entry describes and that a load happened at all: the fast
+    -- path used to test `next(data) ~= nil`, so an empty manifest was re-parsed on every call.
+    entry.root = root
+    entry.loaded = true
 
     local count = tbl_count(entry[const.CACHE_FIELDS.DATA])
     debug(string.format("Loaded %d declared packages for %s", count, manager_type), vim.log.levels.INFO)
@@ -100,16 +106,20 @@ end
 -- ============================================================================
 
 --- Get declared packages data for a manager.
---- Returns cached data if available, otherwise loads from the declared module.
+--- Returns cached data if available, otherwise loads from the declared module. The cache
+--- holds ONE project per manager: a request for a different root (another workspace member's
+--- manifest) re-reads, so the entry always describes the manifest the caller is looking at.
 ---@param manager_type string
----@param opts? { force_refresh?: boolean }
+---@param opts? { force_refresh?: boolean, root?: string, bufnr?: integer }
 ---@return table<string, any>
 function M.get_data(manager_type, opts)
     opts = opts or {}
     local entry = cache.ensure(manager_type, CACHE_TYPE_DECLARED)
+    local root = project.search_root(manager_type, opts)
+    local same_project = entry.root == nil or entry.root == root
 
     -- Fast path: use cached data
-    if not opts.force_refresh and next(entry[const.CACHE_FIELDS.DATA]) ~= nil then
+    if not opts.force_refresh and entry.loaded and same_project then
         local count = tbl_count(entry[const.CACHE_FIELDS.DATA])
         debug(
             string.format("Using cached declared data for %s (%d packages)", manager_type, count),
@@ -128,11 +138,14 @@ function M.get_data(manager_type, opts)
     if opts.force_refresh then
         entry[const.CACHE_FIELDS.DATA] = {}
         debug(string.format("Force refreshing declared data for %s", manager_type), vim.log.levels.INFO)
+    elseif not same_project then
+        entry[const.CACHE_FIELDS.DATA] = {}
+        debug(string.format("Declared data for %s belongs to %s, reloading for %s", manager_type, entry.root, root), vim.log.levels.INFO)
     else
         debug(string.format("Loading declared data for %s", manager_type), vim.log.levels.INFO)
     end
 
-    load_fresh_data(manager_type, entry)
+    load_fresh_data(manager_type, entry, root)
     return deepcopy(entry[const.CACHE_FIELDS.DATA])
 end
 
@@ -155,11 +168,20 @@ function M.clear_cache(manager_type, package_name)
     cache.clear(manager_type, CACHE_TYPE_DECLARED, package_name)
 end
 
---- Force refresh declared data (synchronous).
+--- Force refresh declared data (synchronous). Without `opts` the project last loaded for this
+--- manager is re-read (the one an install / update just rewrote).
 ---@param manager_type string
+---@param opts? { root?: string, bufnr?: integer }
 ---@return table<string, any>
-function M.refresh_data(manager_type)
-    return M.get_data(manager_type, { force_refresh = true })
+function M.refresh_data(manager_type, opts)
+    local entry = cache.ensure(manager_type, CACHE_TYPE_DECLARED)
+    local o = { force_refresh = true }
+    if opts then
+        o.root, o.bufnr = opts.root, opts.bufnr
+    elseif entry.root then
+        o.root = entry.root
+    end
+    return M.get_data(manager_type, o)
 end
 
 return M

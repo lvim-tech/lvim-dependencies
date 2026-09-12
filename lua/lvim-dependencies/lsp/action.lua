@@ -53,6 +53,8 @@ local function find_package(bufnr, manifest_type, cursor_line)
         end
     end
 
+    -- One project per manager in the declared cache: point it at THIS buffer's manifest first.
+    require("lvim-dependencies.core.hub.declared").get_data(manifest_type, { bufnr = bufnr })
     local deps = utils_lsp.parse_dependencies(manifest_type, cache)
 
     local vt = init.get_virtual_text and init.get_virtual_text(manifest_type)

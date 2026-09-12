@@ -9,6 +9,7 @@ local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
 local file_ops = require("lvim-dependencies.managers.composer.core.file_ops")
 local json_ops = require("lvim-dependencies.managers.composer.core.json_ops")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -62,7 +63,7 @@ end
 function M.read_current_from_lock(pkg_name)
     local lock_path = vim.fs.find("composer.lock", {
         upward = true,
-        path = vim.fn.getcwd(),
+        path = project.current_root("composer"),
         type = "file",
     })
     if not lock_path or not lock_path[1] then

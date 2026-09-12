@@ -7,7 +7,7 @@
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 local api = vim.api
@@ -22,12 +22,13 @@ local function get_file_patterns()
     return (manifest and manifest.file_patterns) or { "Cargo.toml" }
 end
 
---- Find Cargo.toml path by searching upward
+--- Find Cargo.toml path by searching upward from the current manifest's project
+--- (core.project.current_root: config root_dir, else the current buffer's directory when it
+--- is a Cargo.toml, else cwd) — an action in a workspace member edits THAT member's file.
 ---@return string|nil
 function M.find_cargo_toml_path()
     local patterns = get_file_patterns()
-    local cwd = config.cargo and config.cargo.file_ops and config.cargo.file_ops.root_dir or vim.fn.getcwd()
-    cwd = vim.fn.expand(cwd)
+    local cwd = project.current_root("cargo")
 
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = cwd, type = "file" })

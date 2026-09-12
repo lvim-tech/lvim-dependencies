@@ -63,10 +63,11 @@ end
 --- Delegates to hub/declared which already handles caching — no local cache needed.
 ---@param manifest_type string
 ---@param package_name string
+---@param root string|nil  directory of the manifest being loaded (nil = cwd fallback)
 ---@return table|nil
-local function load_declared(manifest_type, package_name)
+local function load_declared(manifest_type, package_name, root)
     -- hub_declared.get_data already caches the entire manifest; just read from it.
-    local all_declared = hub_declared.get_data(manifest_type)
+    local all_declared = hub_declared.get_data(manifest_type, { root = root })
     return all_declared and all_declared[package_name] or nil
 end
 
@@ -85,10 +86,10 @@ function M.load_package_data_async(manifest_type, package_name, callback, opts)
     local load_token = metrics.start_measure("package:load:" .. manifest_type .. ":" .. package_name)
 
     async.run(function()
-        local declared = load_declared(manifest_type, package_name)
+        local declared = load_declared(manifest_type, package_name, opts.root)
 
         local installed_task = function(cb)
-            hub_installed.get_package_installed(manifest_type, package_name, cb)
+            hub_installed.get_package_installed(manifest_type, package_name, cb, { root = opts.root })
         end
 
         local latest_task = function(cb)

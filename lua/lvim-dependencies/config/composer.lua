@@ -23,7 +23,7 @@ return {
     },
     --- File operation settings
     file_ops = {
-        --- Root directory to start searching for composer.json (nil = use cwd)
+        --- Root directory to start searching for composer.json (nil = the manifest buffer\'s own directory, else cwd)
         root_dir = nil,
     },
     --- Version comparison settings

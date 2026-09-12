@@ -13,7 +13,7 @@
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 local api = vim.api
 
 local debug = utils.debug
@@ -28,13 +28,13 @@ local function get_file_patterns()
     return (manifest and manifest.file_patterns) or { "pubspec.yaml", "pubspec.yml" }
 end
 
---- Find pubspec.yaml path by searching upward
+--- Find pubspec.yaml path by searching upward from the current manifest's project
+--- (core.project.current_root: config root_dir, else the current buffer's directory when it
+--- is a pubspec file, else cwd) — an action in a workspace member edits THAT member's file.
 ---@return string|nil
 function M.find_pubspec_path()
     local patterns = get_file_patterns()
-    -- Use root_dir from config if provided, otherwise fall back to cwd
-    local cwd = config.pubspec.file_ops.root_dir or vim.fn.getcwd()
-    cwd = vim.fn.expand(cwd)
+    local cwd = project.current_root("pubspec")
 
     for _, pattern in ipairs(patterns) do
         local found = vim.fs.find(pattern, { upward = true, path = cwd, type = "file" })

@@ -20,7 +20,7 @@ return {
     },
     --- File operation settings
     file_ops = {
-        --- Root directory to start searching for go.mod (nil = use current working directory)
+        --- Root directory to start searching for go.mod (nil = the manifest buffer\'s own directory, else cwd)
         root_dir = nil,
     },
     --- Version comparison settings

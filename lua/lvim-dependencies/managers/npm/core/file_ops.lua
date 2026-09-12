@@ -7,7 +7,7 @@
 ---@module "lvim-dependencies.managers.npm.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -18,23 +18,13 @@ local M = {}
 -- Path resolution
 -- ============================================================================
 
---- Find package.json by searching upward from cwd or configured root
+--- Find package.json by searching upward from `bufnr`'s directory, else from the current
+--- manifest's project (core.project.current_root — config root_dir, the current buffer when it
+--- is a package.json, else cwd).
 ---@param bufnr? integer
 ---@return string|nil
 function M.find_package_json_path(bufnr)
-    local start_path
-
-    local root_dir = config.npm and config.npm.file_ops and config.npm.file_ops.root_dir
-    if root_dir then
-        start_path = vim.fn.expand(root_dir)
-    elseif bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-        local buf_path = vim.api.nvim_buf_get_name(bufnr)
-        if buf_path ~= "" then
-            start_path = vim.fn.fnamemodify(buf_path, ":h")
-        end
-    else
-        start_path = vim.fn.getcwd()
-    end
+    local start_path = project.buffer_root(bufnr) or project.current_root("npm")
 
     local found = vim.fs.find("package.json", {
         upward = true,

@@ -6,7 +6,7 @@
 ---@module "lvim-dependencies.managers.go.core.file_ops"
 
 local utils = require("lvim-dependencies.utils")
-local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 local api = vim.api
@@ -18,10 +18,11 @@ local M = {}
 -- Path resolution
 -- ============================================================================
 
+--- go.mod of the current manifest's project (core.project.current_root: config root_dir,
+--- else the current buffer's directory when it is a go.mod, else cwd).
 ---@return string|nil
 function M.find_go_mod_path()
-    local root_dir = config.go and config.go.file_ops and config.go.file_ops.root_dir
-    local search = root_dir and vim.fn.expand(root_dir) or vim.fn.getcwd()
+    local search = project.current_root("go")
 
     local found = vim.fs.find("go.mod", { upward = true, path = search, type = "file" })
     return found and found[1] or nil

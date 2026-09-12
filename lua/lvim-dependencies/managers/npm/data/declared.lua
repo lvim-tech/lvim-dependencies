@@ -54,15 +54,16 @@ end
 -- Public API
 -- ============================================================================
 
+---@param opts? { root?: string }
 ---@return table<string, table>
-function M.get_data()
+function M.get_data(opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         debug("No npm manifest data", vim.log.levels.ERROR)
         return {}
     end
 
-    local raw_deps = parser.get_dependencies() or {}
+    local raw_deps = parser.get_dependencies(opts) or {}
     local dep_types = manifest_data.dependency_types or {}
     local result = {}
 

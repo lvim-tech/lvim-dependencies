@@ -34,9 +34,10 @@ function M.get_package_declared(package_name, callback)
     callback(nil, data)
 end
 
+---@param opts? { root?: string }
 ---@return table<string, table>
-function M.get_data()
-    local all = parser.get_dependencies()
+function M.get_data(opts)
+    local all = parser.get_dependencies(opts)
     local result = {}
     for name, raw in pairs(all) do
         result[name] = {

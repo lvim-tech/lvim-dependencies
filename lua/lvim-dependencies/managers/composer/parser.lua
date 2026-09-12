@@ -9,6 +9,7 @@
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")
 local init = require("lvim-dependencies.core.init")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -46,23 +47,26 @@ local function get_manifest()
     return m
 end
 
---- Find composer.json path
+--- Find composer.json path, searching upward from the project root (the manifest buffer's
+--- own directory — a monorepo package must read ITS composer.json, not the root's).
+---@param opts? { root?: string, bufnr?: integer }
 ---@return string|nil
-local function find_composer_json()
+local function find_composer_json(opts)
     local manifest = get_manifest()
     local patterns = (manifest and manifest.file_patterns) or { "composer.json" }
     local found = vim.fs.find(patterns, {
         upward = true,
-        path = vim.fn.getcwd(),
+        path = project.search_root("composer", opts),
         type = "file",
     })
     return found and found[1] or nil
 end
 
 --- Parse all dependencies from composer.json
+---@param opts? { root?: string }  project root (defaults per core.project.search_root)
 ---@return table<string, {version: string, section: string, type: string}>
-function M.get_dependencies()
-    local path = find_composer_json()
+function M.get_dependencies(opts)
+    local path = find_composer_json(opts)
     if not path then
         return {}
     end

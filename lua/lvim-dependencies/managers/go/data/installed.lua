@@ -20,8 +20,9 @@ local M = {}
 
 ---@param package_name string
 ---@param callback fun(err: string|nil, version: string|nil)
-function M.get_package_installed(package_name, callback)
-    local deps = parser.get_dependencies()
+---@param opts? { root?: string }  project root go.mod is looked up from
+function M.get_package_installed(package_name, callback, opts)
+    local deps = parser.get_dependencies(opts)
     local pkg = deps[package_name]
     if pkg and pkg.version then
         debug(string.format("go installed: %s = %s (from go.mod)", package_name, pkg.version), vim.log.levels.INFO)
@@ -34,12 +35,13 @@ function M.get_package_installed(package_name, callback)
 end
 
 ---@param declared_packages? table
+---@param opts? { root?: string }
 ---@return table<string, string|nil>
-function M.get_data(declared_packages)
+function M.get_data(declared_packages, opts)
     if not declared_packages then
         return {}
     end
-    local deps = parser.get_dependencies()
+    local deps = parser.get_dependencies(opts)
     local result = {}
     for name in pairs(declared_packages) do
         local pkg = deps[name]

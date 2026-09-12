@@ -18,6 +18,7 @@ local metrics = require("lvim-dependencies.core.metrics")
 local virtual_text = require("lvim-dependencies.core.virtual_text")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
+local project = require("lvim-dependencies.core.project")
 
 -- Seed random once per session for shuffle()
 math.randomseed(os.time() + math.floor(vim.uv.hrtime() / 1e6))
@@ -147,8 +148,9 @@ end
 ---@param manifest_type string
 ---@param package_name string
 ---@param is_initial boolean
+---@param root string|nil  directory of the manifest buffer the load is for
 ---@return async_task_function
-local function make_package_task(manifest_type, package_name, is_initial)
+local function make_package_task(manifest_type, package_name, is_initial, root)
     return function(cb)
         local key = make_key(manifest_type, package_name)
 
@@ -168,7 +170,7 @@ local function make_package_task(manifest_type, package_name, is_initial)
                 pending_loads[key] = nil
                 pcall(cb, nil, package_data)
                 notify_waiters(key, nil, package_data)
-            end, { initial = is_initial })
+            end, { initial = is_initial, root = root })
         end)
     end
 end
@@ -208,8 +210,12 @@ local function load_manifest_packages(buf, manifest_type, is_initial)
         return
     end
 
+    -- The buffer's own directory is the project: a workspace member's manifest must read ITS
+    -- manifest and lock, not the ones at the cwd.
+    local root = project.buffer_root(buf)
+
     async.run(function()
-        local declared_data = declared.get_data(manifest_type, { force_refresh = true })
+        local declared_data = declared.get_data(manifest_type, { force_refresh = true, root = root })
         local pkg_count = vim.tbl_count(declared_data or {})
         debug(string.format("Found %d packages in %s", pkg_count, manifest_type), vim.log.levels.INFO)
 
@@ -257,7 +263,7 @@ local function load_manifest_packages(buf, manifest_type, is_initial)
                         end
 
                         notify_waiters(key, nil, package_data)
-                    end, { initial = is_initial })
+                    end, { initial = is_initial, root = root })
                 end)
             end
         end
@@ -295,6 +301,7 @@ local function handle_new_packages(buf, new_packages, is_initial)
     if not manifest_type then
         return
     end
+    local root = project.buffer_root(buf)
 
     async.run(function()
         for _, pkg in ipairs(new_packages) do
@@ -305,7 +312,7 @@ local function handle_new_packages(buf, new_packages, is_initial)
         for _, pkg in ipairs(new_packages) do
             local key = make_key(manifest_type, pkg.name)
             if not pending_loads[key] then
-                tasks[#tasks + 1] = make_package_task(manifest_type, pkg.name, is_initial)
+                tasks[#tasks + 1] = make_package_task(manifest_type, pkg.name, is_initial, root)
             else
                 add_waiter(key, function(_, result)
                     if result and utils_buffer.is_valid(buf) then
@@ -340,13 +347,15 @@ local function handle_changed_packages(buf, manifest_type, changed_packages)
         return
     end
 
+    local root = project.buffer_root(buf)
+
     async.run(function()
         local tasks = {}
         local task_packages = {}
         for _, pkg in ipairs(changed_packages) do
             local key = make_key(manifest_type, pkg.name)
             if not pending_loads[key] then
-                tasks[#tasks + 1] = make_package_task(manifest_type, pkg.name, false)
+                tasks[#tasks + 1] = make_package_task(manifest_type, pkg.name, false, root)
                 task_packages[#task_packages + 1] = pkg
             else
                 local new_version = pkg.new_version
@@ -398,7 +407,8 @@ local function find_package_changes(buf, manifest_type)
         return changes
     end
 
-    local fresh_declared = declared.get_data(manifest_type, { force_refresh = true }) or {}
+    local fresh_declared = declared.get_data(manifest_type, { force_refresh = true, root = project.buffer_root(buf) })
+        or {}
     local loaded = M._handlers.get_loaded_packages(buf) or {}
 
     for pkg_name, fresh_info in pairs(fresh_declared) do

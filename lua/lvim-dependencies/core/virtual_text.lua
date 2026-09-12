@@ -680,7 +680,11 @@ function M.show(buf, manifest_type, packages)
         return
     end
 
-    packages = packages or (M.virt_texts[buf] and M.virt_texts[buf].declared) or declared.get_data(manifest_type) or {}
+    local root = require("lvim-dependencies.core.project").buffer_root(buf)
+    packages = packages
+        or (M.virt_texts[buf] and M.virt_texts[buf].declared)
+        or declared.get_data(manifest_type, { root = root })
+        or {}
 
     M.clear_buffer(buf)
     M.display_loading(buf, manifest_type, packages)
@@ -691,7 +695,7 @@ function M.show(buf, manifest_type, packages)
                 if api.nvim_buf_is_valid(buf) then
                     M.update_package(buf, result)
                 end
-            end, { initial = false })
+            end, { initial = false, root = root })
         end)
     end
 

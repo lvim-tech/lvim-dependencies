@@ -25,7 +25,7 @@ return {
     },
     --- File operation settings
     file_ops = {
-        --- Root directory to start searching for pubspec.yaml (nil = use current working directory)
+        --- Root directory to start searching for pubspec.yaml (nil = the manifest buffer\'s own directory, else cwd)
         --- Example: "~/projects"
         root_dir = nil,
         --- Custom file patterns if using non-standard filenames

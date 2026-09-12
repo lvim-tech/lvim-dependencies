@@ -117,15 +117,16 @@ local function process_dependency(name, version, dep_types)
 end
 
 --- Get all declared packages from pubspec.yaml
+---@param opts? { root?: string }
 ---@return table<string, PubspecDeclaredPackage>
-function M.get_data()
+function M.get_data(opts)
     local manifest_data = get_manifest()
     if not manifest_data then
         debug("No manifest data, returning empty dependencies", vim.log.levels.ERROR)
         return {}
     end
 
-    local raw_deps = parser.get_dependencies() or {}
+    local raw_deps = parser.get_dependencies(opts) or {}
     local dep_types = manifest_data.dependency_types or {}
     local result = {}
 

@@ -202,6 +202,7 @@
 
 ---@class PackageLoaderOptions
 ---@field initial? boolean Whether this is an initial load
+---@field root? string Directory of the manifest being loaded (workspace member / sub-package aware)
 
 ---@alias PackageLoaderCallback fun(result: PackageResult)
 
@@ -436,26 +437,26 @@
 -- ============================================================================
 
 ---@class DeclaredModule
----@field get_data fun(): table<string, any>
+---@field get_data fun(opts?: { root?: string }): table<string, any>
 
 ---@class DeclaredHub
----@field get_data fun(manager_type: string, opts?: { force_refresh?: boolean }): table
+---@field get_data fun(manager_type: string, opts?: { force_refresh?: boolean, root?: string, bufnr?: integer }): table
 ---@field clear_cache fun(manager_type?: string, package_name?: string)
----@field refresh_data fun(manager_type: string): table
+---@field refresh_data fun(manager_type: string, opts?: { root?: string, bufnr?: integer }): table
 
 -- ============================================================================
 -- Hub installed types
 -- ============================================================================
 
 ---@class InstalledModule
----@field get_package_installed fun(package_name: string, callback: fun(err: string|nil, version: string|nil))
+---@field get_package_installed fun(package_name: string, callback: fun(err: string|nil, version: string|nil), opts?: { root?: string })
 
 ---@class InstalledPackageInfo
 ---@field version string|nil The installed version
 ---@field metadata? table<string, any> Additional metadata
 
 ---@class InstalledHub
----@field get_package_installed fun(manager_type: string, package_name: string, callback: fun(err: string|nil, version: string|nil))
+---@field get_package_installed fun(manager_type: string, package_name: string, callback: fun(err: string|nil, version: string|nil), opts?: { root?: string, bufnr?: integer })
 ---@field get_data fun(manager_type: string): table<string, string|nil>
 ---@field get_full_data fun(manager_type: string): table<string, InstalledPackageInfo>
 ---@field clear_cache fun(manager_type?: string, package_name?: string)
