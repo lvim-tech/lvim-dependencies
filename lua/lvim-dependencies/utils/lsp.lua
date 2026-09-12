@@ -160,7 +160,10 @@ function M.find_dependency_at_cursor(bufnr, manifest_type, deps, cursor_line, in
     local vt = (init and type(init.get_virtual_text) == "function") and init.get_virtual_text(manifest_type) or nil
     if vt and vt.find_package_line then
         for name, _ in pairs(deps) do
-            local ok, line = pcall(vt.find_package_line, vt, bufnr, name)
+            -- find_package_line(buf, name) is a plain function, not a method: passing `vt` as a
+            -- first argument shifted the buffer into `name`, the call raised inside the pcall and
+            -- this — the most precise — resolution layer silently never fired.
+            local ok, line = pcall(vt.find_package_line, bufnr, name)
             if ok and line == cursor_line then
                 return name, deps[name]
             end
