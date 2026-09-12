@@ -71,6 +71,10 @@ function M.setup(user_config)
 
     metrics.setup()
 
+    -- The periodic sweep of expired installed/latest entries (config.cache.cleanup.interval); it
+    -- existed but nothing ever started it.
+    require("lvim-dependencies.core.cache").start_cleanup_timer()
+
     registry.setup()
 
     state.setup()

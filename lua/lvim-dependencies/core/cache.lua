@@ -367,13 +367,15 @@ function M.get_with_metadata(manager_type, cache_type, package_name)
     end
 
     local mc = ct[manager_type]
-    local expired = mc and is_expired(mc, cache_type, package_name)
-    if not mc or expired then
+    local present = mc ~= nil and mc[const.CACHE_FIELDS.DATA][package_name] ~= nil
+    local expired = present and is_expired(mc, cache_type, package_name)
+    if not present or expired then
         if expired then
             if metrics then
                 metrics.record_cache_expiry(manager_type)
             end
         else
+            -- absent package: a MISS (it used to count as a hit whenever the manager had any entry)
             if metrics then
                 metrics.record_cache_event(manager_type, false)
             end
@@ -436,6 +438,9 @@ function M.cleanup_expired()
                     if now() > expiry then
                         manager_cache[const.CACHE_FIELDS.DATA][pkg] = nil
                         manager_cache[const.CACHE_FIELDS.EXPIRY][pkg] = nil
+                        if manager_cache[const.CACHE_FIELDS.METADATA] then
+                            manager_cache[const.CACHE_FIELDS.METADATA][pkg] = nil
+                        end
                         cleaned = cleaned + 1
                         if metrics then
                             metrics.record_cache_expiry(manager_name)
@@ -483,6 +488,12 @@ function M.start_cleanup_timer()
     end
 
     return cleanup_timer
+end
+
+--- Whether the periodic cleanup timer is running.
+---@return boolean
+function M.is_cleanup_timer_running()
+    return cleanup_timer ~= nil
 end
 
 --- Stop the cleanup timer
