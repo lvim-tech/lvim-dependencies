@@ -61,7 +61,22 @@ function M.is_sdk_package(pkg_name)
         return true
     end
     local cfg = config.pubspec and config.pubspec.sdk_packages
-    return cfg ~= nil and cfg[pkg_name] == true
+    if cfg ~= nil and cfg[pkg_name] == true then
+        return true
+    end
+    -- Anything declared with `sdk: <name>` (flutter_driver, integration_test, a custom SDK
+    -- package…) is an SDK package whatever its name: the declared record already carries that
+    -- type, so no fixed name list has to know it — and pub.dev is never asked about it.
+    local ok, cache = pcall(require, "lvim-dependencies.core.cache")
+    if ok then
+        local declared = cache.get().declared
+        local entry = declared and declared.pubspec
+        local rec = entry and entry.data and entry.data[pkg_name]
+        if type(rec) == "table" and (rec.type == "sdk" or (type(rec.raw) == "table" and rec.raw.sdk ~= nil)) then
+            return true
+        end
+    end
+    return false
 end
 
 --- Is this `key: value` line a FIELD of a dependency's block rather than a package line?
