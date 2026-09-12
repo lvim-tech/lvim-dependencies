@@ -159,15 +159,28 @@ function M.setup()
         desc = "Lvim Dependencies",
         nargs = "*",
         complete = function(arg_lead, cmd_line)
+            -- `cmd_line` is the WHOLE line (":LvimDeps cache de", possibly with a range or modifier in
+            -- front), so the first word is the user command itself, never a subcommand. Count only the
+            -- words AFTER it, and do not count the word still being typed (`arg_lead`): "LvimDeps sh"
+            -- completes the subcommand names, "LvimDeps cache de" completes cache's own arguments.
             local parts = vim.split(cmd_line, "%s+", { trimempty = true })
-
-            if #parts >= 2 then
-                return complete_subcommands(parts[1], arg_lead)
+            local cmd_idx = 1
+            for i, part in ipairs(parts) do
+                if part:find("LvimDeps", 1, true) then
+                    cmd_idx = i
+                    break
+                end
+            end
+            local args = { unpack(parts, cmd_idx + 1) }
+            if arg_lead ~= "" then
+                table.remove(args)
             end
 
-            if #parts == 1 then
-                return filter_by_prefix(get_all_command_names(), arg_lead)
+            if #args >= 1 then
+                return complete_subcommands(args[1], arg_lead)
             end
+
+            return filter_by_prefix(get_all_command_names(), arg_lead)
         end,
     })
 end
