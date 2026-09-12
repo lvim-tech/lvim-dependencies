@@ -110,14 +110,15 @@ local function show_version_selection(package, versions_data, callback)
     )
 end
 
---- Show features selection UI
+--- Show features selection UI: the crate's features as a multi-select with the currently
+--- declared ones pre-checked. A crate without features skips the step.
 ---@param features_data table|nil nil/without `available` means no features to offer
 ---@param current_features string[]
 ---@param callback fun(selected_features: string[], default_features: boolean, optional: boolean)
 local function show_features_selection(features_data, current_features, callback)
-    if not features_data or not features_data.available then
-        -- No features available, proceed without features
-        callback({}, true, false)
+    if not features_data or not features_data.available or next(features_data.available) == nil then
+        -- No features available, proceed with what is declared (nothing for a new install)
+        callback(current_features or {}, true, false)
         return
     end
 
@@ -128,19 +129,29 @@ local function show_features_selection(features_data, current_features, callback
     end
     table.sort(available)
 
-    -- Build checkboxes for features
-    local checkboxes = {}
-    for _, feature in ipairs(available) do
-        table.insert(checkboxes, {
-            text = feature,
-            checked = vim.tbl_contains(current_features or {}, feature),
-        })
+    local initial_selected = {}
+    for _, f in ipairs(current_features or {}) do
+        initial_selected[f] = true
     end
 
-    -- TODO: Implement multi-select UI for features
-    -- For now, just proceed with current features
-    debug(string.format("Features UI not yet implemented, using current features"), vim.log.levels.INFO)
-    callback(current_features or {}, true, false)
+    vim.schedule(function()
+        ui.multiselect("Cargo Features", "Select features", "Space toggles, Enter confirms", available, function(confirmed, selected)
+            if not confirmed then
+                -- Dismissing the picker keeps the current features; the version choice already
+                -- made is not thrown away.
+                callback(current_features or {}, true, false)
+                return
+            end
+            local chosen = {}
+            for feature, enabled in pairs(selected or {}) do
+                if enabled then
+                    chosen[#chosen + 1] = feature
+                end
+            end
+            table.sort(chosen)
+            callback(chosen, true, false)
+        end, { initial_selected = initial_selected })
+    end)
 end
 
 --- Show package name input UI
