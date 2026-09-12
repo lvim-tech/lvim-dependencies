@@ -64,6 +64,7 @@ function M.get_all()
         metrics = M.metrics,
         managers = M.managers,
         groups = M.groups,
+        force = M.force,
         ui = M.ui,
         lsp = M.lsp,
         cache = M.cache,
