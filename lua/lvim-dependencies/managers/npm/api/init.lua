@@ -179,6 +179,38 @@ function M.get_package_at_cursor(opts)
         return nil
     end
 
+    -- Only a key directly inside a dependency section is a package. Without this every JSON key
+    -- (`"name"`, `"scripts"`, `"main"` …) answered as a package and `update` went to the registry
+    -- for it. Walk the lines above, tracking the depth-1 object the cursor line sits in.
+    local sections = {}
+    for _, s in ipairs(config.npm and config.npm.sections and config.npm.sections.order or {}) do
+        sections[s] = true
+    end
+    for _, s in ipairs({ "dependencies", "devDependencies", "peerDependencies", "optionalDependencies" }) do
+        sections[s] = true
+    end
+    local depth, section = 0, nil
+    for _, l in ipairs(api.nvim_buf_get_lines(bufnr, 0, cursor_line, false)) do
+        local stripped = l:gsub('"[^"]*"', '""')
+        local key = l:match('^%s*"([^"]+)"%s*:%s*{')
+        for ch in stripped:gmatch("[{}]") do
+            if ch == "{" then
+                depth = depth + 1
+                if depth == 2 and key then
+                    section = key
+                end
+            else
+                if depth == 2 then
+                    section = nil
+                end
+                depth = depth - 1
+            end
+        end
+    end
+    if depth ~= 2 or not section or not sections[section] then
+        return nil
+    end
+
     -- JSON: "  "pkg": "version""
     return line:match('^%s*"([^"]+)"%s*:')
 end
