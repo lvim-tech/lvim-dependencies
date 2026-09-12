@@ -1,5 +1,5 @@
 -- lvim-dependencies.config.async: default tuning for the async subsystem — concurrency,
--- timeouts, retry/backoff, and the debounce/throttle windows. Kept as a plain data table so
+-- timeouts, the operator's command retry, and the debounce/throttle windows. Kept as a plain data table so
 -- setup() can merge user overrides in place and every reader sees the effective values.
 ---@module "lvim-dependencies.config.async"
 
@@ -7,17 +7,8 @@
 return {
     --- Default settings for all async operations
     defaults = {
-        concurrency = 10, -- Maximum parallel operations
-        timeout = 5000, -- Default timeout in milliseconds
-        retry_count = 3, -- Number of retry attempts on failure
-        retry_delay = 1000, -- Delay between retries (ms)
-        max_retry_delay = 5000, -- Maximum delay for exponential backoff
-    },
-    --- Package loader specific settings
-    package_loader = {
-        concurrency = 10, -- Maximum concurrent package loads (default: 10)
-        retry_count = 3, -- Number of retry attempts for package loading (default: 3)
-        retry_delay = 1000, -- Delay between retry attempts in ms (default: 1000ms)
+        concurrency = 10, -- Maximum parallel package loads (all_with_limit)
+        timeout = 5000, -- Default timeout in milliseconds (await_with_timeout)
     },
     --- Executor-specific settings for command execution
     operator = {

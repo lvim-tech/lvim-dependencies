@@ -331,37 +331,6 @@ function M.create_temp_file(content, extension)
     return temp_file, nil
 end
 
---- Find files recursively by pattern
----@param dir string Directory to search
----@param pattern string File pattern
----@return table files, string|nil error message
-function M.find_files(dir, pattern)
-    if not is_valid_path(dir) then
-        return {}, "Invalid directory"
-    end
-
-    if not M.file_exists(dir) then
-        return {}, "Directory does not exist"
-    end
-
-    local files = {}
-    local find_success, _, find_err = safe_operation(function()
-        local handle = io.popen(string.format('find "%s" -name "%s" -type f 2>/dev/null', dir, pattern))
-        if handle then
-            for line in handle:lines() do
-                table.insert(files, line)
-            end
-            handle:close()
-        end
-    end)
-
-    if not find_success then
-        return {}, string.format("Failed to search files: %s", find_err)
-    end
-
-    return files, nil
-end
-
 --- Get plugin state file path
 ---@param file_name string File name
 ---@return string Full path to state file

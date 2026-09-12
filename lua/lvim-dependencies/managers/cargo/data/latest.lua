@@ -1,6 +1,7 @@
 -- lvim-dependencies.managers.cargo.data.latest: fetches the latest version + crate metadata
--- from crates.io. Honours the include_prerelease preference (max_version vs max_stable_version,
--- with a versions-array fallback), extracts a fixed set of metadata fields, and dedups
+-- from crates.io. Honours the include_prerelease preference (max_stable_version unless
+-- pre-releases are wanted, then the manifest's max_version path, then a versions-array
+-- fallback that skips yanked entries), extracts a fixed set of metadata fields, and dedups
 -- concurrent requests for the same crate via an in-flight waiter list. The result CACHE is
 -- owned by core.hub.latest (required inline to break the hub↔data circular dependency).
 ---@module "lvim-dependencies.managers.cargo.data.latest"
@@ -130,35 +131,6 @@ local function version_from_array(arr)
     return nil
 end
 
-local function extract_default(data)
-    local version, metadata = nil, nil
-
-    if data.crate then
-        if include_prerelease() then
-            -- max_version = absolute newest including prerelease
-            version = data.crate.max_version
-        else
-            -- max_stable_version = newest non-prerelease (crates.io field, added 2020)
-            -- Fall back to max_version only if it happens to be stable
-            local stable = data.crate.max_stable_version or data.crate.max_version
-            if stable and not is_prerelease(stable) then
-                version = stable
-            end
-        end
-        metadata = extract_metadata(data.crate)
-    end
-
-    -- Fallback: walk versions array
-    if not version and data.versions then
-        version = version_from_array(data.versions)
-    end
-    if not version and data.crate and data.crate.versions then
-        version = version_from_array(data.crate.versions)
-    end
-
-    return version, metadata
-end
-
 local function extract_with_paths(data, response_config)
     local version = nil
     -- The manifest's version_path is crate.max_version, which crates.io defines as the highest
@@ -192,7 +164,8 @@ local function parse_response(output, manifest_data)
     if manifest_data.registry and manifest_data.registry.response then
         return extract_with_paths(data, manifest_data.registry.response)
     end
-    return extract_default(data)
+    -- The manifest always carries registry.response; without it there is nothing to read.
+    return nil, nil
 end
 
 local function build_request(package_name, manifest_data)

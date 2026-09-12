@@ -481,9 +481,6 @@ M.dependency_types = {
         end,
         extract = function(v, dep)
             dep.sdk = { name = v.sdk }
-            if M.sdk_packages[dep.name] then
-                dep.sdk.name = "flutter"
-            end
         end,
         format = function(dep)
             local vt = {}

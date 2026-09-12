@@ -1,7 +1,8 @@
--- lvim-dependencies.utils.module: safe module (re)loading and path<->modpath conversion.
+-- lvim-dependencies.utils.module: safe module (re)loading and path->modpath conversion.
 -- safe_require never throws (pcall + optional notify) so an optional/missing module cannot
--- break a load path; the rest is filesystem probing of package.path for existence/location
--- and cache clearing to support hot reload.
+-- break a load path; the rest is cache clearing to support hot reload. (Probing package.path
+-- for a plugin module was removed: Neovim loads plugin Lua from the runtimepath, which is not
+-- in package.path, so those probes never found anything.)
 --
 ---@module "lvim-dependencies.utils.module"
 
@@ -63,18 +64,6 @@ local function extract_module_name(normalized_path)
     return normalized_path:match(".*/lua/(.+)%.lua$")
 end
 
---- Convert dots to slashes in module path
----@param mod_path string Module path with dots
----@return string Path with slashes
-local function dots_to_slashes(mod_path)
-    if type(mod_path) ~= "string" then
-        return ""
-    end
-
-    local result = mod_path:gsub("%.", "/")
-    return result
-end
-
 --- Convert file path to module path
 --- Example: "/path/to/lua/module/submodule.lua" -> "module.submodule"
 ---@param file_path string File path to convert
@@ -95,43 +84,6 @@ function M.filepath_to_modpath(file_path)
     return result
 end
 
---- Check if a file exists
----@param path string File path to check
----@return boolean True if file exists
-local function file_exists(path)
-    if type(path) ~= "string" or path == "" then
-        return false
-    end
-
-    local file = io.open(path, "r")
-    if file then
-        file:close()
-        return true
-    end
-    return false
-end
-
---- Check if module exists without loading it
---- Searches in package.path
----@param mod_path string Module path to check
----@return boolean True if module exists
-function M.exists(mod_path)
-    if type(mod_path) ~= "string" or mod_path == "" then
-        return false
-    end
-
-    local search_path = dots_to_slashes(mod_path) .. ".lua"
-
-    for path in package.path:gmatch("[^;]+") do
-        local full_path = path:gsub("%?", search_path)
-        if file_exists(full_path) then
-            return true
-        end
-    end
-
-    return false
-end
-
 --- Clear module from package.loaded cache
 ---@param mod_path string Module path to clear
 function M.clear_cache(mod_path)
@@ -148,26 +100,6 @@ end
 function M.reload(mod_path, silent)
     M.clear_cache(mod_path)
     return M.safe_require(mod_path, silent)
-end
-
---- Get full filesystem path of a module
----@param mod_path string Module path to locate
----@return string|nil Full path to module file or nil if not found
-function M.where(mod_path)
-    if type(mod_path) ~= "string" or mod_path == "" then
-        return nil
-    end
-
-    local search_path = dots_to_slashes(mod_path) .. ".lua"
-
-    for path in package.path:gmatch("[^;]+") do
-        local full_path = path:gsub("%?", search_path)
-        if file_exists(full_path) then
-            return full_path
-        end
-    end
-
-    return nil
 end
 
 --- Check if module is already loaded (in package.loaded)

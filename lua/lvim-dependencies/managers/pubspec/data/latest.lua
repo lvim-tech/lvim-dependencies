@@ -1,7 +1,7 @@
 -- lvim-dependencies.managers.pubspec.data.latest: fetches the latest available version + metadata
--- for a package from the pub.dev registry. pub.dev's versions array is oldest-first, so the newest
--- entry is found by walking from the end; with include_prerelease=false it skips prerelease tags
--- (a "-" after the patch number) and prefers the registry's `latest.version`. Concurrent requests
+-- for a package from the pub.dev registry. The manifest's response paths pick the registry's
+-- `latest.version` (its latest stable), falling back to the versions array (oldest-first, walked
+-- from the end; with include_prerelease=false prerelease tags are skipped). Concurrent requests
 -- for the same package share one HTTP call via the in_flight waiter list; the resolved version
 -- cache lives in core.hub.latest, so clear_cache delegates there and drops any in-flight waiters.
 --
@@ -107,42 +107,6 @@ local function version_from_array(versions_array)
 end
 
 ---@param data table
----@return string|nil, table|nil
-local function extract_default(data)
-    local version = nil
-    local metadata = nil
-
-    if include_prerelease() then
-        -- Walk all versions newest-first to get absolute latest (may be prerelease)
-        if data.versions then
-            version = version_from_array(data.versions)
-        end
-        -- Fallback: data.latest (stable latest from pub.dev)
-        if not version and data.latest and is_valid_string(data.latest.version) then
-            version = data.latest.version
-        end
-    else
-        -- Stable only: pub.dev data.latest is always the latest stable
-        if data.latest and is_valid_string(data.latest.version) then
-            version = data.latest.version
-        end
-        -- Guard: if latest happens to be prerelease, walk versions
-        if version and is_prerelease(version) then
-            version = nil
-            if data.versions then
-                version = version_from_array(data.versions)
-            end
-        end
-    end
-
-    if data.latest and data.latest.pubspec then
-        metadata = extract_metadata(data.latest.pubspec)
-    end
-
-    return version, metadata
-end
-
----@param data table
 ---@param response_config RegistryResponseConfig
 ---@return string|nil, table|nil
 local function extract_with_paths(data, response_config)
@@ -184,7 +148,8 @@ local function parse_response(output, manifest_data)
         return extract_with_paths(data, manifest_data.registry.response)
     end
 
-    return extract_default(data)
+    -- The manifest always carries registry.response; without it there is nothing to read.
+    return nil, nil
 end
 
 ---@param package_name string

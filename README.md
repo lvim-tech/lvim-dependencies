@@ -357,16 +357,8 @@ require("lvim-dependencies").setup({
     -- -----------------------------------------------------------------------
     async = {
         defaults = {
-            concurrency = 10,
+            concurrency = 10, -- parallel package loads per manifest
             timeout = 5000,
-            retry_count = 3,
-            retry_delay = 1000,
-            max_retry_delay = 5000,
-        },
-        package_loader = {
-            concurrency = 10,
-            retry_count = 3,
-            retry_delay = 1000,
         },
         operator = {
             retry_count = 2,

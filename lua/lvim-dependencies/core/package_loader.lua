@@ -1,8 +1,8 @@
 -- lvim-dependencies.core.package_loader: fetches the three facts about a package —
 -- declared (sync, from the manifest), installed and latest (both async) — and merges them
 -- into one PackageResult. installed+latest run in parallel via async.all_settled so one
--- failing lookup never blocks the other; batch loaders add a concurrency cap and an
--- overall timeout so a slow registry can't stall a whole manifest's worth of packages.
+-- failing lookup never blocks the other; the per-manifest concurrency cap lives in
+-- core.state (async.all_with_limit).
 --
 ---@module "lvim-dependencies.core.package_loader"
 
@@ -13,17 +13,9 @@ local utils = require("lvim-dependencies.utils")
 local async = require("lvim-dependencies.core.async_util")
 local const = require("lvim-dependencies.core.const")
 local metrics = require("lvim-dependencies.core.metrics")
-local config = require("lvim-dependencies.config")
 
 local debug = utils.debug
 local M = {}
-
--- ============================================================================
--- Constants — sourced from config
--- ============================================================================
-local DEFAULT_CONCURRENCY = config.async.package_loader.concurrency or 10
-local DEFAULT_RETRY_COUNT = config.async.package_loader.retry_count or 3
-local DEFAULT_RETRY_DELAY = config.async.package_loader.retry_delay or 1000
 
 -- ============================================================================
 -- Helpers
@@ -133,44 +125,6 @@ function M.load_package_data_async(manifest_type, package_name, callback, opts)
     end)
 end
 
---- Load package data with retry on failure
----@param manifest_type string
----@param package_name string
----@param callback PackageLoaderCallback
----@param opts? {max_retries?: integer, delay?: integer}
-function M.load_package_data_with_retry(manifest_type, package_name, callback, opts)
-    opts = opts or {}
-    local max_retries = opts.max_retries or DEFAULT_RETRY_COUNT
-    local delay = opts.delay or DEFAULT_RETRY_DELAY
-    local attempt = 1
-
-    local function attempt_load()
-        M.load_package_data_async(manifest_type, package_name, function(result)
-            local has_error = result.installed_err or result.latest_err
-            if not has_error or attempt >= max_retries then
-                callback(result)
-                return
-            end
-
-            attempt = attempt + 1
-            debug(
-                string.format(
-                    "Retrying load for %s/%s (attempt %d/%d)",
-                    manifest_type,
-                    package_name,
-                    attempt,
-                    max_retries
-                ),
-                vim.log.levels.DEBUG
-            )
-
-            vim.defer_fn(attempt_load, delay)
-        end)
-    end
-
-    attempt_load()
-end
-
 --- Synchronous version — must be called from within a coroutine
 ---@param manifest_type string
 ---@param package_name string
@@ -207,107 +161,6 @@ function M.load_package_data(manifest_type, package_name, opts)
         coroutine.yield()
     end
     return result
-end
-
---- Load multiple packages in parallel with concurrency limit
----@param manifest_type string
----@param package_names string[]
----@param callback fun(results: table<string, PackageResult>)
----@param concurrency? integer
-function M.load_multiple_packages_async(manifest_type, package_names, callback, concurrency)
-    concurrency = concurrency or DEFAULT_CONCURRENCY
-    local count = #package_names
-    if count == 0 then
-        callback({})
-        return
-    end
-
-    local results = {}
-    local remaining = count
-    local running = 0
-    local next_idx = 1
-
-    local function start_next()
-        while running < concurrency and next_idx <= count do
-            local idx = next_idx
-            next_idx = next_idx + 1
-            running = running + 1
-            local package_name = package_names[idx]
-
-            M.load_package_data_async(manifest_type, package_name, function(result)
-                results[package_name] = result
-                remaining = remaining - 1
-                running = running - 1
-                if remaining == 0 then
-                    callback(results)
-                else
-                    start_next()
-                end
-            end)
-        end
-    end
-
-    start_next()
-end
-
---- Load multiple packages with a timeout
----@param manifest_type string
----@param package_names string[]
----@param timeout_ms number
----@param callback fun(results: table<string, PackageResult>, timed_out: boolean)
-function M.load_multiple_packages_with_timeout(manifest_type, package_names, timeout_ms, callback)
-    local count = #package_names
-    if count == 0 then
-        callback({}, false)
-        return
-    end
-
-    local results = {}
-    local remaining = count
-    local timed_out = false
-    local timer = vim.uv.new_timer()
-
-    if not timer then
-        callback({}, false)
-        return
-    end
-
-    timer:start(
-        timeout_ms,
-        0,
-        vim.schedule_wrap(function()
-            if timed_out then
-                return
-            end
-            timed_out = true
-            if not timer:is_closing() then
-                timer:close()
-            end
-            metrics.record_error(manifest_type, const.METRICS.ERROR_TYPES.TIMEOUT)
-            callback(results, true)
-        end)
-    )
-
-    local function on_complete(package_name, result)
-        if timed_out then
-            return
-        end
-        results[package_name] = result
-        remaining = remaining - 1
-        if remaining == 0 then
-            timed_out = true -- prevent any already-queued timer callback from firing
-            if not timer:is_closing() then
-                timer:close()
-            end
-            callback(results, false)
-        end
-    end
-
-    for _, package_name in ipairs(package_names) do
-        M.load_package_data_async(manifest_type, package_name, function(result)
-            on_complete(package_name, result)
-        end)
-    end
 end
 
 --- Clear declared cache for a manifest type.
