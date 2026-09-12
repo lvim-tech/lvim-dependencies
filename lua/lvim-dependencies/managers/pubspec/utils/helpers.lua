@@ -8,6 +8,7 @@
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
+local config = require("lvim-dependencies.config")
 local file_ops = require("lvim-dependencies.managers.pubspec.core.file_ops")
 local yaml_ops = require("lvim-dependencies.managers.pubspec.core.yaml_ops")
 
@@ -49,15 +50,45 @@ function M.get_dependency_sections()
     return (manifest and manifest.dependency_sections) or { "dependencies", "dev_dependencies" }
 end
 
---- Check if package is an SDK package
+--- Check if package is an SDK package — one that ships with the SDK and has no pub.dev entry.
+--- The manifest's built-in set plus the user's `config.pubspec.sdk_packages` (documented as the
+--- place to add more; it was never read before, so custom entries still went to the registry).
 ---@param pkg_name string
 ---@return boolean
 function M.is_sdk_package(pkg_name)
     local manifest = M.get_manifest()
-    if not manifest or not manifest.sdk_packages then
+    if manifest and manifest.sdk_packages and manifest.sdk_packages[pkg_name] == true then
+        return true
+    end
+    local cfg = config.pubspec and config.pubspec.sdk_packages
+    return cfg ~= nil and cfg[pkg_name] == true
+end
+
+--- Is this `key: value` line a FIELD of a dependency's block rather than a package line?
+--- `special_keys` names the fields a block can carry (git/url/ref/path/sdk/hosted/…), but
+--- `path`, `web`, `version`… are also legitimate pub.dev package names, so the key alone cannot
+--- tell foo's `    path: ../foo` from the `  path: ^1.9.0` package. The VALUE can: a field holds
+--- a path / url / ref / sdk name, a package line holds a version constraint (`^1.9.0`, `any`,
+--- `"1.0.0"`, `>=1.0.0 <2.0.0`), an inline map, or nothing at all (a block header `foo:`).
+---@param line string
+---@return boolean
+function M.is_nested_field_line(line)
+    local key, value = line:match("^%s*([%w_%-]+)%s*:%s*(.-)%s*$")
+    if not key then
         return false
     end
-    return manifest.sdk_packages[pkg_name] == true
+    local manifest = M.get_manifest()
+    if not (manifest and manifest.special_keys and vim.tbl_contains(manifest.special_keys, key)) then
+        return false
+    end
+    if value == "" or value:match("^#") or value:match("^{") then
+        return false -- block header or inline map: a package
+    end
+    value = value:gsub("^[\"']", "")
+    if value:match("^[%^~<>=]*%d") or value:match("^any%f[%W]") or value == "any" then
+        return false -- a version constraint: a package
+    end
+    return true
 end
 
 --- URL encode a string
@@ -187,12 +218,9 @@ function M.find_package_section(pkg_name)
         return nil
     end
 
-    local manifest = M.get_manifest()
+    -- No special-key short-circuit here: `path`/`web`/… are real packages, and find_package_block
+    -- only matches at the section's package indent, so a block's nested fields cannot pose as one.
     local sections = M.get_dependency_sections()
-
-    if manifest and manifest.special_keys and vim.tbl_contains(manifest.special_keys, pkg_name) then
-        return nil
-    end
 
     for _, section in ipairs(sections) do
         local section_idx = yaml_ops.find_section_index(lines, section)

@@ -126,14 +126,13 @@ local function find_package_in_lock(data, package_name)
     return nil
 end
 
---- Check if package is an SDK package
+--- Check if package is an SDK package (manifest built-ins + config.pubspec.sdk_packages)
 ---@param package_name string
----@param manifest_data ManagerManifest
+---@param _ ManagerManifest
 ---@return string|nil
-local function get_sdk_version(package_name, manifest_data)
-    ---@cast manifest_data PubspecManifest
-    local sdk_packages = manifest_data.sdk_packages or {}
-    return sdk_packages[package_name] and "sdk" or nil
+local function get_sdk_version(package_name, _)
+    local helpers = require("lvim-dependencies.managers.pubspec.utils.helpers")
+    return helpers.is_sdk_package(package_name) and "sdk" or nil
 end
 
 --- Load all lock file data

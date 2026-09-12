@@ -71,7 +71,9 @@ M.special_keys = {
 }
 
 M.package_patterns = {
-    simple = "^%s*([%w_%-]+)%s*:%s*[\"']?[%^~=<>]?[%d%.]+",
+    -- A constraint starts with a digit after the optional operator(s); `[%d%.]+` alone also
+    -- matched a relative path (`path: ../foo`), so a block's path field posed as the `path` package.
+    simple = "^%s*([%w_%-]+)%s*:%s*[\"']?[%^~=<>]*%d",
     any = "^%s*([%w_%-]+)%s*:%s*[\"']?any[\"']?%s*$",
     complex = "^%s*([%w_%-]+)%s*:%s*{",
     git = "^%s*([%w_%-]+)%s*:%s*git:",

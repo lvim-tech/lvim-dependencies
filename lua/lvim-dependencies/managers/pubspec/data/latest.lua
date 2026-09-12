@@ -259,10 +259,8 @@ function M.get_package_latest(package_name, callback)
         return
     end
 
-    -- SDK fast path
-    ---@cast manifest_data PubspecManifest
-    local sdk_packages = manifest_data.sdk_packages or {}
-    if sdk_packages[package_name] then
+    -- SDK fast path (manifest built-ins + config.pubspec.sdk_packages): no registry entry to fetch
+    if require("lvim-dependencies.managers.pubspec.utils.helpers").is_sdk_package(package_name) then
         debug(string.format("SDK package: %s", package_name), vim.log.levels.INFO)
         callback(nil, { version = "sdk", metadata = {} })
         return

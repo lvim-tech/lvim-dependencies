@@ -1,8 +1,10 @@
 -- lvim-dependencies.managers.pubspec.parser: reads pubspec.yaml and returns the declared
--- dependencies as a name→raw-value map. Uses the manifest's file patterns, dependency sections
--- and special-key set (so section headers and keys like "sdk"/"git" never surface as packages).
--- Keeps a single-entry content cache keyed on the raw file text so an unchanged file is not
--- re-parsed on every virtual-text refresh.
+-- dependencies as a name→raw-value map. Uses the manifest's file patterns and dependency
+-- sections; every key directly under a dependency section IS a package name (the manifest's
+-- special keys — git/url/ref/path/sdk/… — are fields of a dependency's nested block, which the
+-- YAML parser already keeps inside that block, and `path`/`web`/`version`… are also real
+-- pub.dev packages, so they must not be filtered out by name). Keeps a single-entry content
+-- cache keyed on the raw file text so an unchanged file is not re-parsed on every refresh.
 --
 ---@module "lvim-dependencies.managers.pubspec.parser"
 
@@ -81,29 +83,18 @@ local function parse_yaml(content)
     return data
 end
 
---- Build a lookup set from a list of strings
----@param list string[]
----@return table<string, boolean>
-local function list_to_set(list)
-    local set = {}
-    for _, v in ipairs(list) do
-        set[v] = true
-    end
-    return set
-end
-
---- Extract dependencies from parsed YAML data
+--- Extract dependencies from parsed YAML data. Every key of a dependency section is a package
+--- (pub package names cannot start with an underscore, so those are the only keys skipped).
 ---@param data table
 ---@param sections string[]
----@param special_keys table<string, boolean>
 ---@return table<string, any>
-local function extract_dependencies(data, sections, special_keys)
+local function extract_dependencies(data, sections)
     local result = {}
     for _, section in ipairs(sections) do
         local deps = data[section]
         if deps and type(deps) == "table" then
             for name, version in pairs(deps) do
-                if not special_keys[name] and not name:match("^_") then
+                if type(name) == "string" and not name:match("^_") then
                     result[name] = version
                 end
             end
@@ -151,8 +142,7 @@ function M.get_dependencies()
     end
 
     local sections = manifest_data.dependency_sections or { "dependencies", "dev_dependencies" }
-    local special_keys = list_to_set(manifest_data.special_keys or {})
-    local result = extract_dependencies(data, sections, special_keys)
+    local result = extract_dependencies(data, sections)
 
     cached_content = content
     cached_result = result

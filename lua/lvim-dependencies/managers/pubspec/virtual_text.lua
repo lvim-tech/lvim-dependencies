@@ -82,10 +82,15 @@ end
 -- ============================================================================
 
 --- Find a package name in a single buffer line (YAML format: "pkg :")
---- Called by core/virtual_text.lua find_pkg_in_line
+--- Called by core/virtual_text.lua find_pkg_in_line. A dependency's nested field
+--- (`    path: ../foo`) is not a package line — without that check the `path` package's
+--- virtual text landed on foo's `path:` field whenever it came first.
 ---@param line string
 ---@return string|nil
 function M.find_package_in_line(line)
+    if require("lvim-dependencies.managers.pubspec.utils.helpers").is_nested_field_line(line) then
+        return nil
+    end
     return line:match("^%s*([%w%-_%.]+)%s*:")
 end
 

@@ -91,7 +91,25 @@ function M.find_section_end(lines, section_idx)
     return #lines
 end
 
---- Find package block in section
+--- The indent (in characters) at which a section's packages sit: that of the first non-blank,
+--- non-comment line after the header. nil when the section is empty.
+---@param lines table
+---@param section_idx integer
+---@param section_end integer
+---@return integer|nil
+local function section_package_indent(lines, section_idx, section_end)
+    for i = section_idx + 1, section_end do
+        local line = lines[i]
+        if line and not line:match("^%s*$") and not line:match("^%s*#") then
+            return #get_line_indent(line)
+        end
+    end
+    return nil
+end
+
+--- Find package block in section. Only lines at the section's package indent count: a
+--- dependency's own nested fields (`    path: ../foo` under `  foo:`) sit deeper and are never
+--- the block of a package that happens to share their name (`path` is also a pub package).
 ---@param lines table
 ---@param section_idx integer
 ---@param section_end integer
@@ -105,6 +123,8 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
         return nil, nil, nil
     end
 
+    local pkg_level = section_package_indent(lines, section_idx, section_end)
+
     for i = section_idx + 1, section_end do
         local line = lines[i]
         if not line then
@@ -112,7 +132,7 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
         end
 
         local name = get_package_name_from_line(line)
-        if name and name == pkg_name then
+        if name and name == pkg_name and (pkg_level == nil or #get_line_indent(line) == pkg_level) then
             local pkg_indent = get_line_indent(line)
             local pkg_indent_len = #pkg_indent
             local block_end = i
@@ -163,10 +183,11 @@ function M.find_package_lnum(buf_lines, scope, pkg_name)
 
     local section_end = M.find_section_end(buf_lines, section_idx)
     local pattern = "^%s*(" .. escape_pattern(pkg_name) .. ")%s*:"
+    local pkg_level = section_package_indent(buf_lines, section_idx, section_end)
 
     for i = section_idx + 1, section_end do
         local line = buf_lines[i]
-        if line and line:match(pattern) then
+        if line and line:match(pattern) and (pkg_level == nil or #get_line_indent(line) == pkg_level) then
             debug(
                 string.format("Found package '%s' at line %d in section '%s'", pkg_name, i, scope),
                 vim.log.levels.DEBUG

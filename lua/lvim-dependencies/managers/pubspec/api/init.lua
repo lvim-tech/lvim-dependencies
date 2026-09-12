@@ -238,15 +238,30 @@ function M.get_package_at_cursor(opts)
         return nil
     end
 
-    for _, special_key in ipairs(manifest.special_keys or {}) do
-        if line:match("^%s*" .. vim.pesc(special_key) .. "%s*:") then
-            return nil
+    -- Only a line inside a dependency section can be a package: walk back to the nearest
+    -- top-level key. Keys under `environment:` / `flutter:` (sdk, assets, platforms…) used to be
+    -- rejected by NAME, which also rejected the `path` and `web` packages.
+    local prev = api.nvim_buf_get_lines(bufnr, 0, cursor_line + 1, false)
+    local section
+    for i = #prev, 1, -1 do
+        local key = prev[i]:match("^([%w_%-]+)%s*:")
+        if key then
+            section = key
+            break
         end
+    end
+    if not section or not vim.tbl_contains(helpers.get_dependency_sections(), section) then
+        return nil
+    end
+
+    -- A dependency's own nested field (`    path: ../foo`, `    sdk: flutter`) is not a package.
+    if helpers.is_nested_field_line(line) then
+        return nil
     end
 
     for _, pattern in pairs(manifest.package_patterns) do
         local name = line:match(pattern)
-        if name and not (manifest.sdk_packages and manifest.sdk_packages[name]) then
+        if name and not helpers.is_sdk_package(name) then
             return name
         end
     end

@@ -251,15 +251,9 @@ local function find_package_line(bufnr, name)
         return nil
     end
 
-    local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
-    for i, line in ipairs(lines) do
-        local pkg = line:match("^%s*([^%s:]+)%s*:")
-        if pkg == name then
-            return i - 1
-        end
-    end
-
-    return nil
+    -- The manager's own matcher: skips a block's nested fields, so the `path` package's
+    -- working indicator does not land on some other dependency's `path:` line.
+    return require("lvim-dependencies.managers.pubspec.virtual_text").find_package_line(bufnr, name)
 end
 
 ---@param bufnr integer
