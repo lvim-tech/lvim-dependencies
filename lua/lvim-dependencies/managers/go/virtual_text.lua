@@ -69,6 +69,11 @@ end
 ---@param line string
 ---@return string|nil
 function M.find_package_in_line(line)
+    -- A replace directive (`old v1 => new v2`, single-line or inside `replace (…)`) also starts
+    -- with "module version" and used to receive the replaced module's virtual text.
+    if line:find("=>", 1, true) or line:match("^%s*replace%s") then
+        return nil
+    end
     -- Inside require block: "\tgithub.com/pkg v1.0.0"
     local name = line:match("^%s+([%w%.%-%_/]+)%s+v[%w%.%-%+]+")
     if name then

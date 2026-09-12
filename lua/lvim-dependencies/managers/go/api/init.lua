@@ -110,6 +110,10 @@ function M.get_package_at_cursor(opts)
         return nil
     end
 
+    -- A replace directive is not a package line (see virtual_text.find_package_in_line).
+    if line:find("=>", 1, true) or line:match("^%s*replace%s") then
+        return nil
+    end
     -- Inside require block: "\tgithub.com/pkg v1.0.0"
     local name = line:match("^%s+([%w%.%-%_/]+)%s+v[%w%.%-%+]+")
     if name then
