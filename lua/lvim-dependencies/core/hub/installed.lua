@@ -1,7 +1,8 @@
 -- lvim-dependencies.core.hub.installed: callback-based access to a manager's INSTALLED
--- versions (read from lock files, disk-bound). Serves from core.cache on hit; on miss it
--- defers to the manager's data.installed module, then stores the result with a TTL so a
--- lock file isn't re-parsed on every lookup. Every hit/miss/error is recorded to metrics.
+-- versions (read from lock files, disk-bound). Serves from core.cache on hit; on miss — or
+-- once a hit has outlived config.cache.ttl.installed — it defers to the manager's
+-- data.installed module, then stores the result with a fresh TTL so a lock file isn't
+-- re-parsed on every lookup. Every hit/miss/expiry/error is recorded to metrics.
 --
 ---@module "lvim-dependencies.core.hub.installed"
 
@@ -62,6 +63,18 @@ local function extract_version(cached)
     return cached
 end
 
+--- Has a cached entry outlived its TTL? The expiry is written on every save below, but the
+--- read path never looked at it — so a lock file rewritten outside Neovim (`cargo update`,
+--- `flutter pub get` in a terminal) kept showing the old installed version for the whole
+--- session, and nothing else sweeps the cache (the cleanup timer is never started).
+---@param entry table
+---@param package_name string
+---@return boolean
+local function is_expired(entry, package_name)
+    local expiry = entry[const.CACHE_FIELDS.EXPIRY] and entry[const.CACHE_FIELDS.EXPIRY][package_name]
+    return expiry ~= nil and now() > expiry
+end
+
 -- ============================================================================
 -- Public API
 -- ============================================================================
@@ -74,7 +87,7 @@ function M.get_package_installed(manager_type, package_name, callback)
     local entry = cache.ensure(manager_type, CACHE_TYPE_INSTALLED)
     local cached = entry[const.CACHE_FIELDS.DATA][package_name]
 
-    if cached ~= nil then
+    if cached ~= nil and not is_expired(entry, package_name) then
         local version = extract_version(cached)
         debug(
             string.format("Cache HIT for %s/%s: %s", manager_type, package_name, version or "nil"),
@@ -87,8 +100,17 @@ function M.get_package_installed(manager_type, package_name, callback)
         return
     end
 
-    debug(string.format("Cache MISS for %s/%s", manager_type, package_name), vim.log.levels.INFO)
-    metrics.record_cache_event(manager_type, false)
+    if cached ~= nil then
+        debug(string.format("Cache EXPIRED for %s/%s", manager_type, package_name), vim.log.levels.INFO)
+        entry[const.CACHE_FIELDS.DATA][package_name] = nil
+        if entry[const.CACHE_FIELDS.EXPIRY] then
+            entry[const.CACHE_FIELDS.EXPIRY][package_name] = nil
+        end
+        metrics.record_cache_expiry(manager_type)
+    else
+        debug(string.format("Cache MISS for %s/%s", manager_type, package_name), vim.log.levels.INFO)
+        metrics.record_cache_event(manager_type, false)
+    end
 
     local installed_mod = load_installed_module(manager_type)
     if not installed_mod or not installed_mod.get_package_installed then
