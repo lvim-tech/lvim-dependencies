@@ -103,7 +103,13 @@ local function seed_installed_version(name, version)
     entry[CACHE_FIELDS_DATA][name] = version
 
     parser.clear_cache()
-    require("lvim-dependencies.core.hub.declared").clear_cache("pubspec", name)
+    -- Re-read the whole manifest rather than dropping this one package from the declared cache:
+    -- the cache is what hover, code actions and the declared chunk of the virtual text read, and a
+    -- non-forced get_data() serves a NON-empty cache as is — so the dropped package stayed missing
+    -- (no hover, "No package at cursor") and its declared text stayed at the old constraint until
+    -- the next reopen. The write goes through the buffer with `noautocmd`, so no save event ever
+    -- refreshed it either.
+    require("lvim-dependencies.core.hub.declared").refresh_data("pubspec")
 end
 
 -- ============================================================================

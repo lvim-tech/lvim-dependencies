@@ -81,7 +81,10 @@ local function seed_installed_version(name, version)
     local entry = cache.ensure("composer", CACHE_TYPE_INSTALLED)
     entry[CACHE_FIELDS_DATA][name] = version
     parser.clear_cache()
-    hub_declared.clear_cache("composer", name)
+    -- Re-read the manifest instead of dropping one package: a non-forced get_data() serves a
+    -- non-empty cache as is, so the dropped entry (hover / code actions / declared chunk) stayed
+    -- missing, and handle_success skips the reload that could have refreshed it.
+    hub_declared.refresh_data("composer")
 end
 
 local function get_executable()

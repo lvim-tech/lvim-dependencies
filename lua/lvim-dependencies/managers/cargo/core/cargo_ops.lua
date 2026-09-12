@@ -88,7 +88,9 @@ local function seed_installed_version(name, version)
     entry[CACHE_FIELDS_DATA][name] = version
 
     parser.clear_cache()
-    hub_declared.clear_cache("cargo", name)
+    -- Re-read the manifest instead of dropping one package: a non-forced get_data() serves a
+    -- non-empty cache as is, so the dropped entry stayed missing until the checktime reload.
+    hub_declared.refresh_data("cargo")
 end
 
 -- ============================================================================

@@ -91,7 +91,10 @@ local function seed_installed_version(name, version)
     entry[CACHE_FIELDS_DATA][name] = version
 
     parser.clear_cache()
-    require("lvim-dependencies.core.hub.declared").clear_cache("npm", name)
+    -- Re-read the manifest instead of dropping one package: a non-forced get_data() serves a
+    -- non-empty cache as is, so the dropped entry (hover / code actions / declared chunk) stayed
+    -- missing and stale until the next reopen.
+    require("lvim-dependencies.core.hub.declared").refresh_data("npm")
 end
 
 -- ============================================================================

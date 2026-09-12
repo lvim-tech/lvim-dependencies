@@ -348,6 +348,10 @@ function M.update_async(name, opts, callback)
             if res and res.code == 0 then
                 parser.clear_cache()
                 clear_package_caches(name)
+                -- npm rewrote package.json: re-read the declared set now, or the declared chunk of
+                -- the virtual text keeps the old constraint (the reload below is skipped on purpose
+                -- via skip_next_check, so nothing else refreshes it).
+                require("lvim-dependencies.core.hub.declared").refresh_data("npm")
                 if bufnr ~= -1 then
                     refresh_buffer_state(bufnr)
                 end
