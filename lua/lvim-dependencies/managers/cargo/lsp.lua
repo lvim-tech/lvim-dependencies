@@ -121,8 +121,12 @@ function M.get_hover(params, bufnr, dep_name, dep_data)
 
     if declared_data then
         if type(declared_data) == "table" then
-            if declared_data.version then
-                lines[#lines + 1] = string.format("**Declared:** `%s`", declared_data.version)
+            -- The declared record (data/declared) carries the constraint as `declared`; only a raw
+            -- inline TOML table has `version`. Reading `version` alone left the hover without the
+            -- declared line for every registry dependency.
+            local declared_version = declared_data.declared or declared_data.version
+            if declared_version then
+                lines[#lines + 1] = string.format("**Declared:** `%s`", declared_version)
             end
             if declared_data.features and #declared_data.features > 0 then
                 lines[#lines + 1] = ""
