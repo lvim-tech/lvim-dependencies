@@ -1,7 +1,7 @@
 -- lvim-dependencies.managers.npm.api: the public action surface for npm/yarn/pnpm — the
 -- calls the handler drives (package-at-cursor, fetch available versions, update, delete). It
--- auto-detects the active package manager from the lock file present, builds the manager-
--- specific add/remove command (mapping the dependency section to the right --save flag), runs
+-- resolves the package manager and its add/remove command through core.npm_ops (config
+-- preference, else the lock file; the dependency section maps to the right --save flag), runs
 -- it async via vim.system, and refreshes the buffer's virtual text and caches on completion.
 --
 ---@module "lvim-dependencies.managers.npm.api"
@@ -16,6 +16,9 @@ local state = require("lvim-dependencies.core.state")
 
 local parser = require("lvim-dependencies.managers.npm.parser")
 local compare_versions = require("lvim-dependencies.managers.npm.compare_versions")
+-- The one package-manager detector: honours config.npm.preferred_manager / executables (the
+-- private copy that used to live here ignored both, so those documented keys did nothing).
+local npm_ops = require("lvim-dependencies.managers.npm.core.npm_ops")
 
 local debug = utils.debug
 local api = vim.api
@@ -55,105 +58,6 @@ local function refresh_buffer_state(bufnr)
     api.nvim_buf_call(bufnr, function()
         vim.cmd("checktime")
     end)
-end
-
---- Detect which package manager to use for this project (lock file next to the manifest —
---- for a workspace package that is the workspace root, found by the upward search).
----@param manifest_path string  the package.json being acted on
----@return string executable, string type
-local function detect_package_manager(manifest_path)
-    local function has_lock(name)
-        local found = vim.fs.find(name, { upward = true, path = vim.fs.dirname(manifest_path), type = "file" })
-        return found and found[1] ~= nil
-    end
-
-    -- pnpm-lock.yaml → pnpm
-    if has_lock("pnpm-lock.yaml") then
-        local pnpm = vim.fn.exepath("pnpm")
-        if pnpm ~= "" then
-            return pnpm, "pnpm"
-        end
-    end
-
-    -- yarn.lock → yarn
-    if has_lock("yarn.lock") then
-        local yarn = vim.fn.exepath("yarn")
-        if yarn ~= "" then
-            return yarn, "yarn"
-        end
-    end
-
-    -- default: npm
-    local npm = vim.fn.exepath("npm")
-    return npm ~= "" and npm or "npm", "npm"
-end
-
---- Build install/update command
----@param exe string
----@param pm_type string
----@param name string
----@param version string
----@param section string
----@return string[]
-local function build_add_cmd(exe, pm_type, name, version, section)
-    local pkg_spec = name .. "@" .. version
-    local cmd = { exe }
-
-    if pm_type == "yarn" then
-        table.insert(cmd, "add")
-        if section == "devDependencies" then
-            table.insert(cmd, "--dev")
-        end
-        if section == "peerDependencies" then
-            table.insert(cmd, "--peer")
-        end
-        if section == "optionalDependencies" then
-            table.insert(cmd, "--optional")
-        end
-        table.insert(cmd, pkg_spec)
-    elseif pm_type == "pnpm" then
-        table.insert(cmd, "add")
-        if section == "devDependencies" then
-            table.insert(cmd, "--save-dev")
-        end
-        if section == "peerDependencies" then
-            table.insert(cmd, "--save-peer")
-        end
-        if section == "optionalDependencies" then
-            table.insert(cmd, "--save-optional")
-        end
-        table.insert(cmd, pkg_spec)
-    else
-        -- npm
-        table.insert(cmd, "install")
-        if section == "devDependencies" then
-            table.insert(cmd, "--save-dev")
-        end
-        if section == "peerDependencies" then
-            table.insert(cmd, "--save-peer")
-        end
-        if section == "optionalDependencies" then
-            table.insert(cmd, "--save-optional")
-        end
-        table.insert(cmd, pkg_spec)
-    end
-
-    return cmd
-end
-
---- Build remove command
----@param exe string
----@param pm_type string
----@param name string
----@return string[]
-local function build_remove_cmd(exe, pm_type, name)
-    if pm_type == "yarn" then
-        return { exe, "remove", name }
-    end
-    if pm_type == "pnpm" then
-        return { exe, "remove", name }
-    end
-    return { exe, "uninstall", name } -- npm
 end
 
 -- ============================================================================
@@ -345,7 +249,7 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    local exe, pm_type = detect_package_manager(path)
+    local exe, pm_type = npm_ops.detect_package_manager(path)
     if not exe or exe == "" then
         callback({ success = false, message = "no package manager found", packages = {} })
         return
@@ -356,7 +260,7 @@ function M.update_async(name, opts, callback)
     local pkg_raw = all_deps[name]
     local section = type(pkg_raw) == "table" and pkg_raw.section or "dependencies"
 
-    local cmd = build_add_cmd(exe, pm_type, name, version, section)
+    local cmd = npm_ops.build_add_cmd(exe, pm_type, name, version, section)
     local cwd = vim.fn.fnamemodify(path, ":h")
     local bufnr = vim.fn.bufnr(path)
 
@@ -431,8 +335,8 @@ function M.delete(name, opts, callback)
                 return
             end
 
-            local exe, pm_type = detect_package_manager(path)
-            local cmd = build_remove_cmd(exe, pm_type, name)
+            local exe, pm_type = npm_ops.detect_package_manager(path)
+            local cmd = npm_ops.build_remove_cmd(exe, pm_type, name)
             local cwd = vim.fn.fnamemodify(path, ":h")
             local bufnr = vim.fn.bufnr(path)
 
