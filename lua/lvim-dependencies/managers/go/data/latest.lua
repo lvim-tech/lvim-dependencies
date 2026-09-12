@@ -283,7 +283,9 @@ end
 --- Clear the shared latest-version hub cache and drop any in-flight coalescing state.
 function M.clear_cache()
     hub_latest.clear_cache("go")
-    in_flight = {}
+    -- The in-flight table is deliberately NOT reset: a request already on the wire still
+    -- completes and must reach the callbacks queued on it, otherwise those loads never resolve
+    -- and their virtual text stays at "Loading…". The fresh result simply lands in the emptied cache.
     debug("go latest cache cleared (via hub)", vim.log.levels.INFO)
 end
 

@@ -307,7 +307,9 @@ end
 function M.clear_cache()
     local hub = require("lvim-dependencies.core.hub.latest")
     hub.clear_cache("pubspec")
-    in_flight = {}
+    -- The in-flight table is deliberately NOT reset: a request already on the wire still
+    -- completes and must reach the callbacks queued on it, otherwise those loads never resolve
+    -- and their virtual text stays at "Loading…". The fresh result simply lands in the emptied cache.
     debug("Latest cache cleared (via hub)", vim.log.levels.INFO)
 end
 

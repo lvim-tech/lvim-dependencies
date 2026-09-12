@@ -162,12 +162,12 @@ end
 
 ---@param package_name? string
 function M.clear_cache(package_name)
+    -- Only the memoised feature lists are dropped; a request on the wire keeps its waiters,
+    -- otherwise the callbacks queued behind it never fire.
     if package_name then
         features_cache[package_name] = nil
-        in_flight[package_name] = nil
     else
         features_cache = {}
-        in_flight = {}
     end
 end
 
