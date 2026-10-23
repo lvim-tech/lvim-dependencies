@@ -1,8 +1,11 @@
 -- lvim-dependencies.managers.cargo.utils.helpers: shared cargo path/section helpers used by
 -- the api and cargo_ops. Exposes manifest accessors (file/lock patterns, dependency sections),
 -- finds which section a package is declared in, and reads a package's currently-installed
--- version straight out of Cargo.lock (bounded line scan). find_package_section deliberately
--- returns nil if a special (non-dependency) key is present, to avoid misclassifying it.
+-- version straight out of Cargo.lock (bounded line scan). The section a package lives in is
+-- looked up among the dependency headers the FILE actually has (find_dependency_headers), not
+-- among the three bare names — a workspace root declares everything under
+-- `[workspace.dependencies]`. find_package_section deliberately returns nil if a special
+-- (non-dependency) key is present, to avoid misclassifying it.
 ---@module "lvim-dependencies.managers.cargo.utils.helpers"
 
 local init = require("lvim-dependencies.core.init")
@@ -50,6 +53,37 @@ end
 function M.get_dependency_sections()
     local manifest = M.get_manifest()
     return (manifest and manifest.dependency_sections) or { "dependencies", "dev-dependencies", "build-dependencies" }
+end
+
+--- The dependency-table headers actually PRESENT in `lines`, in file order:
+--- `[dependencies]`, `[workspace.dependencies]`, `[target.'cfg(unix)'.dev-dependencies]` …
+--- A header's kind is its trailing dotted component. Resolving a scope by the three bare
+--- names alone meant a workspace root (which has no `[dependencies]`) got one CREATED, and
+--- the crate written into a section cargo does not read, beside its real declaration.
+--- Falls back to the bare section names when the file declares nothing yet, so a fresh
+--- manifest still gets a `[dependencies]` section made for it.
+---@param lines string[]|nil
+---@return string[]
+function M.find_dependency_headers(lines)
+    local kinds = {}
+    for _, section in ipairs(M.get_dependency_sections()) do
+        kinds[section] = true
+    end
+
+    local headers, seen = {}, {}
+    for _, line in ipairs(lines or {}) do
+        local header = line:match("^%s*%[([^%]]+)%]")
+        local kind = header and header:match("([%w%-_]+)$")
+        if kind and kinds[kind] and not seen[header] then
+            seen[header] = true
+            headers[#headers + 1] = header
+        end
+    end
+
+    if #headers == 0 then
+        return M.get_dependency_sections()
+    end
+    return headers
 end
 
 --- Find last dependency section index in lines
@@ -160,7 +194,7 @@ function M.find_package_section(pkg_name)
     end
 
     local manifest = M.get_manifest()
-    local sections = M.get_dependency_sections()
+    local sections = M.find_dependency_headers(lines)
 
     if manifest and manifest.special_keys and vim.tbl_contains(manifest.special_keys, pkg_name) then
         return nil

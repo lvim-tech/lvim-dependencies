@@ -1,5 +1,6 @@
 -- lvim-dependencies.managers.cargo.parser: reads the project's Cargo.toml and parses it into a
--- name→value dependency map (across all dependency sections, minus the special keys). Keeps a
+-- name→value dependency map (across every dependency section — the top-level three, the
+-- workspace root's shared set and the per-target ones — minus the special keys). Keeps a
 -- content-hash cache (last parsed content + result) so an unchanged file is never re-parsed;
 -- clear_cache() drops it after a write.
 ---@module "lvim-dependencies.managers.cargo.parser"
@@ -89,6 +90,50 @@ local function list_to_set(list)
     return set
 end
 
+--- Append the dependency tables `tbl` holds under `sections`, named by their TOML header.
+---@param tbl any                     a table that may hold dependency sections
+---@param sections string[]
+---@param prefix string               header prefix of `tbl` ("", "workspace.", "target.<cfg>.")
+---@param out {header: string, deps: table}[]
+local function collect_sections(tbl, sections, prefix, out)
+    if type(tbl) ~= "table" then
+        return
+    end
+    for _, section in ipairs(sections) do
+        local deps = tbl[section]
+        if type(deps) == "table" then
+            out[#out + 1] = { header = prefix .. section, deps = deps }
+        end
+    end
+end
+
+--- Every dependency table in a Cargo manifest, in the order cargo writes them.
+--- Cargo declares dependencies in more places than the three top-level sections: a workspace
+--- root keeps the shared set under `[workspace.dependencies]` (a virtual root has no
+--- `[dependencies]` at all), and platform ones live under `[target.<cfg>.dependencies]`.
+--- Reading only the top level made every such manifest look empty.
+---@param data table parsed Cargo.toml
+---@param sections string[]
+---@return {header: string, deps: table}[]
+local function dependency_tables(data, sections)
+    local out = {}
+    collect_sections(data, sections, "", out)
+    collect_sections(data.workspace, sections, "workspace.", out)
+    if type(data.target) == "table" then
+        -- Sorted so a manifest with several target tables parses the same way every time
+        -- (pairs() order is not stable, and a name declared twice must resolve the same).
+        local cfgs = {}
+        for cfg in pairs(data.target) do
+            cfgs[#cfgs + 1] = cfg
+        end
+        table.sort(cfgs)
+        for _, cfg in ipairs(cfgs) do
+            collect_sections(data.target[cfg], sections, "target." .. cfg .. ".", out)
+        end
+    end
+    return out
+end
+
 --- Collect dependency entries from every dependency section, skipping special keys.
 ---@param data table parsed Cargo.toml
 ---@param sections string[]
@@ -96,13 +141,10 @@ end
 ---@return table<string, any>
 local function extract_dependencies(data, sections, special_keys)
     local result = {}
-    for _, section in ipairs(sections) do
-        local deps = data[section]
-        if deps and type(deps) == "table" then
-            for name, value in pairs(deps) do
-                if not special_keys[name] then
-                    result[name] = value
-                end
+    for _, entry in ipairs(dependency_tables(data, sections)) do
+        for name, value in pairs(entry.deps) do
+            if not special_keys[name] then
+                result[name] = value
             end
         end
     end

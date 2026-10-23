@@ -206,7 +206,7 @@ function M.update_features(package_name, opts, callback)
         return
     end
 
-    local sections = helpers.get_dependency_sections()
+    local sections = helpers.find_dependency_headers(lines)
     local bufnr = opts.bufnr or vim.fn.bufnr(path)
 
     local target_section_idx = nil
