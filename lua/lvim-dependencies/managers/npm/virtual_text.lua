@@ -144,7 +144,11 @@ function M.format_package_chunks(record)
         return { { "?", groups.error or "Comment" } }
     end
 
-    if record.installed_err or record.latest_err then
+    -- An error is the LAST resort, not a verdict on the whole line. A `latest` lookup that
+    -- 404s or times out used to replace the declared and installed versions with its own
+    -- message, though those two come from the manifest and the lock file and are still true.
+    -- They are rendered; the failure is left to the log.
+    if (record.installed_err or record.latest_err) and not (record.declared_version or record.installed) then
         local err_msg = record.installed_err or record.latest_err or "error"
         return {
             { icons.separators.prefix .. " ", groups.separator },

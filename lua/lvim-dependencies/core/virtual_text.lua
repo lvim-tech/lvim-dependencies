@@ -223,12 +223,14 @@ end
 local function get_package_chunks(vt_module, record, mode)
     local chunks
 
-    if record then
-        if record.installed_err then
-            chunks = error_chunks("inst: " .. record.installed_err)
-        elseif record.latest_err then
-            chunks = error_chunks("latest: " .. record.latest_err)
-        end
+    -- An error only speaks when nothing else can. The declared and installed versions come
+    -- from the manifest and the lock file; a `latest` lookup that 404s (a path/git dependency
+    -- the registry has never heard of) or times out does not make them untrue, and it used to
+    -- replace them on the line with its own message.
+    if record and (record.installed_err or record.latest_err) and not (record.declared_version or record.installed) then
+        chunks = error_chunks(
+            (record.installed_err and "inst: " or "latest: ") .. (record.installed_err or record.latest_err)
+        )
     end
 
     if not chunks then
@@ -254,6 +256,12 @@ local function get_package_chunks(vt_module, record, mode)
             chunks = working_chunks(vt_module)
         elseif not record then
             chunks = loading_chunks(vt_module)
+        elseif vt_module and vt_module.format_package_chunks and record.declared ~= nil then
+            -- A dependency that comes from a path, a git URL, an SDK or this same workspace has
+            -- neither an installed version in the lock nor a latest one in the registry — and is
+            -- not an error either. What the manifest declares is the whole truth about it, and
+            -- the manager knows how to show that; the line used to be left blank.
+            chunks = vt_module.format_package_chunks(record)
         else
             chunks = error_chunks()
         end
