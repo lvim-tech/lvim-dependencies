@@ -14,6 +14,7 @@ local hub_latest = require("lvim-dependencies.core.hub.latest")
 local const = require("lvim-dependencies.core.const")
 local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
+local http = require("lvim-dependencies.utils.http")
 local ui = require("lvim-dependencies.ui")
 
 local helpers = require("lvim-dependencies.managers.cargo.utils.helpers")
@@ -34,9 +35,6 @@ local CACHE_TYPE_LATEST = const.CACHE_TYPES.LATEST
 ---@class CargoActions
 local M = {}
 
----@type string[]|nil
-local cached_sections = nil
-
 -- ============================================================================
 -- Internal helpers
 -- ============================================================================
@@ -45,11 +43,13 @@ local function trigger_package_updated()
     api.nvim_exec_autocmds("User", { pattern = "LvimDepsPackageUpdated" })
 end
 
-local function get_dependency_sections()
-    if not cached_sections then
-        cached_sections = helpers.get_dependency_sections()
-    end
-    return cached_sections
+--- The dependency sections of THIS manifest, by the headers it actually carries. Not cached
+--- across calls: two manifests in one session (a workspace root and a member) do not have the
+--- same ones, and the cached list handed the second one the first one's sections.
+---@param lines string[]
+---@return string[]
+local function get_dependency_sections(lines)
+    return helpers.find_dependency_headers(lines)
 end
 
 local function find_last_section_index(lines, sections)
@@ -297,7 +297,9 @@ function M.fetch_versions_async(name, callback)
 
     local url = registry_base .. string.format(endpoint, name)
 
-    vim.system({ "curl", "-fsS", "--max-time", tostring(timeout), url }, { text = true }, function(res)
+    -- The same identification utils.http sends: crates.io answers 403 to curl's own User-Agent.
+    local cmd = { "curl", "-fsS", "-A", http.USER_AGENT, "--max-time", tostring(timeout), url }
+    vim.system(cmd, { text = true }, function(res)
         vim.schedule(function()
             if not res or res.code ~= 0 or not res.stdout then
                 callback({ versions = {}, current = current or "not installed", section = package_section })
@@ -380,7 +382,6 @@ function M.update_async(name, opts, callback)
 
     debug(string.format("Updating %s to %s", name, version), vim.log.levels.INFO)
 
-    local sections = get_dependency_sections()
     local path = file_ops.find_cargo_toml_path()
     if not path then
         callback({ success = false, message = "Cargo.toml not found", packages = {} })
@@ -393,6 +394,7 @@ function M.update_async(name, opts, callback)
         return
     end
 
+    local sections = get_dependency_sections(disk_lines)
     local scope = resolve_scope(name, disk_lines, sections, opts.scope)
     local original_lines = vim.deepcopy(disk_lines)
     local new_lines, change, prep_err = prepare_toml_changes(name, version, disk_lines, scope, sections)
@@ -481,7 +483,7 @@ function M._delete_package(name, opts, callback)
         return
     end
 
-    local sections = get_dependency_sections()
+    local sections = get_dependency_sections(lines)
     local found_scope = nil
     local section_idx = nil
     local section_end = nil

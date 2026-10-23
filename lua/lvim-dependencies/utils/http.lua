@@ -6,6 +6,21 @@
 
 local M = {}
 
+--- Who we say we are. crates.io's crawler policy REFUSES curl's own `curl/8.x` with 403 —
+--- every `latest` lookup for Cargo failed on it, and the error replaced the virtual text that
+--- the declared/installed data had already earned. A registry is entitled to know who is
+--- calling it, so every request says so, not only the crates.io ones.
+M.USER_AGENT = "lvim-dependencies (+https://github.com/lvim-tech/lvim-dependencies)"
+
+--- The curl argv for a GET of `url`. Exposed so the identification above is testable without
+--- a network round trip.
+---@param url string
+---@param timeout number Timeout in seconds
+---@return string[]
+function M.build_cmd(url, timeout)
+    return { "curl", "-f", "-s", "-L", "-A", M.USER_AGENT, "--max-time", tostring(timeout), url }
+end
+
 --- HTTP GET request using curl
 ---@param url string
 ---@param callback fun(output: string|nil, err: string|nil)
@@ -13,9 +28,7 @@ local M = {}
 function M.get(url, callback, timeout)
     timeout = timeout or 10
 
-    local cmd = { "curl", "-f", "-s", "-L", "--max-time", tostring(timeout), url }
-
-    vim.system(cmd, { text = true }, function(obj)
+    vim.system(M.build_cmd(url, timeout), { text = true }, function(obj)
         if obj.code == 0 then
             callback(obj.stdout, nil)
         else
