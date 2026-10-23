@@ -379,6 +379,8 @@ end
 M.dependency_types = {
     git = {
         type = "git",
+        -- No registry entry to ask about: the source is a git repository, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "table" and v.git ~= nil
         end,
@@ -427,6 +429,8 @@ M.dependency_types = {
 
     path = {
         type = "path",
+        -- No registry entry to ask about: the source is a directory on disk, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "table" and v.path ~= nil
         end,

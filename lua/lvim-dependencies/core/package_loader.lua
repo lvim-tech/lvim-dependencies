@@ -1,11 +1,13 @@
 -- lvim-dependencies.core.package_loader: fetches the three facts about a package —
 -- declared (sync, from the manifest), installed and latest (both async) — and merges them
--- into one PackageResult. installed+latest run in parallel via async.all_settled so one
+-- into one PackageResult. A dependency the manager declares as not coming from the registry
+-- (path, git, sdk, workspace) is never asked for a latest version — there is none to have. installed+latest run in parallel via async.all_settled so one
 -- failing lookup never blocks the other; the per-manifest concurrency cap lives in
 -- core.state (async.all_with_limit).
 --
 ---@module "lvim-dependencies.core.package_loader"
 
+local init = require("lvim-dependencies.core.init")
 local hub_declared = require("lvim-dependencies.core.hub.declared")
 local hub_installed = require("lvim-dependencies.core.hub.installed")
 local hub_latest = require("lvim-dependencies.core.hub.latest")
@@ -63,6 +65,25 @@ local function load_declared(manifest_type, package_name, root)
     return all_declared and all_declared[package_name] or nil
 end
 
+--- Is there a version of this dependency IN THE REGISTRY to look up?
+--- A dependency whose source is not the registry — a local path, a git URL, an SDK, another
+--- package of the same workspace — has none. The request was made anyway, came back 404, and
+--- the failure then stood on the line INSTEAD of the declared and installed versions, which
+--- were already known. A manager marks such kinds with `registry_latest = false` on the
+--- dependency type; anything it does not mark is still looked up.
+---@param manifest_type string
+---@param declared any
+---@return boolean
+local function has_registry_latest(manifest_type, declared)
+    local dep_type = type(declared) == "table" and declared.type or nil
+    if type(dep_type) ~= "string" then
+        return true
+    end
+    local manifest = init.get_manifest(manifest_type)
+    local def = manifest and manifest.dependency_types and manifest.dependency_types[dep_type]
+    return not (def and def.registry_latest == false)
+end
+
 -- ============================================================================
 -- Public API
 -- ============================================================================
@@ -85,6 +106,10 @@ function M.load_package_data_async(manifest_type, package_name, callback, opts)
         end
 
         local latest_task = function(cb)
+            if not has_registry_latest(manifest_type, declared) then
+                cb(nil, nil)
+                return
+            end
             hub_latest.get_package_latest(manifest_type, package_name, cb)
         end
 

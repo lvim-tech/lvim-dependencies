@@ -333,6 +333,8 @@ M.dependency_types = {
     --- VCS/path repository: detected by URL or path patterns
     vcs = {
         type = "vcs",
+        -- No registry entry to ask about: the source is a VCS repository, not the registry.
+        registry_latest = false,
         detect = function(v)
             if type(v) ~= "string" then
                 return false

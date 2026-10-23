@@ -237,6 +237,10 @@
 ---@field extract? fun(version: any, target: table)
 ---@field format? fun(dep: table): VirtualTextChunk[]
 ---@field format_hover? fun(dep: table, latest: string|nil, metadata: table|nil): string[]
+---@field type? string                 the key this definition is registered under
+---@field registry_latest? boolean     false when this kind of dependency has no version in the
+---                                    registry to look up (path, git, sdk, workspace); the
+---                                    loader then never asks for one
 
 -- ============================================================================
 -- Manager manifest types

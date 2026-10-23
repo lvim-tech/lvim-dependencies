@@ -340,6 +340,8 @@ M.dependency_types = {
     --- Workspace protocol: "workspace:*", "workspace:^1.0.0"
     workspace = {
         type = "workspace",
+        -- No registry entry to ask about: the source is another package of this workspace, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "string" and v:match("^workspace:")
         end,
@@ -374,6 +376,8 @@ M.dependency_types = {
     --- Git URL: "git+https://...", "git://...", "github:user/repo", "user/repo"
     git = {
         type = "git",
+        -- No registry entry to ask about: the source is a git repository, not the registry.
+        registry_latest = false,
         detect = function(v)
             if type(v) ~= "string" then
                 return false
@@ -416,6 +420,8 @@ M.dependency_types = {
     --- Local path: "file:../local-pkg", "link:../local-pkg"
     path = {
         type = "path",
+        -- No registry entry to ask about: the source is a directory on disk, not the registry.
+        registry_latest = false,
         detect = function(v)
             if type(v) ~= "string" then
                 return false
