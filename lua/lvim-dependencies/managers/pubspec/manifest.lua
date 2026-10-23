@@ -373,6 +373,8 @@ M.dependency_types = {
 
     git = {
         type = "git",
+        -- No registry entry to ask about: the source is a git repository, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "table" and v.git ~= nil
         end,
@@ -437,6 +439,8 @@ M.dependency_types = {
 
     path = {
         type = "path",
+        -- No registry entry to ask about: the source is a directory on disk, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "table" and v.path ~= nil
         end,
@@ -450,10 +454,13 @@ M.dependency_types = {
                 vt[#vt + 1] = { dep.path.location, groups.declared }
             end
             add_transition(vt)
-            if dep.installed == "not installed" then
-                vt[#vt + 1] = { "Not installed", groups.installed }
-            elseif dep.installed == "path" then
+            if dep.installed == "path" then
+                -- pubspec.lock records a path dependency with this marker instead of a version.
                 vt[#vt + 1] = { "installed", groups.installed }
+            else
+                -- Including nil: a path dependency absent from the lock left the line ending in a
+                -- bare arrow pointing at nothing.
+                add_installed(vt, dep.installed)
             end
             if dep.latest then
                 add_divider(vt)
@@ -476,6 +483,8 @@ M.dependency_types = {
 
     sdk = {
         type = "sdk",
+        -- No registry entry to ask about: the source is the SDK itself, not the registry.
+        registry_latest = false,
         detect = function(v)
             return type(v) == "table" and v.sdk ~= nil
         end,
@@ -488,8 +497,12 @@ M.dependency_types = {
                 if icons.sdk then
                     vt[#vt + 1] = { icons.sdk .. " ", groups.sdk }
                 end
-                local ver = dep.installed or "sdk"
-                vt[#vt + 1] = { string.format("%s (sdk)", ver), "LvimDepsInfo" }
+                -- data.installed reports the literal "sdk" for an SDK package instead of a
+                -- version; with no version to show, "sdk" alone says it, and the line already
+                -- names which one. ("sdk (sdk)" said it twice.)
+                local version = dep.installed ~= "sdk" and dep.installed or nil
+                local label = version and string.format("%s (sdk)", version) or "sdk"
+                vt[#vt + 1] = { label, "LvimDepsInfo" }
             end
             return vt
         end,

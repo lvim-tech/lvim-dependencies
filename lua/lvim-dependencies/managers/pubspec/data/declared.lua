@@ -98,7 +98,9 @@ local function process_dependency(name, version, dep_types)
             type = "sdk",
             declared = nil,
             raw = version,
-            sdk = name,
+            -- The SAME shape the manifest's own sdk.extract produces. A bare string here did not
+            -- match what sdk.format reads (`dep.sdk.name`), so `flutter:` rendered an empty line.
+            sdk = { name = name },
         }
     end
 
