@@ -37,65 +37,235 @@ local in_flight = {}
 -- Feature parsing utilities
 -- ============================================================================
 
----@param package_data any
----@return {features: string[], default_features: boolean, optional: boolean, version: string|nil}
-function M.parse_dependency_data(package_data)
-    local result = { features = {}, default_features = true, optional = false, version = nil }
+--- Split the inside of an inline table into its entries, keeping each value's text as written.
+---@param text string  starts just after the opening brace
+---@return { key: string, value: string }[]|nil entries
+---@return string|nil rest  what follows the closing brace
+local function split_inline_table(text)
+    local entries, start, depth, quote = {}, 1, 0, nil
+    local function push(stop)
+        local raw = vim.trim(text:sub(start, stop))
+        if raw == "" then
+            return true
+        end
+        local key, value = raw:match("^([^=%s]+)%s*=%s*(.-)$")
+        if not key then
+            return false
+        end
+        entries[#entries + 1] = { key = key, value = (value:gsub("%s*\n%s*", " ")) }
+        return true
+    end
+    local i = 1
+    while i <= #text do
+        local c = text:sub(i, i)
+        if quote then
+            if c == "\\" and quote == '"' then
+                i = i + 1
+            elseif c == quote then
+                quote = nil
+            end
+        elseif c == '"' or c == "'" then
+            quote = c
+        elseif c == "#" then
+            return nil
+        elseif c == "[" or c == "{" then
+            depth = depth + 1
+        elseif c == "}" and depth == 0 then
+            if not push(i - 1) then
+                return nil
+            end
+            return entries, vim.trim(text:sub(i + 1))
+        elseif c == "]" or c == "}" then
+            depth = depth - 1
+        elseif c == "," and depth == 0 then
+            if not push(i - 1) then
+                return nil
+            end
+            start = i + 1
+        end
+        i = i + 1
+    end
+    return nil
+end
 
-    if type(package_data) == "string" then
-        result.version = package_data
-        return result
+--- What opts asks to change, as keys to set or (nil value) remove. Features already chosen stay
+--- as written, whatever their order.
+---@param value_of fun(keys: string[]): string|nil
+---@param opts { features?: string[], default_features?: boolean, optional?: boolean }
+---@return { keys: string[], value: string|nil }[]
+local function feature_changes(value_of, opts)
+    local changes = {}
+    if opts.features then
+        local wanted = vim.deepcopy(opts.features)
+        table.sort(wanted)
+        local have = {}
+        for feature in (value_of({ "features" }) or ""):gmatch("[\"']([^\"']*)[\"']") do
+            have[#have + 1] = feature
+        end
+        table.sort(have)
+        if not vim.deep_equal(wanted, have) then
+            changes[#changes + 1] = {
+                keys = { "features" },
+                value = #wanted > 0 and '["' .. table.concat(wanted, '", "') .. '"]' or nil,
+            }
+        end
+    end
+    if opts.default_features ~= nil then
+        changes[#changes + 1] = {
+            keys = { "default-features", "default_features" },
+            value = (not opts.default_features) and "false" or nil,
+        }
+    end
+    if opts.optional ~= nil then
+        changes[#changes + 1] = { keys = { "optional" }, value = opts.optional and "true" or nil }
+    end
+    return changes
+end
+
+--- A `[section.pkg]` block with the same keys changed and every other line as written.
+---@param block string[]
+---@param opts { features?: string[], default_features?: boolean, optional?: boolean }
+---@return string[]|nil
+function M.edit_dependency_table(block, opts)
+    local entries = toml_ops.table_entries(block)
+    if not entries then
+        return nil
+    end
+    return toml_ops.edit_table_block(
+        block,
+        feature_changes(function(keys)
+            for _, entry in ipairs(entries) do
+                if vim.tbl_contains(keys, entry.key) then
+                    return entry.value
+                end
+            end
+        end, opts)
+    )
+end
+
+--- A dependency's lines with its features, default-features and optional keys set, and every
+--- other key (path, git, package, registry, workspace, ...) kept as written. A nil option
+--- leaves that key alone. Nil when the block is not something this can safely rewrite.
+---@param block string[]
+---@param opts { features?: string[], default_features?: boolean, optional?: boolean }
+---@return string|nil line
+function M.edit_dependency_block(block, opts)
+    local indent, name, value = table.concat(block, "\n"):match("^(%s*)([^=]-)%s*=%s*(.*)$")
+    if not name then
+        return nil
     end
 
-    if type(package_data) == "table" then
-        result.version = package_data.version
-        result.features = package_data.features or {}
-        result.optional = package_data.optional or false
-        if package_data["default-features"] == false then
-            result.default_features = false
+    local entries, rest
+    if value:sub(1, 1) == "{" then
+        entries, rest = split_inline_table(value:sub(2))
+    else
+        local version = value:match('^"[^"]*"') or value:match("^'[^']*'")
+        if version then
+            entries, rest = { { key = "version", value = version } }, vim.trim(value:sub(#version + 1))
+        end
+    end
+    if not entries or (rest ~= "" and rest:sub(1, 1) ~= "#") then
+        return nil
+    end
+
+    local function value_of(keys)
+        for _, entry in ipairs(entries) do
+            if vim.tbl_contains(keys, entry.key) then
+                return entry.value
+            end
+        end
+    end
+    for _, change in ipairs(feature_changes(value_of, opts)) do
+        local index
+        for i, entry in ipairs(entries) do
+            if vim.tbl_contains(change.keys, entry.key) then
+                index = i
+                break
+            end
+        end
+        if not change.value then
+            if index then
+                table.remove(entries, index)
+            end
+        elseif index then
+            entries[index].value = change.value
+        else
+            entries[#entries + 1] = { key = change.keys[1], value = change.value }
         end
     end
 
-    return result
+    local rendered
+    if #entries == 1 and entries[1].key == "version" then
+        rendered = entries[1].value
+    else
+        local parts = {}
+        for _, entry in ipairs(entries) do
+            parts[#parts + 1] = entry.key .. " = " .. entry.value
+        end
+        rendered = #parts > 0 and "{ " .. table.concat(parts, ", ") .. " }" or "{}"
+    end
+    return indent .. name .. " = " .. rendered .. (rest ~= "" and " " .. rest or "")
 end
 
----@param name string
----@param version string
----@param features string[]
----@param default_features boolean
----@param optional boolean
----@return string
-function M.build_dependency_line(name, version, features, default_features, optional)
-    if (not features or #features == 0) and default_features and not optional then
-        return string.format('%s = "%s"', name, version)
-    end
-
-    local parts = { string.format('version = "%s"', version) }
-
-    if features and #features > 0 then
-        local sorted = vim.deepcopy(features)
-        table.sort(sorted)
-        table.insert(parts, 'features = ["' .. table.concat(sorted, '", "') .. '"]')
-    end
-    if not default_features then
-        table.insert(parts, "default-features = false")
-    end
-    if optional then
-        table.insert(parts, "optional = true")
-    end
-
-    return string.format("%s = { %s }", name, table.concat(parts, ", "))
+--- The manifest behind a buffer, else the current project's.
+---@param bufnr? integer
+---@return string|nil
+local function manifest_path(bufnr)
+    local name = bufnr and api.nvim_buf_is_valid(bufnr) and api.nvim_buf_get_name(bufnr) or ""
+    return vim.fs.basename(name) == "Cargo.toml" and name or file_ops.find_cargo_toml_path()
 end
 
+--- The entries of a declaration in either form, or nil when it cannot be read.
+---@param block string[]
+---@param form "inline"|"table"
+---@return { key: string, value: string }[]|nil
+local function declaration_entries(block, form)
+    if form == "table" then
+        return toml_ops.table_entries(block)
+    end
+    local value = table.concat(block, "\n"):match("^%s*[^=]-%s*=%s*(.*)$")
+    if not value then
+        return nil
+    end
+    if value:sub(1, 1) == "{" then
+        return (split_inline_table(value:sub(2)))
+    end
+    local version = value:match('^"[^"]*"') or value:match("^'[^']*'")
+    return version and { { key = "version", value = version } } or nil
+end
+
+--- The features of one declaration: the section under the cursor, else the first. The parser's
+--- merged table cannot answer this, since a crate may be declared in several sections.
 ---@param package_name string
+---@param bufnr? integer  the manifest's buffer; a picker may be the current one by then
+---@param section? string
 ---@return {features: string[], default_features: boolean, optional: boolean, version: string|nil}
-function M.get_current_features(package_name)
-    local all_deps = parser.get_dependencies() or {}
-    local pkg_data = all_deps[package_name]
-    if not pkg_data then
-        return { features = {}, default_features = true, optional = false, version = nil }
+function M.get_current_features(package_name, bufnr, section)
+    local result = { features = {}, default_features = true, optional = false, version = nil }
+    local path = manifest_path(bufnr)
+    local lines = path and file_ops.read_lines(path)
+    section = section or (path and helpers.find_package_section(package_name, path))
+    if not lines or not section then
+        return result
     end
-    return M.parse_dependency_data(pkg_data)
+    local first, last, form = toml_ops.locate_package(lines, section, package_name)
+    if not first then
+        return result
+    end
+    for _, entry in ipairs(declaration_entries(vim.list_slice(lines, first, last), form) or {}) do
+        if entry.key == "features" then
+            for feature in entry.value:gmatch("[\"']([^\"']*)[\"']") do
+                result.features[#result.features + 1] = feature
+            end
+        elseif entry.key == "default-features" or entry.key == "default_features" then
+            result.default_features = entry.value ~= "false"
+        elseif entry.key == "optional" then
+            result.optional = entry.value == "true"
+        elseif entry.key == "version" then
+            result.version = entry.value:match("^[\"'](.*)[\"']$")
+        end
+    end
+    return result
 end
 
 -- ============================================================================
@@ -176,27 +346,14 @@ end
 -- ============================================================================
 
 ---@param package_name string
----@param opts {features?: string[], default_features?: boolean, optional?: boolean, bufnr?: integer}
+---@param opts {features?: string[], default_features?: boolean, optional?: boolean, bufnr?: integer, section?: string}
 ---@param callback fun(success: boolean, message: string|nil)
 function M.update_features(package_name, opts, callback)
     debug(string.format("Updating features for %s", package_name), vim.log.levels.INFO)
 
-    local path = file_ops.find_cargo_toml_path()
+    local path = manifest_path(opts.bufnr)
     if not path then
         callback(false, "Cargo.toml not found")
-        return
-    end
-
-    local all_deps = parser.get_dependencies() or {}
-    local current_pkg = all_deps[package_name]
-    if not current_pkg then
-        callback(false, string.format("Package %s not found", package_name))
-        return
-    end
-
-    local current = M.parse_dependency_data(current_pkg)
-    if not current.version then
-        callback(false, "Could not determine current version")
         return
     end
 
@@ -206,61 +363,36 @@ function M.update_features(package_name, opts, callback)
         return
     end
 
-    local sections = helpers.find_dependency_headers(lines)
     local bufnr = opts.bufnr or vim.fn.bufnr(path)
-
-    local target_section_idx = nil
-    local target_section_end = nil
-
-    for _, section in ipairs(sections) do
-        local idx = toml_ops.find_section_index(lines, section)
-        if idx then
-            local end_idx = toml_ops.find_section_end(lines, idx)
-            local start_idx = toml_ops.find_package_line(lines, idx, end_idx, package_name)
-            if start_idx then
-                target_section_idx = idx
-                target_section_end = end_idx
-                break
-            end
-        end
+    local section = opts.section or helpers.find_package_section(package_name, path)
+    local first, last, form
+    if section then
+        first, last, form = toml_ops.locate_package(lines, section, package_name)
     end
-
-    if not target_section_idx then
+    if not first or not last then
         callback(false, string.format("Could not find package %s", package_name))
         return
     end
-    -- target_section_end is always set together with target_section_idx above.
-    ---@cast target_section_end integer
 
     local saved_view = nil
     if bufnr ~= -1 and api.nvim_buf_is_valid(bufnr) and vim.api.nvim_get_current_buf() == bufnr then
         saved_view = vim.fn.winsaveview()
     end
 
-    local new_features = opts.features
-    if new_features == nil then
-        new_features = current.features
+    local block = vim.list_slice(lines, first, last)
+    local replacement
+    if form == "table" then
+        replacement = M.edit_dependency_table(block, opts)
+    else
+        local line = M.edit_dependency_block(block, opts)
+        replacement = line and { line } or nil
     end
-    local new_default_features = opts.default_features
-    if new_default_features == nil then
-        new_default_features = current.default_features
-    end
-    local new_optional = opts.optional
-    if new_optional == nil then
-        new_optional = current.optional
-    end
-
-    local new_line =
-        M.build_dependency_line(package_name, current.version, new_features, new_default_features, new_optional)
-    local new_lines, replaced, change =
-        toml_ops.replace_package_in_section(lines, target_section_idx, target_section_end, package_name, new_line)
-
-    if not replaced then
-        callback(false, string.format("Failed to replace package %s in Cargo.toml", package_name))
+    if not replacement then
+        callback(false, string.format("Cannot rewrite the declaration of %s; edit it by hand", package_name))
         return
     end
-    -- A true `replaced` guarantees new_lines was returned (never nil in that path).
-    ---@cast new_lines string[]
+
+    local new_lines, change = toml_ops.replace_block(lines, first, last, replacement)
 
     local write_ok, write_err = file_ops.write_lines(path, new_lines)
     if not write_ok then
@@ -310,8 +442,10 @@ end
 
 ---@param package_name string
 ---@param callback fun(features: string[]|nil, default_features: boolean|nil, optional: boolean|nil)
-function M.show_features_ui(package_name, callback)
-    local current = M.get_current_features(package_name)
+---@param bufnr? integer
+---@param section? string
+function M.show_features_ui(package_name, callback, bufnr, section)
+    local current = M.get_current_features(package_name, bufnr, section)
 
     M.fetch_available_features(package_name, function(available_features, err)
         if err then
@@ -321,8 +455,10 @@ function M.show_features_ui(package_name, callback)
         end
 
         if not available_features or #available_features == 0 then
+            -- Nothing was chosen, so nothing is written: going on would rebuild the dependency
+            -- declaration for no reason.
             notify("No features available for " .. package_name, vim.log.levels.INFO)
-            callback(current.features, current.default_features, current.optional)
+            callback(nil, nil, nil)
             return
         end
 
@@ -360,6 +496,9 @@ end
 ---@param package_name string
 ---@param bufnr integer
 function M.show_ui(package_name, bufnr)
+    -- Taken now: the cursor says which declaration is meant, and the picker is about to open.
+    local path = manifest_path(bufnr)
+    local section = path and helpers.find_package_section(package_name, path)
     M.show_features_ui(package_name, function(features, default_features, optional)
         if not features then
             return
@@ -369,6 +508,7 @@ function M.show_ui(package_name, bufnr)
             default_features = default_features,
             optional = optional,
             bufnr = bufnr,
+            section = section,
         }, function(success, message)
             if success then
                 notify(string.format("Features updated for %s", package_name), vim.log.levels.INFO)
@@ -376,7 +516,7 @@ function M.show_ui(package_name, bufnr)
                 notify(message or "Failed to update features", vim.log.levels.ERROR)
             end
         end)
-    end)
+    end, bufnr, section)
 end
 
 return M

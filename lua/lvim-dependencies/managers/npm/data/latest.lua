@@ -221,9 +221,7 @@ local function notify_waiters(package_name, err, result)
     local waiting = in_flight[package_name] or {}
     in_flight[package_name] = nil
     for _, cb in ipairs(waiting) do
-        vim.schedule(function()
-            cb(err, result)
-        end)
+        cb(err, result)
     end
 end
 

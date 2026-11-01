@@ -21,7 +21,9 @@ function M.build_cmd(url, timeout)
     return { "curl", "-f", "-s", "-L", "-A", M.USER_AGENT, "--max-time", tostring(timeout), url }
 end
 
---- HTTP GET request using curl
+--- HTTP GET request using curl. `vim.system` answers in a fast event, where most of the Neovim
+--- API is forbidden, so the callback is moved to the main loop here rather than left for each
+--- caller to remember.
 ---@param url string
 ---@param callback fun(output: string|nil, err: string|nil)
 ---@param timeout? number Timeout in seconds (default 10)
@@ -29,11 +31,13 @@ function M.get(url, callback, timeout)
     timeout = timeout or 10
 
     vim.system(M.build_cmd(url, timeout), { text = true }, function(obj)
-        if obj.code == 0 then
-            callback(obj.stdout, nil)
-        else
-            callback(nil, string.format("curl failed with code %d: %s", obj.code, obj.stderr or "unknown error"))
-        end
+        vim.schedule(function()
+            if obj.code == 0 then
+                callback(obj.stdout, nil)
+            else
+                callback(nil, string.format("curl failed with code %d: %s", obj.code, obj.stderr or "unknown error"))
+            end
+        end)
     end)
 end
 

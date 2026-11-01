@@ -53,12 +53,12 @@ M.special_keys = {
 }
 
 M.package_patterns = {
-    simple = '^%s*([%w%-_]+)%s*=%s*"([^"]+)"',
-    table = "^%s*([%w%-_]+)%s*=%s*{",
-    git = '^%s*([%w%-_]+)%s*=%s*{.*git%s*=%s*"',
-    path = '^%s*([%w%-_]+)%s*=%s*{.*path%s*=%s*"',
-    version = '^%s*([%w%-_]+)%s*=%s*{.*version%s*=%s*"',
-    bare = "^%s*([%w%-_]+)%s*=%s*true",
+    simple = [[^%s*["']?([%w%-_]+)["']?%s*=%s*"([^"]+)"]],
+    table = [[^%s*["']?([%w%-_]+)["']?%s*=%s*{]],
+    git = [[^%s*["']?([%w%-_]+)["']?%s*=%s*{.*git%s*=%s*"]],
+    path = [[^%s*["']?([%w%-_]+)["']?%s*=%s*{.*path%s*=%s*"]],
+    version = [[^%s*["']?([%w%-_]+)["']?%s*=%s*{.*version%s*=%s*"]],
+    bare = [[^%s*["']?([%w%-_]+)["']?%s*=%s*true]],
 }
 
 -- ============================================================================
@@ -89,7 +89,9 @@ M.commands = {
         cargo = { "cargo", "add" },
     },
     remove = {
-        cargo = { "cargo", "rm" },
+        -- The manifest is edited by the plugin first, so this only brings the lock file along.
+        -- `cargo rm` here failed on the declaration just removed, or took a second one with it.
+        cargo = { "cargo", "update", "--workspace" },
     },
     update = {
         cargo = { "cargo", "update" },

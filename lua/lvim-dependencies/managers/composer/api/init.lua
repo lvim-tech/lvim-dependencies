@@ -83,6 +83,55 @@ local function refresh_buffer_state(bufnr)
     end)
 end
 
+--- Edit one declaration of a package in several sections, then let composer catch up. Its own
+--- commands work by name: `require --dev` moves the package out of `require`, and `remove` fails
+--- because the other declaration still requires it.
+---@param path string
+---@param name string
+---@param lines string[]
+---@param new_lines string[]
+---@param change FileChange|nil
+---@param message string
+---@param callback InstallerCallback
+local function edit_then_update(path, name, lines, new_lines, change, message, callback)
+    local cmd = composer_ops.build_sync_cmd(name, path)
+    if not cmd then
+        callback({ success = false, message = "composer not found", packages = {} })
+        return
+    end
+    local ok, err = file_ops.write_lines(path, new_lines)
+    if not ok then
+        callback({ success = false, message = "failed to write: " .. tostring(err), packages = {} })
+        return
+    end
+    if change then
+        file_ops.apply_buffer_change(path, change)
+    end
+    local bufnr = vim.fn.bufnr(path)
+    vim.system(cmd, { cwd = vim.fs.dirname(path), text = true }, function(res)
+        vim.schedule(function()
+            clear_package_caches(name)
+            if res.code == 0 then
+                refresh_buffer_state(bufnr)
+                if bufnr ~= -1 and api.nvim_buf_is_valid(bufnr) then
+                    vt.move_virt_texts_only(bufnr)
+                end
+                trigger_package_updated()
+                callback({ success = true, message = message, packages = { name } })
+            else
+                file_ops.write_lines(path, lines)
+                file_ops.force_refresh_buffer(path, lines)
+                callback({
+                    success = false,
+                    message = vim.trim(res.stderr or ""):match("([^\n]+)$") or "composer update failed",
+                    packages = {},
+                    no_retry = true,
+                })
+            end
+        end)
+    end)
+end
+
 -- ============================================================================
 -- Public API
 -- ============================================================================
@@ -254,7 +303,8 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    if opts.from_ui then
+    local declared_twice = #helpers.declared_sections(name, path) > 1
+    if opts.from_ui and not declared_twice then
         composer_ops.run_composer_update(path, name, version, opts, callback)
         return
     end
@@ -266,7 +316,8 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    local section = helpers.find_package_section(name)
+    local section = opts.scope
+        or helpers.find_package_section(name, path)
         or (config.composer and config.composer.sections and config.composer.sections.default)
         or "require"
 
@@ -287,6 +338,11 @@ function M.update_async(name, opts, callback)
 
     if not new_lines then
         callback({ success = false, message = "failed to update composer.json", packages = {} })
+        return
+    end
+
+    if opts.from_ui then
+        edit_then_update(path, name, lines, new_lines, change, "updated " .. name, callback)
         return
     end
 
@@ -360,7 +416,8 @@ function M._delete_package(name, opts, callback)
         return
     end
 
-    local sections = get_dependency_sections()
+    local at = opts.scope or helpers.find_package_section(name, path)
+    local sections = at and { at } or {}
     local found_scope = nil
     local section_idx = nil
     local section_end = nil
@@ -390,6 +447,11 @@ function M._delete_package(name, opts, callback)
     local new_lines, change = json_ops.remove_package_from_section(lines, section_idx, section_end, name)
     if not new_lines then
         callback({ success = false, message = "failed to remove package", packages = {} })
+        return
+    end
+
+    if opts.from_ui and #helpers.declared_sections(name, path) > 1 then
+        edit_then_update(path, name, lines, new_lines, change, "removed successfully", callback)
         return
     end
 

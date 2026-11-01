@@ -98,11 +98,11 @@ local function refresh_buffer_state(bufnr)
     end)
 end
 
-local function resolve_scope(name, disk_lines, sections, scope)
+local function resolve_scope(name, disk_lines, sections, scope, path)
     if scope and vim.tbl_contains(sections, scope) then
         return scope
     end
-    local found = helpers.find_package_section(name)
+    local found = helpers.find_package_section(name, path)
     if found then
         return found
     end
@@ -128,6 +128,24 @@ end
 ---@return FileChange|nil change
 ---@return string|nil err reason the update was refused (git/path dependency)
 local function prepare_toml_changes(name, version, disk_lines, scope, sections)
+    local first, last, form = toml_ops.locate_package(disk_lines, scope, name)
+    if form == "table" then
+        ---@cast first integer
+        ---@cast last integer
+        local block = vim.list_slice(disk_lines, first, last)
+        for _, entry in ipairs(toml_ops.table_entries(block) or {}) do
+            if entry.key == "git" or entry.key == "path" then
+                return disk_lines, nil, string.format("%s is a git/path dependency; version update skipped", name)
+            end
+        end
+        local edited = toml_ops.edit_table_block(block, { { keys = { "version" }, value = '"' .. version .. '"' } })
+        if not edited then
+            return disk_lines, nil, string.format("cannot read the declaration of %s", name)
+        end
+        local new_lines, change = toml_ops.replace_block(disk_lines, first, last, edited)
+        return new_lines, change, nil
+    end
+
     local section_idx = toml_ops.find_section_index(disk_lines, scope)
 
     if not section_idx then
@@ -243,7 +261,7 @@ function M.get_package_at_cursor(opts)
 
     -- A per-dependency subsection ([dependencies.serde], [target.'…'.dependencies.serde]): the
     -- package is the trailing dotted component, never a key on the line inside it.
-    local sub = section:match("dependencies%.([%w%-_]+)$")
+    local sub = section:match("dependencies%.[\"']?([%w%-_]+)[\"']?$")
     if sub then
         return sub
     end
@@ -395,7 +413,7 @@ function M.update_async(name, opts, callback)
     end
 
     local sections = get_dependency_sections(disk_lines)
-    local scope = resolve_scope(name, disk_lines, sections, opts.scope)
+    local scope = resolve_scope(name, disk_lines, sections, opts.scope, path)
     local original_lines = vim.deepcopy(disk_lines)
     local new_lines, change, prep_err = prepare_toml_changes(name, version, disk_lines, scope, sections)
     if prep_err then
@@ -483,41 +501,32 @@ function M._delete_package(name, opts, callback)
         return
     end
 
-    local sections = get_dependency_sections(lines)
-    local found_scope = nil
-    local section_idx = nil
-    local section_end = nil
-
-    for _, scope in ipairs(sections) do
-        local idx = toml_ops.find_section_index(lines, scope)
-        if idx then
-            local end_idx = toml_ops.find_section_end(lines, idx)
-            local i, _ = toml_ops.find_package_block(lines, idx, end_idx, name)
-            if i then
-                found_scope = scope
-                section_idx = idx
-                section_end = end_idx
-                break
-            end
-        end
+    local scope = opts.scope or helpers.find_package_section(name, path)
+    local first, last, form
+    if scope then
+        first, last, form = toml_ops.locate_package(lines, scope, name)
     end
-
-    if not found_scope then
+    if not first or not last then
         callback({ success = false, message = "package " .. name .. " not found", packages = {} })
         return
     end
-    -- section_idx and section_end are always set together with found_scope above.
-    ---@cast section_idx integer
-    ---@cast section_end integer
 
-    local new_lines, change = toml_ops.remove_package_from_section(lines, section_idx, section_end, name)
+    local new_lines, change
+    if form == "table" then
+        new_lines, change = toml_ops.remove_table_block(lines, first, last)
+    else
+        local section_idx = toml_ops.find_section_index(lines, scope)
+        ---@cast section_idx integer
+        new_lines, change =
+            toml_ops.remove_package_from_section(lines, section_idx, toml_ops.find_section_end(lines, section_idx), name)
+    end
     if not new_lines then
         callback({ success = false, message = "failed to remove package", packages = {} })
         return
     end
 
     if opts.from_ui then
-        local cmd = cargo_ops.choose_cargo_remove_cmd(name)
+        local cmd = cargo_ops.choose_cargo_remove_cmd()
         if not cmd then
             callback({ success = false, message = "cargo command not available", packages = {} })
             return

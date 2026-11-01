@@ -89,6 +89,27 @@ function M.find_package_in_line(line)
         or line:match('^%s*"(composer%-[^"]+)"%s*:')
 end
 
+--- Every declaration of a package, for a line of virtual text each.
+---@param lines string[]
+---@param name string
+---@return { line: integer, declared: string|nil }[]  0-indexed lines
+function M.find_declarations(lines, name)
+    local helpers = require("lvim-dependencies.managers.composer.utils.helpers")
+    local json_ops = require("lvim-dependencies.managers.composer.core.json_ops")
+    local out = {}
+    for _, section in ipairs(helpers.get_dependency_sections()) do
+        local idx = json_ops.find_section_index(lines, section)
+        local first = idx and json_ops.find_package_block(lines, idx, json_ops.find_section_end(lines, idx), name)
+        if first then
+            out[#out + 1] = {
+                line = first - 1,
+                declared = lines[first]:match('"' .. vim.pesc(name) .. '"%s*:%s*"([^"]*)"'),
+            }
+        end
+    end
+    return out
+end
+
 --- Find line number of a package in the buffer
 ---@param buf integer
 ---@param package_name string

@@ -5,6 +5,7 @@
 -- supplies the loading/working animation chunks.
 ---@module "lvim-dependencies.managers.cargo.virtual_text"
 
+local toml_ops = require("lvim-dependencies.managers.cargo.core.toml_ops")
 local config = require("lvim-dependencies.config")
 local init = require("lvim-dependencies.core.init")
 
@@ -82,7 +83,28 @@ end
 ---@param line string
 ---@return string|nil
 function M.find_package_in_line(line)
-    return line:match("^%s*([%w%-_%.]+)%s*=")
+    return toml_ops.package_from_header(line) or line:match("^%s*[\"']?([%w%-_%.]+)[\"']?%s*=")
+end
+
+--- Every declaration of a package, for a line of virtual text each.
+---@param lines string[]
+---@param name string
+---@return { line: integer, declared: string|nil }[]  0-indexed lines
+function M.find_declarations(lines, name)
+    local helpers = require("lvim-dependencies.managers.cargo.utils.helpers")
+    local out = {}
+    for _, section in ipairs(helpers.find_dependency_headers(lines)) do
+        local first, last, form = toml_ops.locate_package(lines, section, name)
+        if first then
+            local text = table.concat(vim.list_slice(lines, first, last), " ")
+            out[#out + 1] = {
+                line = first - 1,
+                declared = text:match('%f[%w]version%s*=%s*"([^"]*)"')
+                    or (form == "inline" and text:match('^%s*[^=]-%s*=%s*"([^"]*)"') or nil),
+            }
+        end
+    end
+    return out
 end
 
 --- Find line number of a package in the buffer
@@ -110,9 +132,9 @@ function M.find_package_line(buf, package_name)
         end
     end
 
-    local simple_pattern = "^%s*" .. vim.pesc(package_name) .. "%s*="
+    local simple_pattern = "^%s*[\"']?" .. vim.pesc(package_name) .. "[\"']?%s*="
     for i, line in ipairs(lines) do
-        if line:match(simple_pattern) then
+        if line:match(simple_pattern) or toml_ops.package_from_header(line) == package_name then
             return i - 1
         end
     end

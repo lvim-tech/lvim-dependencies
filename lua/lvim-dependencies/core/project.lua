@@ -41,7 +41,8 @@ function M.buffer_root(bufnr)
 end
 
 --- Directory to start a manifest / lock search from: the configured root_dir, else the
---- explicit `opts.root`, else the directory of `opts.bufnr`, else the cwd.
+--- explicit `opts.root`, else the directory of `opts.bufnr`, else `current_root`: a caller that
+--- names no buffer means the manifest being edited, which in a sub-project is not the cwd's.
 ---@param manager_type string
 ---@param opts? { root?: string, bufnr?: integer }
 ---@return string
@@ -59,7 +60,7 @@ function M.search_root(manager_type, opts)
             return from_buf
         end
     end
-    return vim.fn.getcwd()
+    return M.current_root(manager_type)
 end
 
 --- Search root for an action taken "in the current manifest": the configured root_dir, else
@@ -82,6 +83,33 @@ function M.current_root(manager_type)
         end
     end
     return vim.fn.getcwd()
+end
+
+--- The dependency section holding the declaration under the cursor in `path`'s window, when the
+--- cursor is on one. A package may be declared in several sections and only the line says which
+--- one is meant. The manifest's own window is asked, since a picker may be current by now.
+---@param path string
+---@param sections string[]
+---@param locate fun(lines: string[], section: string): integer|nil, integer|nil  1-indexed block
+---@return string|nil
+function M.section_at_cursor(path, sections, locate)
+    local bufnr = vim.fn.bufnr(path)
+    if bufnr == -1 or not api.nvim_buf_is_loaded(bufnr) then
+        return nil
+    end
+    local win = api.nvim_win_get_buf(0) == bufnr and api.nvim_get_current_win() or vim.fn.bufwinid(bufnr)
+    if win == -1 then
+        return nil
+    end
+    local row = api.nvim_win_get_cursor(win)[1]
+    local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    for _, section in ipairs(sections) do
+        local first, last = locate(lines, section)
+        if first and last and first <= row and row <= last then
+            return section
+        end
+    end
+    return nil
 end
 
 return M

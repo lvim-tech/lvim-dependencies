@@ -12,6 +12,7 @@ local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
 local file_ops = require("lvim-dependencies.managers.cargo.core.file_ops")
 local toml_ops = require("lvim-dependencies.managers.cargo.core.toml_ops")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -77,6 +78,14 @@ function M.find_dependency_headers(lines)
         if kind and kinds[kind] and not seen[header] then
             seen[header] = true
             headers[#headers + 1] = header
+        elseif toml_ops.package_from_header(line) then
+            -- `[dependencies.foo]` is a declaration in `dependencies`, with or without a
+            -- `[dependencies]` header in the file.
+            local outer = header:match("^(.*)%.[\"']?[%w%-_]+[\"']?$")
+            if not seen[outer] then
+                seen[outer] = true
+                headers[#headers + 1] = outer
+            end
         end
     end
 
@@ -181,9 +190,10 @@ end
 
 --- Find which section a package belongs to in Cargo.toml
 ---@param pkg_name string
+---@param path? string  the manifest, when the caller already knows it
 ---@return string|nil
-function M.find_package_section(pkg_name)
-    local path = file_ops.find_cargo_toml_path()
+function M.find_package_section(pkg_name, path)
+    path = path or file_ops.find_cargo_toml_path()
     if not path then
         return nil
     end
@@ -200,15 +210,17 @@ function M.find_package_section(pkg_name)
         return nil
     end
 
+    local at_cursor = project.section_at_cursor(path, sections, function(buf_lines, section)
+        return toml_ops.locate_package(buf_lines, section, pkg_name)
+    end)
+    if at_cursor then
+        return at_cursor
+    end
+
     for _, section in ipairs(sections) do
-        local section_idx = toml_ops.find_section_index(lines, section)
-        if section_idx then
-            local section_end = toml_ops.find_section_end(lines, section_idx)
-            local line_num = toml_ops.find_package_line(lines, section_idx, section_end, pkg_name)
-            if line_num then
-                debug(string.format("Package %s found in section %s", pkg_name, section), vim.log.levels.DEBUG)
-                return section
-            end
+        if toml_ops.locate_package(lines, section, pkg_name) then
+            debug(string.format("Package %s found in section %s", pkg_name, section), vim.log.levels.DEBUG)
+            return section
         end
     end
 

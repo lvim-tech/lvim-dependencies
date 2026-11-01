@@ -15,6 +15,7 @@ local config = require("lvim-dependencies.config")
 local utils = require("lvim-dependencies.utils")
 
 local helpers = require("lvim-dependencies.managers.cargo.utils.helpers")
+local toml_ops = require("lvim-dependencies.managers.cargo.core.toml_ops")
 local file_ops = require("lvim-dependencies.managers.cargo.core.file_ops")
 local indicators = require("lvim-dependencies.managers.cargo.utils.indicators")
 local installed = require("lvim-dependencies.managers.cargo.data.installed")
@@ -140,7 +141,7 @@ local function build_update_command(name, version)
     return nil
 end
 
-local function build_remove_command(pkg_name)
+local function build_remove_command()
     local manifest = helpers.get_manifest()
     if not manifest or not manifest.commands or not manifest.commands.remove then
         return nil
@@ -151,17 +152,15 @@ local function build_remove_command(pkg_name)
     if cargo_cmd and cmd_template then
         local cmd = vim.deepcopy(cmd_template)
         cmd[1] = cargo_cmd
-        table.insert(cmd, pkg_name)
         return cmd
     end
     return nil
 end
 
---- Public accessor for the resolved `cargo rm` command (nil if cargo is unavailable).
----@param pkg_name string
+--- The command that syncs the lock file after a removal (nil if cargo is unavailable).
 ---@return string[]|nil
-function M.choose_cargo_remove_cmd(pkg_name)
-    return build_remove_command(pkg_name)
+function M.choose_cargo_remove_cmd()
+    return build_remove_command()
 end
 
 -- ============================================================================
@@ -174,8 +173,8 @@ local function find_package_line(bufnr, name)
     end
     local lines = api.nvim_buf_get_lines(bufnr, 0, -1, false)
     for i, line in ipairs(lines) do
-        local pkg = line:match("^%s*([%w%-_]+)%s*=")
-        if pkg == name then
+        local pkg = line:match("^%s*[\"']?([%w%-_]+)[\"']?%s*=")
+        if pkg == name or toml_ops.package_from_header(line) == name then
             return i - 1
         end
     end

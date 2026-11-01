@@ -121,6 +121,22 @@ function M.build_require_cmd(exe, name, version, section)
     return cmd
 end
 
+--- The command that brings the lock file along after the manifest was edited.
+---@param name string
+---@param path string  composer.json
+---@return string[]|nil
+function M.build_sync_cmd(name, path)
+    local exe = get_executable()
+    if not exe then
+        return nil
+    end
+    -- composer refuses a partial update with no lock file to update.
+    if vim.uv.fs_stat(vim.fs.dirname(path) .. "/composer.lock") then
+        return { exe, "update", name, "--no-interaction" }
+    end
+    return { exe, "update", "--no-interaction" }
+end
+
 --- Build the `composer remove <name>` argv.
 ---@param exe string
 ---@param name string
@@ -236,9 +252,9 @@ function M.run_composer_update(path, name, version, opts, callback)
         return
     end
 
-    local all_deps = parser.get_dependencies()
-    local pkg_raw = all_deps[name]
-    local section = (pkg_raw and pkg_raw.section)
+    local helpers = require("lvim-dependencies.managers.composer.utils.helpers")
+    local section = opts.scope
+        or helpers.find_package_section(name, path)
         or (config.composer and config.composer.sections and config.composer.sections.default)
         or "require"
 

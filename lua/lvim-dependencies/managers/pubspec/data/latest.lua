@@ -178,9 +178,7 @@ local function notify_waiters(package_name, err, result)
     in_flight[package_name] = nil
     debug(string.format("Calling %d waiters for %s", #waiting, package_name), vim.log.levels.DEBUG)
     for _, cb in ipairs(waiting) do
-        vim.schedule(function()
-            cb(err, result)
-        end)
+        cb(err, result)
     end
 end
 

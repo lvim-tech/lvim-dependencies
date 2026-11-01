@@ -9,6 +9,7 @@ local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
 local file_ops = require("lvim-dependencies.managers.npm.core.file_ops")
 local json_ops = require("lvim-dependencies.managers.npm.core.json_ops")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -48,9 +49,10 @@ end
 
 --- Find which section a package belongs to in package.json
 ---@param pkg_name string
+---@param path? string  the manifest, when the caller already knows it
 ---@return string|nil section
-function M.find_package_section(pkg_name)
-    local path = file_ops.find_package_json_path()
+function M.find_package_section(pkg_name, path)
+    path = path or file_ops.find_package_json_path()
     if not path then
         return nil
     end
@@ -65,6 +67,16 @@ function M.find_package_section(pkg_name)
         return nil
     end
 
+    local at_cursor = project.section_at_cursor(path, M.get_dependency_sections(), function(lines, section)
+        local idx = json_ops.find_section_index(lines, section)
+        if idx then
+            return json_ops.find_package_block(lines, idx, json_ops.find_section_end(lines, idx), pkg_name)
+        end
+    end)
+    if at_cursor then
+        return at_cursor
+    end
+
     for _, section in ipairs(M.get_dependency_sections()) do
         if data[section] and data[section][pkg_name] ~= nil then
             debug(string.format("Package '%s' found in section '%s'", pkg_name, section), vim.log.levels.DEBUG)
@@ -74,6 +86,22 @@ function M.find_package_section(pkg_name)
 
     debug(string.format("Package '%s' not found in any section", pkg_name), vim.log.levels.DEBUG)
     return nil
+end
+
+--- Every section that declares a package.
+---@param pkg_name string
+---@param path string
+---@return string[]
+function M.declared_sections(pkg_name, path)
+    local content = file_ops.read_content(path)
+    local data = content and json_ops.parse(content)
+    local out = {}
+    for _, section in ipairs(M.get_dependency_sections()) do
+        if data and data[section] and data[section][pkg_name] ~= nil then
+            out[#out + 1] = section
+        end
+    end
+    return out
 end
 
 --- Read installed version from node_modules/pkg/package.json

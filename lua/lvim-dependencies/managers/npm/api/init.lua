@@ -19,6 +19,9 @@ local compare_versions = require("lvim-dependencies.managers.npm.compare_version
 -- The one package-manager detector: honours config.npm.preferred_manager / executables (the
 -- private copy that used to live here ignored both, so those documented keys did nothing).
 local npm_ops = require("lvim-dependencies.managers.npm.core.npm_ops")
+local helpers = require("lvim-dependencies.managers.npm.utils.helpers")
+local file_ops = require("lvim-dependencies.managers.npm.core.file_ops")
+local json_ops = require("lvim-dependencies.managers.npm.core.json_ops")
 
 local debug = utils.debug
 local api = vim.api
@@ -57,6 +60,40 @@ local function refresh_buffer_state(bufnr)
     vim.bo[bufnr].modified = false
     api.nvim_buf_call(bufnr, function()
         vim.cmd("checktime")
+    end)
+end
+
+--- Edit one declaration of a package in several sections, then let the tool catch up. Its own
+--- add and remove commands work by name: `install --save-dev` moves the package out of
+--- `dependencies` and `uninstall` empties both sections.
+---@param path string
+---@param name string
+---@param lines string[]
+---@param new_lines string[]
+---@param change FileChange|nil
+---@param exe string
+---@param on_done fun(res: table|nil)
+local function edit_then_install(path, name, lines, new_lines, change, exe, on_done)
+    local bufnr = vim.fn.bufnr(path)
+    local ok = file_ops.write_lines(path, new_lines)
+    if not ok then
+        on_done(nil)
+        return
+    end
+    if change then
+        file_ops.apply_buffer_change(path, change)
+    end
+    vim.system({ exe, "install" }, { cwd = vim.fs.dirname(path), text = true }, function(res)
+        vim.schedule(function()
+            if res.code ~= 0 then
+                file_ops.write_lines(path, lines)
+                if bufnr ~= -1 and api.nvim_buf_is_loaded(bufnr) then
+                    file_ops.force_refresh_buffer(path, lines)
+                end
+            end
+            clear_package_caches(name)
+            on_done(res)
+        end)
     end)
 end
 
@@ -256,9 +293,7 @@ function M.update_async(name, opts, callback)
     end
 
     -- Determine section for this package
-    local all_deps = parser.get_dependencies({ root = vim.fs.dirname(path) })
-    local pkg_raw = all_deps[name]
-    local section = type(pkg_raw) == "table" and pkg_raw.section or "dependencies"
+    local section = opts.scope or helpers.find_package_section(name, path) or "dependencies"
 
     local cmd = npm_ops.build_add_cmd(exe, pm_type, name, version, section)
     local cwd = vim.fn.fnamemodify(path, ":h")
@@ -282,6 +317,38 @@ function M.update_async(name, opts, callback)
                 vt.update_package(bufnr, package_data)
             end
         end, { initial = false })
+    end
+
+    if #helpers.declared_sections(name, path) > 1 then
+        local lines = file_ops.read_lines(path)
+        local idx = lines and json_ops.find_section_index(lines, section)
+        if not idx then
+            callback({ success = false, message = "section not found: " .. section, packages = {} })
+            return
+        end
+        local section_end = json_ops.find_section_end(lines, idx)
+        local first = json_ops.find_package_block(lines, idx, section_end, name)
+        -- The range style stays what it was, as `install` would have kept it.
+        local prefix = first and lines[first]:match(':%s*"([%^~])') or ""
+        local spec = version:match("^[%^~<>=]") and version or (prefix .. version)
+        local new_lines, replaced, change =
+            json_ops.replace_package_in_section(lines, idx, section_end, name, json_ops.format_package_line(name, spec))
+        if not replaced then
+            callback({ success = false, message = "package " .. name .. " not found", packages = {} })
+            return
+        end
+        edit_then_install(path, name, lines, new_lines, change, exe, function(res)
+            refresh_vt()
+            if res and res.code == 0 then
+                require("lvim-dependencies.core.hub.declared").refresh_data("npm")
+                refresh_buffer_state(bufnr)
+                trigger_package_updated()
+                callback({ success = true, message = string.format("updated %s@%s", name, version), packages = { name } })
+            else
+                callback({ success = false, message = extract_error(res or {}), packages = {}, no_retry = true })
+            end
+        end)
+        return
     end
 
     vim.system(cmd, { cwd = cwd, text = true }, function(res)
@@ -336,6 +403,40 @@ function M.delete(name, opts, callback)
             end
 
             local exe, pm_type = npm_ops.detect_package_manager(path)
+
+            if #helpers.declared_sections(name, path) > 1 then
+                local section = opts.scope or helpers.find_package_section(name, path)
+                local lines = file_ops.read_lines(path)
+                local idx = lines and section and json_ops.find_section_index(lines, section)
+                local new_lines, change
+                if idx then
+                    new_lines, change = json_ops.remove_package_from_section(
+                        lines,
+                        idx,
+                        json_ops.find_section_end(lines, idx),
+                        name
+                    )
+                end
+                if not new_lines then
+                    callback({ success = false, message = "failed to remove package", packages = {} })
+                    return
+                end
+                edit_then_install(path, name, lines, new_lines, change, exe, function(res)
+                    if res and res.code == 0 then
+                        local bufnr = vim.fn.bufnr(path)
+                        if bufnr ~= -1 then
+                            refresh_buffer_state(bufnr)
+                            vt.move_virt_texts_only(bufnr)
+                        end
+                        trigger_package_updated()
+                        callback({ success = true, message = "removed successfully", packages = { name } })
+                    else
+                        callback({ success = false, message = extract_error(res or {}), packages = {} })
+                    end
+                end)
+                return
+            end
+
             local cmd = npm_ops.build_remove_cmd(exe, pm_type, name)
             local cwd = vim.fn.fnamemodify(path, ":h")
             local bufnr = vim.fn.bufnr(path)

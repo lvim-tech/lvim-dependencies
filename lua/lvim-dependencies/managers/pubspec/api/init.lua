@@ -121,12 +121,12 @@ end
 ---@param sections string[]
 ---@param scope string|nil
 ---@return string
-local function resolve_scope(name, disk_lines, sections, scope)
+local function resolve_scope(name, disk_lines, sections, scope, path)
     if scope and vim.tbl_contains(sections, scope) then
         return scope
     end
 
-    local found = helpers.find_package_section(name)
+    local found = helpers.find_package_section(name, path)
     if found then
         return found
     end
@@ -393,7 +393,7 @@ function M.update_async(name, opts, callback)
         return
     end
 
-    local scope = resolve_scope(name, disk_lines, sections, opts.scope)
+    local scope = resolve_scope(name, disk_lines, sections, opts.scope, path)
     local original_lines = vim.deepcopy(disk_lines)
     local new_lines, change = prepare_yaml_changes(name, version, disk_lines, scope, sections)
 
@@ -480,7 +480,8 @@ function M._delete_package(name, opts, callback)
         return
     end
 
-    local sections = get_dependency_sections()
+    local at = opts.scope or helpers.find_package_section(name, path)
+    local sections = at and { at } or {}
     local found_scope = nil
     local section_idx = nil
     local section_end = nil
@@ -511,7 +512,7 @@ function M._delete_package(name, opts, callback)
     end
 
     if opts.from_ui then
-        local cmd = pub_ops.choose_pub_remove_cmd(path, name)
+        local cmd = pub_ops.choose_pub_remove_cmd(path)
         if not cmd then
             callback({ success = false, message = "neither flutter nor dart CLI available", packages = {} })
             return

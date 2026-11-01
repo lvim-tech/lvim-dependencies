@@ -207,9 +207,8 @@ local function build_get_command(pubspec_path)
 end
 
 ---@param pubspec_path string
----@param pkg_name string
 ---@return string[]|nil
-local function build_remove_command(pubspec_path, pkg_name)
+local function build_remove_command(pubspec_path)
     local manifest = helpers.get_manifest()
     if not manifest or not manifest.commands or not manifest.commands.remove then
         return nil
@@ -221,7 +220,6 @@ local function build_remove_command(pubspec_path, pkg_name)
         if flutter_cmd and cmd_template then
             local cmd = vim.deepcopy(cmd_template)
             cmd[1] = flutter_cmd
-            table.insert(cmd, pkg_name)
             return cmd
         end
     end
@@ -231,7 +229,6 @@ local function build_remove_command(pubspec_path, pkg_name)
     if dart_cmd and cmd_template then
         local cmd = vim.deepcopy(cmd_template)
         cmd[1] = dart_cmd
-        table.insert(cmd, pkg_name)
         return cmd
     end
 
@@ -239,10 +236,9 @@ local function build_remove_command(pubspec_path, pkg_name)
 end
 
 ---@param pubspec_path string
----@param pkg_name string
 ---@return string[]|nil
-function M.choose_pub_remove_cmd(pubspec_path, pkg_name)
-    return build_remove_command(pubspec_path, pkg_name)
+function M.choose_pub_remove_cmd(pubspec_path)
+    return build_remove_command(pubspec_path)
 end
 
 -- ============================================================================

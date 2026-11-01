@@ -108,8 +108,10 @@ M.api = {
 
 M.commands = {
     remove = {
-        flutter = { "flutter", "pub", "remove" },
-        dart = { "dart", "pub", "remove" },
+        -- The manifest is edited by the plugin first, so this only brings the lock file along.
+        -- `pub remove <name>` here took a second declaration of the package with it.
+        flutter = { "flutter", "pub", "get" },
+        dart = { "dart", "pub", "get" },
     },
     get = {
         flutter = { "flutter", "pub", "get" },

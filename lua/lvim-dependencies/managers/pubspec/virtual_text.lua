@@ -94,6 +94,26 @@ function M.find_package_in_line(line)
     return line:match("^%s*([%w%-_%.]+)%s*:")
 end
 
+--- Every declaration of a package, for a line of virtual text each.
+---@param lines string[]
+---@param name string
+---@return { line: integer, declared: string|nil }[]  0-indexed lines
+function M.find_declarations(lines, name)
+    local helpers = require("lvim-dependencies.managers.pubspec.utils.helpers")
+    local yaml_ops = require("lvim-dependencies.managers.pubspec.core.yaml_ops")
+    local out = {}
+    for _, section in ipairs(helpers.get_dependency_sections()) do
+        local idx = yaml_ops.find_section_index(lines, section)
+        local first = idx and yaml_ops.find_package_block(lines, idx, yaml_ops.find_section_end(lines, idx), name)
+        if first then
+            local value = vim.trim((lines[first]:match(":%s*(.*)$") or ""):gsub("%s+#.*$", ""))
+            value = value:gsub("^[\"'](.*)[\"']$", "%1")
+            out[#out + 1] = { line = first - 1, declared = value ~= "" and value or nil }
+        end
+    end
+    return out
+end
+
 --- Find line number of a package in the buffer
 ---@param buf integer
 ---@param package_name string

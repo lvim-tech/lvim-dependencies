@@ -339,6 +339,58 @@ local function set_extmark(buf, package_name, line_num, chunks, record)
     return extmark_id
 end
 
+--- Give every declaration of a package its own text. A record is per name, so a package in two
+--- sections showed one section's constraint on the other's line and nothing on the second.
+---@param buf integer
+---@param pkg string
+---@param record PackageRecord
+---@param vt_module table|nil
+---@param mode? "loading"|"working"
+local function paint_declarations(buf, pkg, record, vt_module, mode)
+    for _, id in ipairs(record.extra_extmarks or {}) do
+        pcall(api.nvim_buf_del_extmark, buf, M.namespace, id)
+    end
+    record.extra_extmarks = nil
+    if not vt_module or not vt_module.find_declarations then
+        return
+    end
+    local declarations = vt_module.find_declarations(api.nvim_buf_get_lines(buf, 0, -1, false), pkg)
+    if #declarations < 2 then
+        return
+    end
+    table.sort(declarations, function(a, b)
+        return a.line < b.line
+    end)
+    local extra = {}
+    for i, declaration in ipairs(declarations) do
+        local view = record
+        if declaration.declared then
+            view = vim.tbl_extend(
+                "force",
+                record,
+                { declared = declaration.declared, declared_version = declaration.declared }
+            )
+        end
+        local chunks = get_package_chunks(vt_module, view, mode)
+        if i == 1 then
+            set_extmark(buf, pkg, declaration.line, chunks, record)
+        else
+            local ok, id = pcall(
+                api.nvim_buf_set_extmark,
+                buf,
+                M.namespace,
+                declaration.line,
+                0,
+                { virt_text = chunks, virt_text_pos = VT_POSITION }
+            )
+            if ok then
+                extra[#extra + 1] = id
+            end
+        end
+    end
+    record.extra_extmarks = extra
+end
+
 --- Ensure buffer virtual text table is initialized with metadata
 ---@param buf integer
 ---@param manifest_type? string
@@ -408,6 +460,7 @@ function M.move_virt_texts_only(buf)
             local chunks = get_package_chunks(rec_module, record, mode)
             local record_data = create_record(matched_pkg, declared_packages[matched_pkg], manifest_type, record)
             set_extmark(buf, matched_pkg, line_num, chunks, record_data)
+            paint_declarations(buf, matched_pkg, record_data, rec_module, mode)
 
             if found_count >= total_packages then
                 break
@@ -420,6 +473,9 @@ function M.move_virt_texts_only(buf)
         if type(key) == "string" and type(val) == "table" and val.package and not seen[key] then
             if val.extmark_id then
                 pcall(api.nvim_buf_del_extmark, buf, M.namespace, val.extmark_id)
+            end
+            for _, id in ipairs(val.extra_extmarks or {}) do
+                pcall(api.nvim_buf_del_extmark, buf, M.namespace, id)
             end
             M.virt_texts[buf][key] = nil
         end
@@ -487,6 +543,9 @@ function M.remove_package(buf, package_name)
     local record = M.virt_texts[buf][package_name]
     if record.extmark_id then
         pcall(api.nvim_buf_del_extmark, buf, M.namespace, record.extmark_id)
+    end
+    for _, id in ipairs(record.extra_extmarks or {}) do
+        pcall(api.nvim_buf_del_extmark, buf, M.namespace, id)
     end
     M.virt_texts[buf][package_name] = nil
 end
@@ -665,6 +724,7 @@ function M.update_package(buf, package_data)
     local vt_module = get_vt_module(record.manifest_type)
     local chunks = get_package_chunks(vt_module, record, nil)
     set_extmark(buf, pkg, line_num, chunks, record)
+    paint_declarations(buf, pkg, record, vt_module, nil)
 
     local duration = metrics.end_measure(measure_token)
     metrics.record_operation("vt_update", duration)

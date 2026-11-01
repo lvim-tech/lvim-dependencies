@@ -11,6 +11,7 @@ local utils = require("lvim-dependencies.utils")
 local config = require("lvim-dependencies.config")
 local file_ops = require("lvim-dependencies.managers.pubspec.core.file_ops")
 local yaml_ops = require("lvim-dependencies.managers.pubspec.core.yaml_ops")
+local project = require("lvim-dependencies.core.project")
 
 local debug = utils.debug
 
@@ -221,9 +222,10 @@ end
 
 --- Find which section a package belongs to
 ---@param pkg_name string
+---@param path? string  the manifest, when the caller already knows it
 ---@return string|nil
-function M.find_package_section(pkg_name)
-    local path = file_ops.find_pubspec_path()
+function M.find_package_section(pkg_name, path)
+    path = path or file_ops.find_pubspec_path()
     if not path then
         return nil
     end
@@ -236,6 +238,16 @@ function M.find_package_section(pkg_name)
     -- No special-key short-circuit here: `path`/`web`/… are real packages, and find_package_block
     -- only matches at the section's package indent, so a block's nested fields cannot pose as one.
     local sections = M.get_dependency_sections()
+
+    local at_cursor = project.section_at_cursor(path, sections, function(buf_lines, section)
+        local idx = yaml_ops.find_section_index(buf_lines, section)
+        if idx then
+            return yaml_ops.find_package_block(buf_lines, idx, yaml_ops.find_section_end(buf_lines, idx), pkg_name)
+        end
+    end)
+    if at_cursor then
+        return at_cursor
+    end
 
     for _, section in ipairs(sections) do
         local section_idx = yaml_ops.find_section_index(lines, section)
