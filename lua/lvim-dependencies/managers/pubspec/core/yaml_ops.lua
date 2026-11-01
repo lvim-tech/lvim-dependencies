@@ -9,6 +9,7 @@
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
+local brackets = require("lvim-dependencies.core.brackets")
 local debug = utils.debug
 
 ---@class PubspecYamlOps
@@ -79,16 +80,28 @@ function M.find_section_end(lines, section_idx)
         return #lines
     end
 
+    -- A comment at column 0 does not end a section, nor does the closing bracket of a flow value.
+    local last = #lines
     for i = section_idx + 1, #lines do
         local line = lines[i]
-        if line and line:match("^%S") then
-            debug(string.format("Section end at line %d", i - 1), vim.log.levels.DEBUG)
-            return i - 1
+        if line and line:match("^%S") and not line:match("^#") and not line:match("^[%]}]") then
+            last = i - 1
+            break
         end
     end
 
-    debug(string.format("Section end at file end (%d)", #lines), vim.log.levels.DEBUG)
-    return #lines
+    -- A comment right before the next key belongs to that key.
+    local j, commented = last, false
+    while j > section_idx and (lines[j]:match("^%s*$") or lines[j]:match("^#")) do
+        commented = commented or lines[j]:match("^#") ~= nil
+        j = j - 1
+    end
+    if commented then
+        last = j
+    end
+
+    debug(string.format("Section end at line %d", last), vim.log.levels.DEBUG)
+    return last
 end
 
 --- The indent (in characters) at which a section's packages sit: that of the first non-blank,
@@ -137,21 +150,23 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
             local pkg_indent_len = #pkg_indent
             local block_end = i
 
+            -- Deeper lines belong to the package, across blank lines and comments, and a flow
+            -- value (`foo: {` ... `}`) runs until its brackets close, whatever their indent.
+            local depth = brackets.depth_after(line, 0, "#")
             for j = i + 1, section_end do
                 local next_line = lines[j]
                 if not next_line then
                     break
                 end
-
-                if next_line:match("^%S") then
-                    break
-                end
-
-                local next_indent = get_line_indent(next_line)
-                if #next_indent > pkg_indent_len then
+                if depth > 0 then
+                    depth = brackets.depth_after(next_line, depth, "#")
                     block_end = j
-                else
-                    break
+                elseif not next_line:match("^%s*$") and not next_line:match("^%s*#") then
+                    if #get_line_indent(next_line) > pkg_indent_len then
+                        block_end = j
+                    else
+                        break
+                    end
                 end
             end
 

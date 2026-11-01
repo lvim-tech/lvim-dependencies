@@ -8,6 +8,7 @@
 
 local init = require("lvim-dependencies.core.init")
 local utils = require("lvim-dependencies.utils")
+local brackets = require("lvim-dependencies.core.brackets")
 
 local debug = utils.debug
 
@@ -117,7 +118,19 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
             local pkg_indent_len = #pkg_indent
             local block_end = i
 
-            for j = i + 1, section_end do
+            -- A value runs until its brackets close, wherever the closing line is indented:
+            -- taplo puts the `] }` of a long features array back at column 0.
+            local depth = brackets.depth_after(line, 0, "#")
+            local closing = i
+            while depth > 0 and closing < section_end do
+                closing = closing + 1
+                depth = brackets.depth_after(lines[closing], depth, "#")
+            end
+            if depth == 0 then
+                block_end = closing
+            end
+
+            for j = block_end + 1, section_end do
                 local next_line = lines[j]
                 if not next_line then
                     break
@@ -328,6 +341,25 @@ function M.remove_table_block(lines, first, last)
         last = last + 1
     end
     return M.replace_block(lines, first, last, {})
+end
+
+--- The package whose declaration covers line `row`, for a cursor inside a multi-line value.
+---@param lines string[]
+---@param section_idx integer
+---@param row integer  1-indexed
+---@return string|nil
+function M.package_containing(lines, section_idx, row)
+    local section_end = M.find_section_end(lines, section_idx)
+    for i = section_idx + 1, math.min(row, section_end) do
+        local name = get_package_name_from_line(lines[i])
+        if name then
+            local first, last = M.find_package_block(lines, section_idx, section_end, name)
+            if first == i and last and row <= last then
+                return name
+            end
+        end
+    end
+    return nil
 end
 
 --- Find package line number (returns 1-indexed first line of package)

@@ -132,7 +132,11 @@ local function show_features_selection(features_data, current_features, callback
     local initial_selected = {}
     for _, f in ipairs(current_features or {}) do
         initial_selected[f] = true
+        if not vim.tbl_contains(available, f) then
+            available[#available + 1] = f
+        end
     end
+    table.sort(available)
 
     vim.schedule(function()
         ui.multiselect("Cargo Features", "Select features", "Space toggles, Enter confirms", available, function(confirmed, selected)

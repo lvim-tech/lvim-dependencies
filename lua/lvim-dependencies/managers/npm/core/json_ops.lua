@@ -8,6 +8,7 @@
 
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")
+local brackets = require("lvim-dependencies.core.brackets")
 
 local debug = utils.debug
 
@@ -102,7 +103,7 @@ function M.find_package_line(lines, section_idx, section_end, pkg_name)
 end
 
 --- Find start/end of a package block inside a section.
---- Simple packages are single-line; object packages span multiple lines.
+--- A value may span lines, however a formatter broke it.
 ---@param lines string[]
 ---@param section_idx integer
 ---@param section_end integer
@@ -116,29 +117,7 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
         return nil, nil, nil
     end
 
-    local first_line = lines[start_idx]
-
-    -- Single-line value: "pkg": "version",
-    if not first_line:match("{%s*$") then
-        return start_idx, start_idx, first_line
-    end
-
-    -- Multi-line object value: find closing }
-    local depth = 0
-    for i = start_idx, section_end do
-        for ch in lines[i]:gmatch("[{}]") do
-            if ch == "{" then
-                depth = depth + 1
-            else
-                depth = depth - 1
-                if depth == 0 then
-                    return start_idx, i, first_line
-                end
-            end
-        end
-    end
-
-    return start_idx, section_end, first_line
+    return start_idx, brackets.json_value_end(lines, start_idx, section_end), lines[start_idx]
 end
 
 --- Replace a package entry in a section

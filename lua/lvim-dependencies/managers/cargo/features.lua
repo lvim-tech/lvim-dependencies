@@ -67,7 +67,13 @@ local function split_inline_table(text)
         elseif c == '"' or c == "'" then
             quote = c
         elseif c == "#" then
-            return nil
+            -- A comment inside a multi-line value: not part of any value.
+            local newline = text:find("\n", i, true)
+            if not newline then
+                return nil
+            end
+            text = text:sub(1, i - 1) .. text:sub(newline)
+            i = i - 1
         elseif c == "[" or c == "{" then
             depth = depth + 1
         elseif c == "}" and depth == 0 then
@@ -168,6 +174,7 @@ function M.edit_dependency_block(block, opts)
         return nil
     end
 
+    local before = vim.inspect(entries)
     local function value_of(keys)
         for _, entry in ipairs(entries) do
             if vim.tbl_contains(keys, entry.key) then
@@ -192,6 +199,10 @@ function M.edit_dependency_block(block, opts)
         else
             entries[#entries + 1] = { key = change.keys[1], value = change.value }
         end
+    end
+
+    if vim.inspect(entries) == before then
+        return table.concat(block, "\n") -- nothing changed, so nothing is reformatted
     end
 
     local rendered
@@ -385,7 +396,7 @@ function M.update_features(package_name, opts, callback)
         replacement = M.edit_dependency_table(block, opts)
     else
         local line = M.edit_dependency_block(block, opts)
-        replacement = line and { line } or nil
+        replacement = line and vim.split(line, "\n", { plain = true }) or nil
     end
     if not replacement then
         callback(false, string.format("Cannot rewrite the declaration of %s; edit it by hand", package_name))
@@ -462,17 +473,22 @@ function M.show_features_ui(package_name, callback, bufnr, section)
             return
         end
 
-        local initial_selected = {}
+        -- A declared feature the registry's list lacks stays on the list, or confirming drops it.
+        local initial_selected, items = {}, vim.deepcopy(available_features)
         for _, f in ipairs(current.features) do
             initial_selected[f] = true
+            if not vim.tbl_contains(items, f) then
+                items[#items + 1] = f
+            end
         end
+        table.sort(items)
 
         vim.schedule(function()
             ui.multiselect(
                 "Cargo Features",
                 string.format("Select features for %s", package_name),
                 string.format("Current version: %s", current.version or "unknown"),
-                available_features,
+                items,
                 function(confirmed, selected)
                     if not confirmed then
                         callback(nil, nil, nil)

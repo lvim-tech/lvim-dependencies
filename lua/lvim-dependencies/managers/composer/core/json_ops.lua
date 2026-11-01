@@ -8,6 +8,7 @@
 
 local json = require("lvim-dependencies.libs.json")
 local utils = require("lvim-dependencies.utils")
+local brackets = require("lvim-dependencies.core.brackets")
 
 local debug = utils.debug
 
@@ -97,8 +98,7 @@ function M.find_package_block(lines, section_idx, section_end, pkg_name)
     if not start_idx then
         return nil, nil, nil
     end
-    -- composer.json packages are always single-line: "vendor/pkg": "^1.0"
-    return start_idx, start_idx, lines[start_idx]
+    return start_idx, brackets.json_value_end(lines, start_idx, section_end), lines[start_idx]
 end
 
 --- Replace a package entry in a section

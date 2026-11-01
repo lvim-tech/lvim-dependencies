@@ -102,11 +102,15 @@ function M.find_declarations(lines, name)
     local out = {}
     for _, section in ipairs(helpers.get_dependency_sections()) do
         local idx = json_ops.find_section_index(lines, section)
-        local first = idx and json_ops.find_package_block(lines, idx, json_ops.find_section_end(lines, idx), name)
+        local first, last
+        if idx then
+            first, last = json_ops.find_package_block(lines, idx, json_ops.find_section_end(lines, idx), name)
+        end
         if first then
+            local text = table.concat(vim.list_slice(lines, first, last), " ")
             out[#out + 1] = {
                 line = first - 1,
-                declared = lines[first]:match('"' .. vim.pesc(name) .. '"%s*:%s*"([^"]*)"'),
+                declared = text:match('"' .. vim.pesc(name) .. '"%s*:%s*"([^"]*)"'),
             }
         end
     end

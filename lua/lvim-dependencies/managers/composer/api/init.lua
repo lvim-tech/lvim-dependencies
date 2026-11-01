@@ -332,6 +332,17 @@ function M.update_async(name, opts, callback)
     local new_lines, replaced, change =
         json_ops.replace_package_in_section(lines, section_idx, section_end, name, new_line)
 
+    if not replaced and vim.tbl_contains(helpers.declared_sections(name, path), section) then
+        -- Declared, yet not on a line of its own: a section written on one line. Inserting would
+        -- write a second declaration.
+        callback({
+            success = false,
+            message = string.format("%s is not on a line of its own in %s; format the file", name, section),
+            packages = {},
+        })
+        return
+    end
+
     if not replaced then
         new_lines, change = json_ops.insert_package_in_section(lines, section_idx, section_end, new_line)
     end

@@ -177,7 +177,7 @@ local function prepare_toml_changes(name, version, disk_lines, scope, sections)
         end
     end
 
-    local start_idx, _, current_line = toml_ops.find_package_block(disk_lines, section_idx, section_end, name)
+    local start_idx, end_idx, current_line = toml_ops.find_package_block(disk_lines, section_idx, section_end, name)
 
     if start_idx and current_line then
         local existing_indent = current_line:match("^(%s*)") or ""
@@ -185,30 +185,31 @@ local function prepare_toml_changes(name, version, disk_lines, scope, sections)
             pkg_indent = existing_indent
         end
 
-        local new_line
+        ---@cast end_idx integer
+        -- The whole declaration, since an inline table may run over several lines.
+        local block = table.concat(vim.list_slice(disk_lines, start_idx, end_idx), "\n")
+        local new_text
         if current_line:match("=%s*{") then
             -- Inline table dependency (`serde = { version = "1", optional = true }`). A crates.io
             -- version is meaningless for a git/path dependency, so refuse rather than silently
             -- converting it to a registry dep (which drops the source and breaks the build).
-            if current_line:match("%f[%w]git%s*=") or current_line:match("%f[%w]path%s*=") then
+            if block:match("%f[%w]git%s*=") or block:match("%f[%w]path%s*=") then
                 return disk_lines, nil, string.format("%s is a git/path dependency; version update skipped", name)
             end
             -- Change ONLY the version value in place — every other key (features, optional,
             -- default-features, rev, package, registry, …) is preserved byte-for-byte.
-            if current_line:match('version%s*=%s*"') then
-                new_line = current_line:gsub('(version%s*=%s*")[^"]*(")', "%1" .. version .. "%2", 1)
+            if block:match('version%s*=%s*"') then
+                new_text = block:gsub('(version%s*=%s*")[^"]*(")', "%1" .. version .. "%2", 1)
             else
-                new_line = current_line:gsub("(=%s*{)%s*", '%1 version = "' .. version .. '", ', 1)
+                new_text = block:gsub("(=%s*{)%s*", '%1 version = "' .. version .. '", ', 1)
             end
         else
-            new_line = pkg_indent .. string.format('%s = "%s"', name, version)
+            new_text = pkg_indent .. string.format('%s = "%s"', name, version)
         end
 
-        local new_lines, replaced, change =
-            toml_ops.replace_package_in_section(disk_lines, section_idx, section_end, name, new_line)
-        if replaced then
-            return new_lines or {}, change, nil
-        end
+        local new_lines, change =
+            toml_ops.replace_block(disk_lines, start_idx, end_idx, vim.split(new_text, "\n", { plain = true }))
+        return new_lines, change, nil
     end
 
     debug(string.format("Package %s not found in section, inserting", name), vim.log.levels.INFO)
@@ -268,6 +269,11 @@ function M.get_package_at_cursor(opts)
     -- Otherwise only a plain dependency table (…dependencies) has per-line packages.
     if not section:match("dependencies$") then
         return nil
+    end
+
+    -- Inside a value split over lines (`"transport",`) the package is the one it belongs to.
+    if not line:match("=") then
+        return toml_ops.package_containing(prev, toml_ops.find_section_index(prev, section) or 0, #prev)
     end
 
     for _, pattern in pairs(manifest.package_patterns) do

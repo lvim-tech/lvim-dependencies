@@ -61,7 +61,6 @@ end)
 
 it("refuses what it cannot read rather than guess", function()
     eq(nil, edit({ 'foo = { version = "1", features = [' }, { optional = true }), "unterminated")
-    eq(nil, edit({ 'foo = { features = [ # c', '  "a" ] }' }, { optional = true }), "comment inside")
     eq(nil, edit("foo = 1", { optional = true }), "not a dependency value")
 end)
 
@@ -429,6 +428,125 @@ it("pubspec delete from the UI: takes one declaration", function()
     local lines = vim.fn.readfile(path)
     eq({ "dependencies:", "  foo:", "    path: foo" }, vim.list_slice(lines, 4, 6), "the other declaration stays")
     eq(nil, table.concat(lines, "\n"):match("dev_dependencies:%s*\n%s*foo"), "the dev one is gone")
+    vim.wait(100)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+describe("cargo features: the popup starts from what the line declares")
+
+it("shows the declared features as selected, and confirming unchanged writes nothing new", function()
+    if not pcall(require, "lvim-ui") then
+        return skip("the features popup", "lvim-ui is not beside this checkout")
+    end
+    local line = 'tokio = { version = "1", features = ["net", "not-on-the-list"] }'
+    local path, bufnr = open_manifest("Cargo.toml", { "[workspace.dependencies]", line }, "tokio")
+    local http = require("lvim-dependencies.utils.http")
+    local real_get = http.get
+    http.get = function(_, callback)
+        callback('{"versions":[{"yanked":false,"features":{"net":[],"fs":[]}}]}', nil)
+    end
+    features.clear_cache("tokio")
+    features.show_ui("tokio", bufnr)
+    vim.wait(200)
+    http.get = real_get
+    features.clear_cache("tokio")
+
+    local rows = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    eq(3, #rows, "a declared feature the registry lacks stays listed")
+    local prefix = function(i, name)
+        return (rows[i]:gsub(vim.pesc(name) .. ".*$", ""))
+    end
+    truthy(prefix(1, "fs") ~= prefix(2, "net"), "net is selected and fs is not: " .. vim.inspect(rows))
+    eq(prefix(2, "net"), prefix(3, "not-on-the-list"))
+
+    vim.api.nvim_feedkeys(vim.keycode("<CR>"), "xt", false)
+    vim.wait(300)
+    eq(line, vim.fn.readfile(path)[2], "nothing was lost")
+    vim.wait(100)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+describe("cargo: a declaration over several lines, the way taplo writes it")
+
+local TAPLO = {
+    "[workspace.dependencies]",
+    'tonic = { version = "0.14", default-features = false, features = [',
+    '    "transport",',
+    '    "server", # needed',
+    "] }",
+    'prost = "0.14"',
+}
+
+it("is one block, closing bracket at column 0 included", function()
+    eq({ 2, 5, "inline" }, { toml.locate_package(TAPLO, "workspace.dependencies", "tonic") })
+    eq({ 6, 6, "inline" }, { toml.locate_package(TAPLO, "workspace.dependencies", "prost") })
+end)
+
+it("has its features read", function()
+    local _, bufnr = open_manifest("Cargo.toml", TAPLO, "tonic")
+    local current = features.get_current_features("tonic", bufnr)
+    eq({ "transport", "server" }, current.features)
+    eq(false, current.default_features)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+it("is left byte for byte when nothing changed", function()
+    local path, bufnr = open_manifest("Cargo.toml", TAPLO, "tonic")
+    local ok
+    features.update_features("tonic", {
+        features = { "server", "transport" },
+        default_features = false,
+        optional = false,
+        bufnr = bufnr,
+    }, function(o)
+        ok = o
+    end)
+    truthy(ok)
+    eq(TAPLO, vim.fn.readfile(path))
+    vim.wait(100)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+it("is replaced whole when features change, leaving nothing behind", function()
+    local path, bufnr = open_manifest("Cargo.toml", TAPLO, "tonic")
+    features.update_features("tonic", { features = { "gzip" }, bufnr = bufnr }, function() end)
+    eq({
+        "[workspace.dependencies]",
+        'tonic = { version = "0.14", default-features = false, features = ["gzip"] }',
+        'prost = "0.14"',
+    }, vim.fn.readfile(path))
+    vim.wait(100)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+it("keeps its features through a version update", function()
+    local path, bufnr = open_manifest("Cargo.toml", TAPLO, "tonic")
+    local result
+    require("lvim-dependencies.managers.cargo.api").update_async("tonic", { version = "0.15" }, function(r)
+        result = r
+    end)
+    vim.wait(2000, function()
+        return result ~= nil
+    end)
+    truthy(result and result.success, vim.inspect(result))
+    local want = vim.deepcopy(TAPLO)
+    want[2] = 'tonic = { version = "0.15", default-features = false, features = ['
+    eq(want, vim.fn.readfile(path))
+    vim.wait(100)
+    vim.cmd("bwipeout! " .. bufnr)
+end)
+
+it("is removed whole", function()
+    local path, bufnr = open_manifest("Cargo.toml", TAPLO, "tonic")
+    local result
+    require("lvim-dependencies.managers.cargo.api")._delete_package("tonic", {}, function(r)
+        result = r
+    end)
+    vim.wait(2000, function()
+        return result ~= nil
+    end)
+    truthy(result and result.success, vim.inspect(result))
+    eq({ "[workspace.dependencies]", 'prost = "0.14"' }, vim.fn.readfile(path))
     vim.wait(100)
     vim.cmd("bwipeout! " .. bufnr)
 end)
