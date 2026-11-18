@@ -21,7 +21,7 @@ return {
         },
         icons = {
             separators = {
-                prefix = "➤➤➤",
+                prefix = "󰅂󰅂󰅂",
                 transition = "→",
                 divider = "|",
             },
@@ -37,7 +37,7 @@ return {
         -- close_keys and position come from the SHARED lvim-utils `config.ui` defaults (the presenters read
         -- them). No fixed width/height: the popup auto-fits its content. (An earlier `width/height = "auto"`
         -- string — the OLD size model — was dead here and would crash `axis_size` if it were ever forwarded.)
-        current = "➤", -- the active-item marker in the private select instance
+        current = "󰅂", -- the active-item marker in the private select instance
         max_items = 20,
     },
 }

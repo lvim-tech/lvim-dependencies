@@ -89,10 +89,10 @@ require("lvim-dependencies").setup({})
 The plugin renders three version components at the end of every dependency line:
 
 ```
-"lodash": "^4.17.19"    ➤➤➤ ^4.17.19 → 4.17.19 |  4.17.21
-"express": "^4.18.2"    ➤➤➤ ^4.18.2 → 4.18.2 |  4.18.2
-"axios": "^1.5.0"       ➤➤➤ Loading...
-"chalk": "^5.0.0"       ➤➤➤ Working...
+"lodash": "^4.17.19"    󰅂󰅂󰅂 ^4.17.19 → 4.17.19 |  4.17.21
+"express": "^4.18.2"    󰅂󰅂󰅂 ^4.18.2 → 4.18.2 |  4.18.2
+"axios": "^1.5.0"       󰅂󰅂󰅂 Loading...
+"chalk": "^5.0.0"       󰅂󰅂󰅂 Working...
 ```
 
 | Component     | Description                                                | Highlight group              |
@@ -270,7 +270,7 @@ require("lvim-dependencies").setup({
             },
             icons = {
                 separators = {
-                    prefix = "➤➤➤", -- shown before the entire VT block
+                    prefix = "󰅂󰅂󰅂", -- shown before the entire VT block
                     transition = "→", -- between declared and installed
                     divider = "|", -- between installed and latest
                 },
@@ -283,7 +283,7 @@ require("lvim-dependencies").setup({
         },
         popup = {
             -- size caps, close keys and position come from the shared lvim-ui `config.ui`
-            current = "➤", -- marker for the currently installed version
+            current = "󰅂", -- marker for the currently installed version
             max_items = 20,
         },
     },
