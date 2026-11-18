@@ -172,7 +172,8 @@ local function add_latest(vt, latest, installed)
     local icon = is_current and icons.up_to_date or icons.outdated
     local hl = is_current and groups.up_to_date or groups.outdated
 
-    vt[#vt + 1] = { icon .. " ", hl }
+    -- the status glyph may be an lvim-icons image ("material"): its own chunk, see push_icon
+    require("lvim-dependencies.utils.highlight").push_icon(vt, icon, hl, " ")
     vt[#vt + 1] = { latest, hl }
 end
 

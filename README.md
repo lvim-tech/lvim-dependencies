@@ -654,6 +654,14 @@ lvim-dependencies/
 
 ---
 
+## Icons
+
+Every icon this plugin draws is a Nerd Font glyph. When [lvim-icons](https://github.com/lvim-tech/lvim-icons)
+runs in `mode = "material"` and the terminal shows kitty unicode placeholders, the plugin's own UI glyphs are
+drawn as images of those same glyphs, in their own colours and with their columns kept; in `nerd` and `mix`
+they stay text. There is nothing to set here: the mode is lvim-icons' (`lvim-utils.icons.ui_text` does the
+work).
+
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE).

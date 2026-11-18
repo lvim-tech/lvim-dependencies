@@ -160,4 +160,28 @@ function M.link(name, link_to)
     vim.api.nvim_set_hl(0, name, { link = link_to })
 end
 
+--- Append a UI status glyph followed by `after` (same group) to a virtual-text chunk list. With lvim-icons
+--- drawing UI icons as images ("material") the glyph becomes its image cells in a chunk of its own: the
+--- image group's fg IS the image id, so `hl` must not paint those bytes; `on_bg` keeps `hl`'s tinted badge
+--- background under the image. Anywhere else it is the single `{ icon .. after, hl }` chunk it always was.
+---@param vt table[]  virtual-text chunks, appended to in place
+---@param icon string
+---@param hl string
+---@param after? string
+function M.push_icon(vt, icon, hl, after)
+    after = after or ""
+    local ok, iconlib = pcall(require, "lvim-utils.icons")
+    if ok and iconlib.ui_text then
+        local t, h, img = iconlib.ui_text(icon, hl)
+        if img then
+            vt[#vt + 1] = { t, iconlib.on_bg({ image = true, hl = h }, hl) or h }
+            if after ~= "" then
+                vt[#vt + 1] = { after, hl }
+            end
+            return
+        end
+    end
+    vt[#vt + 1] = { icon .. after, hl }
+end
+
 return M
