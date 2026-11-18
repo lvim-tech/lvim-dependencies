@@ -743,7 +743,8 @@ end
 ---@param buf integer
 ---@param manifest_type string
 ---@param packages? table<string, any>
-function M.show(buf, manifest_type, packages)
+---@param opts? { quiet?: boolean }  quiet: no "shown" notification (a repaint, not a user action)
+function M.show(buf, manifest_type, packages, opts)
     if not manifest_type then
         return
     end
@@ -767,8 +768,24 @@ function M.show(buf, manifest_type, packages)
         end)
     end
 
-    notify("Virtual text shown", vim.log.levels.INFO)
+    if not (opts and opts.quiet) then
+        notify("Virtual text shown", vim.log.levels.INFO)
+    end
 end
+
+-- A live lvim-icons mode switch: the status icons were drawn in the old mode — paint every shown buffer
+-- again (the package data comes from the cache).
+api.nvim_create_autocmd("User", {
+    group = api.nvim_create_augroup("LvimDependenciesIconsMode", { clear = true }),
+    pattern = "LvimIconsMode",
+    callback = function()
+        for buf, vt in pairs(M.virt_texts) do
+            if api.nvim_buf_is_valid(buf) and type(vt) == "table" and vt.manifest_type then
+                pcall(M.show, buf, vt.manifest_type, nil, { quiet = true })
+            end
+        end
+    end,
+})
 
 --- Hide virtual text for a buffer
 ---@param buf integer
